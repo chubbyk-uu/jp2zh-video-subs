@@ -65,18 +65,21 @@ python -m pip install -U pip
 python -m pip install -r requirements.txt
 ```
 
+> ⚠️ **注意**：`requirements.txt` 里的 `llama-cpp-python` 默认从 PyPI 拉到的是 **CPU 预编译版**，翻译阶段不会用到 GPU。
+> 如果有 NVIDIA GPU，建议在上面一步之后再用源码编译方式覆盖安装 CUDA 版（需要本机已装 CUDA Toolkit + 编译工具链）：
+>
+> ```bash
+> CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
+>   python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.23
+> ```
+>
+> 装完后按下文“CUDA 验证”一节确认输出里能看到 `CUDA` / `offloaded ... layers to GPU`。
+
 安装 FFmpeg：
 
 ```bash
 sudo apt update
 sudo apt install -y ffmpeg
-```
-
-如果要让 HY-MT 翻译模型使用 NVIDIA GPU，需要安装 CUDA 版 `llama-cpp-python`：
-
-```bash
-CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
-  python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.23
 ```
 
 ## 下载模型
