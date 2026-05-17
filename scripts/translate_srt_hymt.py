@@ -56,8 +56,44 @@ def normalize_source(text: str) -> str:
     return text
 
 
+def is_context_sensitive_short_text(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) <= 2:
+        return True
+    if re.fullmatch(r"[、。！？!?…ー〜・\-.]+", compact):
+        return True
+    filler_words = {
+        "あ",
+        "え",
+        "はい",
+        "うん",
+        "いや",
+        "おー",
+        "え?",
+        "ああ",
+        "ここ",
+    }
+    return compact in filler_words
+
+
+def looks_context_leaked(source: str, translated: str) -> bool:
+    source_compact = re.sub(r"\s+", "", source)
+    translated_compact = re.sub(r"\s+", "", translated)
+    if not translated_compact:
+        return False
+    if re.search(r"[ぁ-ゟ゠-ヿ]", translated_compact):
+        return True
+    if any(token in translated_compact for token in ("さん", "ちゃん", "くん", "<context>", "<current>")):
+        return True
+    if len(source_compact) <= 2 and len(translated_compact) > 10:
+        return True
+    return len(translated_compact) > max(36, len(source_compact) * 3 + 18)
+
+
 def translate_one(llm: Llama, text: str, context: str) -> str:
     text = normalize_source(text)
+    if is_context_sensitive_short_text(text):
+        context = ""
     if context:
         prompt = (
             "以下是前文字幕，仅用于理解语境，不要翻译前文，也不要输出前文：\n"
@@ -83,6 +119,13 @@ def translate_one(llm: Llama, text: str, context: str) -> str:
     return clean_translation(result["choices"][0]["message"]["content"])
 
 
+def translate_with_retry(llm: Llama, text: str, context: str) -> str:
+    translated = translate_one(llm, text, context)
+    if context and looks_context_leaked(text, translated):
+        translated = translate_one(llm, text, "")
+    return translated
+
+
 def write_entry(f, entry: Entry, text: str) -> None:
     f.write(f"{entry.index}\n")
     f.write(f"{entry.time}\n")
@@ -96,7 +139,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--context-size", type=int, default=5)
+    parser.add_argument("--context-size", type=int, default=2)
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
     args = parser.parse_args()
 
@@ -115,7 +158,7 @@ def main() -> None:
         previous_source: list[str] = []
         for entry in entries:
             context = "\n".join(previous_source[-args.context_size :])
-            translated = translate_one(llm, entry.text, context)
+            translated = translate_with_retry(llm, entry.text, context)
             if not translated:
                 translated = entry.text
             write_entry(f, entry, translated)

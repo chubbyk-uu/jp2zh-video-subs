@@ -139,7 +139,10 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 - 识别模型：`models/faster-whisper-large-v3`
 - 翻译模型：`models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf`
 - 识别语言：日语 `ja`
-- 翻译上下文：前 5 条原文字幕
+- Whisper 前文串联：默认关闭，减少长视频串文和幻觉
+- 单条字幕最大显示时长：默认 10 秒，避免静音段字幕挂太久
+- 翻译上下文：默认前 2 条原文字幕；短句、省略号和疑似串文会自动无上下文重翻
+- VAD：默认使用较敏感配置，尽量减少低声对白漏检
 - 中间文件目录：`work/<视频文件名>/`
 
 运行完成后会生成：
@@ -155,11 +158,31 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 ```
 
-调整翻译上下文条数：
+默认基线已经按 `stable` 配置设置。如果想调整翻译上下文条数：
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --context-size 3
 ```
+
+如果发现翻译把前文一起输出，建议降低上下文：
+
+```bash
+python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --context-size 1
+```
+
+调整字幕最大显示时长：
+
+```bash
+python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --max-duration 8
+```
+
+如果想恢复 Whisper 的前文串联行为：
+
+```bash
+python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --condition-on-previous-text
+```
+
+对长视频和低声对白较多的视频，默认不建议开启该参数。实测它可能补出更多语气词，但也更容易带来重复、串文和碎片化字幕。
 
 保留抽取出来的 WAV 音频，方便调试：
 
@@ -180,7 +203,8 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 ```bash
 python scripts/transcribe_ja_srt.py work/input/input.wav \
   --output subtitles/ja/input.ja.srt \
-  --model models/faster-whisper-large-v3
+  --model models/faster-whisper-large-v3 \
+  --max-duration 10
 ```
 
 已有原文 SRT，只做翻译：
@@ -189,7 +213,7 @@ python scripts/transcribe_ja_srt.py work/input/input.wav \
 python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
   --output subtitles/zh/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
-  --context-size 5
+  --context-size 2
 ```
 
 限制只翻译前 N 条，方便调试：
@@ -286,15 +310,25 @@ ffmpeg -version
 
 ### 输出字幕串入前文
 
-翻译脚本默认把前 5 条字幕作为上下文。如果出现译文过长或串入前文，可以降低上下文条数：
+翻译脚本默认把前 2 条字幕作为上下文。如果出现译文过长或串入前文，可以降低上下文条数：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --context-size 2
+python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --context-size 1
+```
+
+脚本也会对短句、省略号、语气词自动禁用上下文，并在译文明显过长时无上下文重翻。
+
+### 字幕时间轴过长
+
+当前 ASR 脚本会启用词级时间戳，并把异常长的字幕控制到 `--max-duration` 以内。默认最大 10 秒，这是目前的 `stable` 基线。如果仍然觉得字幕挂屏太久，可以调到 8 秒：
+
+```bash
+python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --max-duration 8
 ```
 
 ### 处理非日语视频
 
-当前 `scripts/transcribe_ja_srt.py` 固定使用 `language="ja"`，因此默认适合日语视频。处理英语、中文或其他语言时，需要修改脚本中的 `language` 参数，并相应调整翻译提示词。
+当前默认使用 `language="ja"`，因此默认适合日语视频。处理英语、中文或其他语言时，可以传入 `--language`，并相应调整翻译提示词。
 
 ## GitHub 提交建议
 
@@ -314,12 +348,10 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 
 ## 后续改进
 
-- 支持通过参数指定识别语言，例如 `ja`、`en`、`zh`。
+- 合并过碎字幕。当前 stable 基线信息量较完整，但低声、喘息和长静音附近可能出现一字或两字字幕，需要把相邻短碎片自动合并。
 - 给 Whisper 增加 `initial_prompt` 术语表，提升专有名词、人名、产品词和场景词识别质量。
-- 把 `condition_on_previous_text` 做成参数，并测试长视频下开启或关闭对幻觉和串文的影响。
-- 增加 ASR 后处理，过滤孤立符号、无意义短字幕和片尾噪声词。
 - 增加术语替换表，用于修正常见识别错误。
-- 翻译阶段检测异常长译文，并自动降低上下文条数重翻。
-- 增加质量报告，列出疑似异常字幕，例如超长译文、重复短句、空白或乱码。
+- 增加 ASR 后处理，过滤孤立符号、无意义短字幕、英文乱码和片尾噪声词。
+- 增加质量报告，列出疑似异常字幕，包括超短碎片、重复短句、时间轴重叠、空白、乱码、日文残留、译文过长等。
 - 支持批量处理目录下的多个视频。
 - 支持输出原文 SRT、中文字幕 SRT、双语 SRT 等多种格式。

@@ -31,7 +31,16 @@ def main() -> None:
     parser.add_argument("--output", type=Path, help="Output Chinese SRT path")
     parser.add_argument("--work-dir", type=Path, default=PROJECT_ROOT / "work")
     parser.add_argument("--keep-audio", action="store_true", help="Keep extracted WAV audio")
-    parser.add_argument("--context-size", type=int, default=5)
+    parser.add_argument("--context-size", type=int, default=2)
+    parser.add_argument("--language", default="ja")
+    parser.add_argument("--condition-on-previous-text", action="store_true")
+    parser.add_argument("--min-duration", type=float, default=1.0)
+    parser.add_argument("--max-duration", type=float, default=10.0)
+    parser.add_argument("--max-chars", type=int, default=42)
+    parser.add_argument("--no-vad", action="store_true")
+    parser.add_argument("--vad-threshold", type=float, default=0.35)
+    parser.add_argument("--vad-min-silence-ms", type=int, default=500)
+    parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
     args = parser.parse_args()
 
     video = args.video.resolve()
@@ -62,7 +71,7 @@ def main() -> None:
         "16000",
         str(audio),
     ])
-    run([
+    transcribe_command = [
         sys.executable,
         str(TRANSCRIBE_SCRIPT),
         str(audio),
@@ -70,7 +79,26 @@ def main() -> None:
         str(ja_srt),
         "--model",
         str(WHISPER_MODEL),
-    ])
+        "--language",
+        args.language,
+        "--min-duration",
+        str(args.min_duration),
+        "--max-duration",
+        str(args.max_duration),
+        "--max-chars",
+        str(args.max_chars),
+        "--vad-threshold",
+        str(args.vad_threshold),
+        "--vad-min-silence-ms",
+        str(args.vad_min_silence_ms),
+        "--vad-speech-pad-ms",
+        str(args.vad_speech_pad_ms),
+    ]
+    if args.condition_on_previous_text:
+        transcribe_command.append("--condition-on-previous-text")
+    if args.no_vad:
+        transcribe_command.append("--no-vad")
+    run(transcribe_command)
     run([
         sys.executable,
         str(TRANSLATE_SCRIPT),
