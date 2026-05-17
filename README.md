@@ -62,8 +62,7 @@ python -m pip install -U pip
 安装 Python 依赖：
 
 ```bash
-python -m pip install faster-whisper==1.2.1 huggingface-hub==1.15.0
-python -m pip install llama-cpp-python==0.3.23
+python -m pip install -r requirements.txt
 ```
 
 安装 FFmpeg：
@@ -296,32 +295,19 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 
 ## GitHub 提交建议
 
-建议提交：
+仓库中已提交：
 
-- `README.md`
+- `README.md`、`requirements.txt`
 - `scripts/`
-- 少量示例字幕或短样例
+- `.gitignore` 与各目录的 `.gitkeep` 占位
 
-不建议提交：
+未提交（已通过 `.gitignore` 排除）：
 
-- `models/`
-- `videos/`
-- `work/`
-- 大体积 `outputs/`
-- `__pycache__/`
-
-可以添加 `.gitignore`：
-
-```gitignore
-models/
-videos/
-work/
-outputs/
-__pycache__/
-*.pyc
-*.wav
-*.mp4
-```
+- `models/`：本地模型，按上文从 Hugging Face 下载
+- `videos/`：输入视频
+- `work/`：中间文件
+- `outputs/`、`subtitles/`：生成结果
+- `__pycache__/` 及虚拟环境目录
 
 ## 后续改进
 

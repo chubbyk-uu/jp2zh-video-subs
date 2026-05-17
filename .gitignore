@@ -1,10 +1,14 @@
-# Large data / model directories
-models/
-videos/
-work/
-
-# Generated outputs (keep directory if needed via .gitkeep)
-outputs/
+# Large data / model directories — keep dir, ignore contents
+models/*
+!models/.gitkeep
+videos/*
+!videos/.gitkeep
+work/*
+!work/.gitkeep
+outputs/*
+!outputs/.gitkeep
+subtitles/*
+!subtitles/.gitkeep
 
 # Python
 __pycache__/
