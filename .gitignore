@@ -1,0 +1,25 @@
+# Large data / model directories
+models/
+videos/
+work/
+
+# Generated outputs (keep directory if needed via .gitkeep)
+outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+*.tmp
