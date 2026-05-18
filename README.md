@@ -151,12 +151,30 @@ python scripts/video_to_zh_srt.py videos/input.mp4
 - `outputs/input.zh.srt`：最终中文字幕
 - `videos/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕
 
+批量处理某个目录下的所有视频：
+
+```bash
+python scripts/video_to_zh_srt.py videos/
+```
+
+默认会按文件名顺序依次处理当前目录里的常见视频文件，例如 `.mp4`、`.mkv`、`.mov`、`.avi`、`.wmv`、`.flv`、`.webm`、`.m4v`、`.ts`。如果还要处理子目录：
+
+```bash
+python scripts/video_to_zh_srt.py videos/ --recursive
+```
+
 ## 常用参数
 
 指定输出路径：
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
+```
+
+批量处理时指定输出目录：
+
+```bash
+python scripts/video_to_zh_srt.py videos/ --output-dir outputs
 ```
 
 默认基线已经按 `stable` 配置设置。如果想调整翻译上下文条数：
@@ -201,6 +219,12 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --no-copy-to-video-dir
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --work-dir work
+```
+
+批量处理时，如果某个视频失败后还想继续处理后面的视频：
+
+```bash
+python scripts/video_to_zh_srt.py videos/ --continue-on-error
 ```
 
 ## 单步运行
