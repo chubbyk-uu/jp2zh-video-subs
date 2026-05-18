@@ -131,7 +131,7 @@ git clone https://huggingface.co/tencent/HY-MT1.5-7B-GGUF models/HY-MT1.5-7B-GGU
 把视频放到 `videos/`，然后运行：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
+python scripts/video_to_zh_srt.py videos/input.mp4
 ```
 
 默认使用：
@@ -149,6 +149,7 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 
 - `work/input/input.ja.srt`：中间日语字幕
 - `outputs/input.zh.srt`：最终中文字幕
+- `videos/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕
 
 ## 常用参数
 
@@ -161,25 +162,25 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 默认基线已经按 `stable` 配置设置。如果想调整翻译上下文条数：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --context-size 3
+python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 3
 ```
 
 如果发现翻译把前文一起输出，建议降低上下文：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --context-size 1
+python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 1
 ```
 
 调整字幕最大显示时长：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --max-duration 8
+python scripts/video_to_zh_srt.py videos/input.mp4 --max-duration 8
 ```
 
 如果想恢复 Whisper 的前文串联行为：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --condition-on-previous-text
+python scripts/video_to_zh_srt.py videos/input.mp4 --condition-on-previous-text
 ```
 
 对长视频和低声对白较多的视频，默认不建议开启该参数。实测它可能补出更多语气词，但也更容易带来重复、串文和碎片化字幕。
@@ -187,13 +188,19 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 保留抽取出来的 WAV 音频，方便调试：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --keep-audio
+python scripts/video_to_zh_srt.py videos/input.mp4 --keep-audio
+```
+
+如果不想把最终字幕拷贝到输入视频同目录：
+
+```bash
+python scripts/video_to_zh_srt.py videos/input.mp4 --no-copy-to-video-dir
 ```
 
 指定临时工作目录：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --work-dir work
+python scripts/video_to_zh_srt.py videos/input.mp4 --work-dir work
 ```
 
 ## 单步运行
@@ -271,7 +278,7 @@ WhisperModel(model_name_or_path, device="cpu", compute_type="int8")
 最小验证命令：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
+python scripts/video_to_zh_srt.py videos/input.mp4
 ```
 
 如果只想快速确认翻译链路，可以先准备一个很短的 SRT，再用 `--limit` 测试：
@@ -313,7 +320,7 @@ ffmpeg -version
 翻译脚本默认把前 2 条字幕作为上下文。如果出现译文过长或串入前文，可以降低上下文条数：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --context-size 1
+python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 1
 ```
 
 脚本也会对短句、省略号、语气词自动禁用上下文，并在译文明显过长时无上下文重翻。
@@ -323,7 +330,7 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 当前 ASR 脚本会启用词级时间戳，并把异常长的字幕控制到 `--max-duration` 以内。默认最大 10 秒，这是目前的 `stable` 基线。如果仍然觉得字幕挂屏太久，可以调到 8 秒：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt --max-duration 8
+python scripts/video_to_zh_srt.py videos/input.mp4 --max-duration 8
 ```
 
 ### 处理非日语视频

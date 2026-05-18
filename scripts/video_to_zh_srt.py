@@ -41,6 +41,11 @@ def main() -> None:
     parser.add_argument("--vad-threshold", type=float, default=0.35)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
+    parser.add_argument(
+        "--no-copy-to-video-dir",
+        action="store_true",
+        help="Do not copy the final Chinese SRT next to the input video",
+    )
     args = parser.parse_args()
 
     video = args.video.resolve()
@@ -114,7 +119,13 @@ def main() -> None:
     if not args.keep_audio:
         audio.unlink(missing_ok=True)
 
+    copied_output = video.parent / output.name
+    if not args.no_copy_to_video_dir and copied_output != output:
+        shutil.copy2(output, copied_output)
+
     print(f"Wrote {output}")
+    if not args.no_copy_to_video_dir:
+        print(f"Chinese SRT next to video: {copied_output}")
     print(f"Intermediate Japanese SRT: {ja_srt}")
 
 

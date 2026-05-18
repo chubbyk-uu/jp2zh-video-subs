@@ -98,13 +98,13 @@ def translate_one(llm: Llama, text: str, context: str) -> str:
         prompt = (
             "以下是前文字幕，仅用于理解语境，不要翻译前文，也不要输出前文：\n"
             f"<context>{context}</context>\n\n"
-            "参考上面的信息，把 <current> 标签内的日文成人影片字幕翻译成自然、口语化的简体中文。"
+            "参考上面的信息，把 <current> 标签内的日语字幕翻译成自然、口语化的简体中文。"
             "只输出当前句的中文纯文本译文，不要解释，不要保留日文，不要输出任何 XML 标签：\n"
             f"<current>{text}</current>"
         )
     else:
         prompt = (
-            "将以下日文成人影片字幕翻译为自然、口语化的简体中文。"
+            "将以下日语字幕翻译为自然、口语化的简体中文。"
             "只输出译文，不要解释，不要保留日文：\n"
             f"{text}"
         )
