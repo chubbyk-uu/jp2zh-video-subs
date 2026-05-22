@@ -1,57 +1,59 @@
-# 本地视频字幕生成流水线
+# Local Video Subtitle Pipeline
 
-这个项目用于把视频自动生成中文字幕 SRT。当前默认流程面向日语语音：
+[中文版 README](README_CN.md)
 
-1. 用 `ffmpeg` 从视频抽取 16 kHz 单声道 WAV 音频。
-2. 用本地 `faster-whisper-large-v3` 识别日语并生成原文 SRT。
-3. 用本地 `HY-MT1.5-7B-GGUF` 把原文 SRT 翻译成简体中文字幕 SRT。
+This project automatically generates Simplified Chinese SRT subtitles from video files. The default pipeline targets Japanese speech:
 
-所有推理都在本地运行，不依赖在线 API。首次复现需要先下载模型文件，模型不建议直接提交到 GitHub。
+1. Extract a 16 kHz mono WAV track from the video with `ffmpeg`.
+2. Transcribe Japanese audio into a source-language SRT with the local `faster-whisper-large-v3` model.
+3. Translate the source SRT into Simplified Chinese with the local `HY-MT1.5-7B-GGUF` model.
 
-## 目录结构
+All inference runs locally; no online APIs are required. The model files must be downloaded the first time you reproduce the setup and should not be committed to GitHub.
+
+## Directory Layout
 
 ```text
 .
-├── models/                         # 本地模型目录，不建议提交到 GitHub
-│   ├── faster-whisper-large-v3/     # CTranslate2 格式 Whisper ASR 模型
-│   └── HY-MT1.5-7B-GGUF/            # GGUF 翻译模型
-├── outputs/                         # 最终中文字幕输出
+├── models/                         # Local model files, do not commit
+│   ├── faster-whisper-large-v3/     # CTranslate2-format Whisper ASR model
+│   └── HY-MT1.5-7B-GGUF/            # GGUF translation model
+├── outputs/                         # Final Chinese subtitle output
 ├── scripts/
-│   ├── video_to_zh_srt.py           # 一键视频到中文字幕
-│   ├── transcribe_ja_srt.py         # 音频到日语 SRT
-│   └── translate_srt_hymt.py        # 原文 SRT 到中文字幕 SRT
+│   ├── video_to_zh_srt.py           # One-shot: video → Chinese SRT
+│   ├── transcribe_ja_srt.py         # Audio → Japanese SRT
+│   └── translate_srt_hymt.py        # Source SRT → Chinese SRT
 ├── subtitles/
-│   ├── ja/                          # 可选：保存日语 SRT
-│   └── zh/                          # 可选：保存中文字幕 SRT
-├── videos/                          # 输入视频
-└── work/                            # 中间文件
+│   ├── ja/                          # Optional: Japanese SRT archive
+│   └── zh/                          # Optional: Chinese SRT archive
+├── videos/                          # Input videos
+└── work/                            # Intermediate files
 ```
 
-## 软硬件环境
+## Environment
 
-已验证环境：
+Verified setup:
 
-- OS：Ubuntu 24.04 / Linux x86_64
-- Python：3.11
-- FFmpeg：6.1.1
-- `faster-whisper`：1.2.1
-- `llama-cpp-python`：0.3.23
-- `huggingface-hub`：1.15.0
+- OS: Ubuntu 24.04 / Linux x86_64
+- Python: 3.11
+- FFmpeg: 6.1.1
+- `faster-whisper`: 1.2.1
+- `llama-cpp-python`: 0.3.23
+- `huggingface-hub`: 1.15.0
 
-推荐硬件：
+Recommended hardware:
 
-- GPU：建议 NVIDIA GPU，显存 12 GB 或以上更稳。显存不足时可降低并发、改用 CPU，或者换更小的 ASR/翻译模型。
-- CPU：建议 8 核以上。
-- 内存：建议 16 GB 以上，32 GB 更稳。
-- 磁盘：至少预留 10 GB。当前两个默认模型大约占用：
-  - `faster-whisper-large-v3`：约 2.9 GB
-  - `HY-MT1.5-7B-Q4_K_M.gguf`：约 4.4 GB
+- GPU: an NVIDIA GPU with 12 GB VRAM or more is preferred. With less VRAM, lower the concurrency, fall back to CPU, or pick smaller ASR/translation models.
+- CPU: 8 cores or more.
+- RAM: 16 GB minimum, 32 GB recommended.
+- Disk: keep at least 10 GB free. The two default models take roughly:
+  - `faster-whisper-large-v3`: ~2.9 GB
+  - `HY-MT1.5-7B-Q4_K_M.gguf`: ~4.4 GB
 
-CPU 也可以运行，但速度会明显慢。脚本会优先尝试 CUDA；ASR 阶段 CUDA 不可用时会自动回退到 CPU int8。
+CPU-only execution works but is noticeably slower. The scripts try CUDA first; if CUDA is not available for ASR, they fall back to CPU int8 automatically.
 
-## 安装依赖
+## Install Dependencies
 
-建议使用 Python 3.11 虚拟环境：
+A Python 3.11 virtual environment is recommended:
 
 ```bash
 python3.11 -m venv .venv
@@ -59,37 +61,37 @@ source .venv/bin/activate
 python -m pip install -U pip
 ```
 
-安装 Python 依赖：
+Install the Python dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-> ⚠️ **注意**：`requirements.txt` 里的 `llama-cpp-python` 默认从 PyPI 拉到的是 **CPU 预编译版**，翻译阶段不会用到 GPU。
-> 如果有 NVIDIA GPU，建议在上面一步之后再用源码编译方式覆盖安装 CUDA 版（需要本机已装 CUDA Toolkit + 编译工具链）：
+> ⚠️ **Note:** The `llama-cpp-python` wheel on PyPI is the **CPU-only prebuilt** version, so the translation step will not use the GPU.
+> If you have an NVIDIA GPU, rebuild from source on top of the previous step (the CUDA Toolkit and a build toolchain must already be installed):
 >
 > ```bash
 > CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 >   python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.23
 > ```
 >
-> 装完后按下文“CUDA 验证”一节确认输出里能看到 `CUDA` / `offloaded ... layers to GPU`。
+> After the rebuild, verify with the "CUDA verification" section below that the output contains `CUDA` / `offloaded ... layers to GPU`.
 
-安装 FFmpeg：
+Install FFmpeg:
 
 ```bash
 sudo apt update
 sudo apt install -y ffmpeg
 ```
 
-## 下载模型
+## Download the Models
 
-模型下载自 Hugging Face：
+The models live on Hugging Face:
 
-- ASR 模型：[`Systran/faster-whisper-large-v3`](https://huggingface.co/Systran/faster-whisper-large-v3)
-- 翻译模型：[`tencent/HY-MT1.5-7B-GGUF`](https://huggingface.co/tencent/HY-MT1.5-7B-GGUF)
+- ASR: [`Systran/faster-whisper-large-v3`](https://huggingface.co/Systran/faster-whisper-large-v3)
+- Translation: [`tencent/HY-MT1.5-7B-GGUF`](https://huggingface.co/tencent/HY-MT1.5-7B-GGUF)
 
-使用 `huggingface-hub` 下载到脚本默认目录：
+Download them with `huggingface-hub` into the script defaults:
 
 ```bash
 mkdir -p models
@@ -101,7 +103,7 @@ hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
   --local-dir models/HY-MT1.5-7B-GGUF
 ```
 
-下载完成后，目录里至少应包含这些文件：
+After the download finishes, the directories should at least contain:
 
 ```text
 models/faster-whisper-large-v3/model.bin
@@ -112,13 +114,13 @@ models/faster-whisper-large-v3/preprocessor_config.json
 models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
-如果本地 `hf` 命令不可用，先确认虚拟环境已激活，并安装：
+If the `hf` command is not available, make sure the virtual environment is active and install:
 
 ```bash
 python -m pip install -U huggingface-hub
 ```
 
-也可以用 Git LFS 下载：
+Alternatively, download via Git LFS:
 
 ```bash
 git lfs install
@@ -126,110 +128,110 @@ git clone https://huggingface.co/Systran/faster-whisper-large-v3 models/faster-w
 git clone https://huggingface.co/tencent/HY-MT1.5-7B-GGUF models/HY-MT1.5-7B-GGUF
 ```
 
-## 一条命令生成中文字幕
+## One-Shot Chinese Subtitles
 
-把视频放到 `videos/`，然后运行：
+Drop a video into `videos/`, then run:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4
 ```
 
-默认使用：
+Defaults:
 
-- 识别模型：`models/faster-whisper-large-v3`
-- 翻译模型：`models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf`
-- 识别语言：日语 `ja`
-- Whisper 前文串联：默认关闭，减少长视频串文和幻觉
-- 单条字幕最大显示时长：默认 10 秒，避免静音段字幕挂太久
-- 翻译上下文：默认前 2 条原文字幕；短句、省略号和疑似串文会自动无上下文重翻
-- VAD：默认使用较敏感配置，尽量减少低声对白漏检
-- 中间文件目录：`work/<视频文件名>/`
+- ASR model: `models/faster-whisper-large-v3`
+- Translation model: `models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf`
+- ASR language: Japanese (`ja`)
+- Whisper `condition_on_previous_text`: off by default, to reduce cross-line bleed and hallucinations on long videos
+- Max display time per subtitle line: 10 s by default, to avoid stretched lines over silence
+- Translation context: previous 2 source lines by default; short lines, ellipses, and suspected bleed are re-translated without context
+- VAD: an aggressive configuration is used by default to minimize missed low-volume dialogue
+- Intermediate files: `work/<video_filename>/`
 
-运行完成后会生成：
+When the run finishes you get:
 
-- `work/input/input.ja.srt`：中间日语字幕
-- `outputs/input.zh.srt`：最终中文字幕
-- `videos/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕
+- `work/input/input.ja.srt`: intermediate Japanese subtitles
+- `outputs/input.zh.srt`: final Chinese subtitles
+- `videos/input.zh.srt`: a copy of the Chinese SRT next to the input video
 
-批量处理某个目录下的所有视频：
+Batch-process every video in a directory:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/
 ```
 
-默认会按文件名顺序依次处理当前目录里的常见视频文件，例如 `.mp4`、`.mkv`、`.mov`、`.avi`、`.wmv`、`.flv`、`.webm`、`.m4v`、`.ts`。如果还要处理子目录：
+By default, common video files in the directory are processed in filename order, including `.mp4`, `.mkv`, `.mov`, `.avi`, `.wmv`, `.flv`, `.webm`, `.m4v`, `.ts`. To recurse into subdirectories:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/ --recursive
 ```
 
-## 常用参数
+## Common Options
 
-指定输出路径：
+Set an explicit output path:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 ```
 
-批量处理时指定输出目录：
+Set an output directory for batch mode:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/ --output-dir outputs
 ```
 
-默认基线已经按 `stable` 配置设置。如果想调整翻译上下文条数：
+The default baseline is already tuned to the `stable` profile. To change the translation context window:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 3
 ```
 
-如果发现翻译把前文一起输出，建议降低上下文：
+If the translator starts dragging earlier lines into the current output, lower the context:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 1
 ```
 
-调整字幕最大显示时长：
+Cap the maximum display time per subtitle:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --max-duration 8
 ```
 
-如果想恢复 Whisper 的前文串联行为：
+Re-enable Whisper's previous-text conditioning:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --condition-on-previous-text
 ```
 
-对长视频和低声对白较多的视频，默认不建议开启该参数。实测它可能补出更多语气词，但也更容易带来重复、串文和碎片化字幕。
+For long videos with a lot of quiet dialogue, leaving this flag off is recommended. Turning it on can recover more fillers and particles, but it also makes repetition, cross-line bleed, and fragmentation more likely.
 
-保留抽取出来的 WAV 音频，方便调试：
+Keep the extracted WAV around for debugging:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --keep-audio
 ```
 
-如果不想把最终字幕拷贝到输入视频同目录：
+Skip copying the final SRT next to the input video:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --no-copy-to-video-dir
 ```
 
-指定临时工作目录：
+Pick a different scratch directory:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --work-dir work
 ```
 
-批量处理时，如果某个视频失败后还想继续处理后面的视频：
+Keep going through the rest of the batch when one video fails:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/ --continue-on-error
 ```
 
-## 单步运行
+## Single Steps
 
-只做语音识别：
+Just the ASR step:
 
 ```bash
 python scripts/transcribe_ja_srt.py work/input/input.wav \
@@ -238,7 +240,7 @@ python scripts/transcribe_ja_srt.py work/input/input.wav \
   --max-duration 10
 ```
 
-已有原文 SRT，只做翻译：
+Translation only, given an existing source SRT:
 
 ```bash
 python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
@@ -247,7 +249,7 @@ python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
   --context-size 2
 ```
 
-限制只翻译前 N 条，方便调试：
+Limit the translation to the first N lines for quick smoke tests:
 
 ```bash
 python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
@@ -255,9 +257,9 @@ python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
   --limit 20
 ```
 
-## CUDA 验证
+## CUDA Verification
 
-验证 `llama-cpp-python` 是否启用了 CUDA：
+Check whether `llama-cpp-python` has CUDA enabled:
 
 ```bash
 python - <<'PY'
@@ -267,45 +269,45 @@ print(info.decode() if isinstance(info, bytes) else info)
 PY
 ```
 
-如果输出里能看到 `CUDA`、`CUDA0`、`offloaded ... layers to GPU`，说明翻译模型正在使用 GPU。
+If you see `CUDA`, `CUDA0`, or `offloaded ... layers to GPU` in the output, the translator is on the GPU.
 
-如果只看到 CPU 指令集，需要重新安装 CUDA 版：
+If only CPU instruction sets are listed, reinstall the CUDA build:
 
 ```bash
 CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
   python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.23
 ```
 
-ASR 阶段由 `faster-whisper` 使用 CUDA。脚本里默认尝试：
+The ASR stage uses `faster-whisper` with CUDA. The script first tries:
 
 ```python
 WhisperModel(model_name_or_path, device="cuda", compute_type="float16")
 ```
 
-如果 CUDA 初始化失败，会回退到：
+If CUDA initialization fails, it falls back to:
 
 ```python
 WhisperModel(model_name_or_path, device="cpu", compute_type="int8")
 ```
 
-## 复现检查清单
+## Reproduction Checklist
 
-运行前确认：
+Before running, confirm:
 
-- `ffmpeg -version` 可以正常输出版本。
-- `python --version` 是 3.11 或兼容版本。
-- `models/faster-whisper-large-v3/model.bin` 存在。
-- `models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf` 存在。
-- 输入视频路径存在，例如 `videos/input.mp4`。
-- `outputs/` 和 `work/` 有写入权限。
+- `ffmpeg -version` prints a version banner.
+- `python --version` is 3.11 or compatible.
+- `models/faster-whisper-large-v3/model.bin` exists.
+- `models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf` exists.
+- The input video exists, e.g. `videos/input.mp4`.
+- `outputs/` and `work/` are writable.
 
-最小验证命令：
+Minimal smoke test:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4
 ```
 
-如果只想快速确认翻译链路，可以先准备一个很短的 SRT，再用 `--limit` 测试：
+To quickly sanity-check only the translation chain, prepare a short SRT and use `--limit`:
 
 ```bash
 python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
@@ -313,76 +315,76 @@ python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
   --limit 5
 ```
 
-## 常见问题
+## FAQ
 
-### 模型文件缺失
+### Missing model files
 
-报错类似：
+Errors like:
 
 ```text
 Missing Whisper model: .../models/faster-whisper-large-v3/model.bin
 Missing HY-MT model: .../models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
-按“下载模型”一节重新下载，并确认目录名和文件名没有改动。
+Re-download per the "Download the Models" section, keeping the directory and file names exactly as listed.
 
-### 翻译速度很慢
+### Translation is very slow
 
-通常是 `llama-cpp-python` 没有启用 CUDA，或者 GPU 显存不足导致部分层在 CPU 上运行。先按“CUDA 验证”检查。如果无法使用 GPU，可以继续用 CPU 跑，但长视频会很慢。
+The usual cause is `llama-cpp-python` running on CPU, or GPU VRAM being too small so some layers spill onto CPU. Run the CUDA verification first. If you cannot use a GPU, CPU still works but long videos take a long time.
 
-### `ffmpeg` 找不到
+### `ffmpeg` not found
 
-安装 FFmpeg，并确认命令在 PATH 中：
+Install FFmpeg and make sure it is on `PATH`:
 
 ```bash
 sudo apt install -y ffmpeg
 ffmpeg -version
 ```
 
-### 输出字幕串入前文
+### Translated lines bleed from earlier subtitles
 
-翻译脚本默认把前 2 条字幕作为上下文。如果出现译文过长或串入前文，可以降低上下文条数：
+The translator uses the previous 2 lines as context by default. If the translation grows too long or starts to bleed earlier content, lower the context:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 1
 ```
 
-脚本也会对短句、省略号、语气词自动禁用上下文，并在译文明显过长时无上下文重翻。
+The script also disables context automatically for short lines, ellipses, and fillers, and re-translates without context when the output is clearly too long.
 
-### 字幕时间轴过长
+### Subtitle timing too long
 
-当前 ASR 脚本会启用词级时间戳，并把异常长的字幕控制到 `--max-duration` 以内。默认最大 10 秒，这是目前的 `stable` 基线。如果仍然觉得字幕挂屏太久，可以调到 8 秒：
+The ASR script enables word-level timestamps and caps abnormally long lines to `--max-duration`. The default cap is 10 s, the current `stable` baseline. If lines still linger too long, drop the cap to 8 s:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --max-duration 8
 ```
 
-### 处理非日语视频
+### Non-Japanese input
 
-当前默认使用 `language="ja"`，因此默认适合日语视频。处理英语、中文或其他语言时，可以传入 `--language`，并相应调整翻译提示词。
+The default is `language="ja"`, tuned for Japanese audio. For English, Chinese, or other languages, pass `--language` and adjust the translation prompt accordingly.
 
-## GitHub 提交建议
+## GitHub Commit Notes
 
-仓库中已提交：
+Committed in the repo:
 
-- `README.md`、`requirements.txt`
+- `README.md`, `README_CN.md`, `requirements.txt`
 - `scripts/`
-- `.gitignore` 与各目录的 `.gitkeep` 占位
+- `.gitignore` and `.gitkeep` placeholders in each directory
 
-未提交（已通过 `.gitignore` 排除）：
+Not committed (excluded via `.gitignore`):
 
-- `models/`：本地模型，按上文从 Hugging Face 下载
-- `videos/`：输入视频
-- `work/`：中间文件
-- `outputs/`、`subtitles/`：生成结果
-- `__pycache__/` 及虚拟环境目录
+- `models/`: local models, downloaded from Hugging Face per above
+- `videos/`: input videos
+- `work/`: intermediate files
+- `outputs/`, `subtitles/`: generated results
+- `__pycache__/` and virtualenv directories
 
-## 后续改进
+## Roadmap
 
-- 合并过碎字幕。当前 stable 基线信息量较完整，但低声、喘息和长静音附近可能出现一字或两字字幕，需要把相邻短碎片自动合并。
-- 给 Whisper 增加 `initial_prompt` 术语表，提升专有名词、人名、产品词和场景词识别质量。
-- 增加术语替换表，用于修正常见识别错误。
-- 增加 ASR 后处理，过滤孤立符号、无意义短字幕、英文乱码和片尾噪声词。
-- 增加质量报告，列出疑似异常字幕，包括超短碎片、重复短句、时间轴重叠、空白、乱码、日文残留、译文过长等。
-- 支持批量处理目录下的多个视频。
-- 支持输出原文 SRT、中文字幕 SRT、双语 SRT 等多种格式。
+- Merge over-fragmented subtitles. The `stable` baseline carries enough information, but single- or two-character lines can still appear around quiet breaths and long silences; adjacent fragments should be merged automatically.
+- Add a Whisper `initial_prompt` glossary to improve recognition of proper nouns, person names, product terms, and scene-specific vocabulary.
+- Add a term-replacement table to fix common recognition mistakes.
+- Add ASR post-processing to filter isolated punctuation, meaningless short lines, garbled English, and end-of-video noise tokens.
+- Add a quality report listing suspect subtitles: ultra-short fragments, repeated short lines, overlapping timing, blanks, garbled text, leftover Japanese, overly long translations, and so on.
+- Support batch processing of a directory of videos.
+- Support multiple output formats: source SRT, Chinese SRT, bilingual SRT, etc.
