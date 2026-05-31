@@ -23,6 +23,7 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
+CLAUDE.md
 
 # Logs / temp
 *.log

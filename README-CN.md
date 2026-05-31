@@ -356,6 +356,7 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 0
 
 - `README.md`、`README-CN.md`、`requirements.txt`
 - `scripts/`
+- `tests/`
 - `.gitignore` 与目录占位文件
 
 不要提交：

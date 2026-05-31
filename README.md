@@ -356,6 +356,7 @@ Commit source files and documentation:
 
 - `README.md`, `README-CN.md`, `requirements.txt`
 - `scripts/`
+- `tests/`
 - `.gitignore` and placeholder files
 
 Do not commit:
