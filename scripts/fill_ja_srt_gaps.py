@@ -22,6 +22,8 @@ from transcribe_ja_srt import (
     collect_entries,
     load_model,
     srt_time,
+    transcribe_audio,
+    write_entries,
 )
 
 
@@ -182,8 +184,9 @@ def convert_existing(entries: list[Entry]) -> list[SubtitleEntry]:
     return [SubtitleEntry(item.start, item.end, item.text) for item in entries]
 
 
-def fill_gaps(args: argparse.Namespace) -> FillStats:
-    existing_entries = parse_srt(args.input)
+def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> FillStats:
+    if existing_entries is None:
+        existing_entries = parse_srt(args.input)
     if not existing_entries:
         raise SystemExit(f"No SRT entries found: {args.input}")
 
@@ -213,7 +216,8 @@ def fill_gaps(args: argparse.Namespace) -> FillStats:
             candidate_clips.extend(split_clip(cluster, args.max_clip_seconds))
 
     stats.candidate_clips = len(candidate_clips)
-    model = load_model(str(args.model))
+    if model is None:
+        model = load_model(str(args.model))
     audio = decode_audio(str(args.audio), sampling_rate=16000)
 
     filled_entries: list[SubtitleEntry] = []
@@ -226,6 +230,9 @@ def fill_gaps(args: argparse.Namespace) -> FillStats:
                 stats.filtered_entries += 1
                 continue
             if is_duplicate_of_nearby(entry, existing_entries, args.duplicate_window_seconds):
+                stats.filtered_entries += 1
+                continue
+            if is_duplicate_of_nearby(entry, filled_entries, args.duplicate_window_seconds):
                 stats.filtered_entries += 1
                 continue
             if overlap_seconds(Interval(entry.start, entry.end), covered) > args.max_existing_overlap_seconds:
@@ -258,10 +265,17 @@ def fill_gaps(args: argparse.Namespace) -> FillStats:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fill likely missed Japanese SRT gaps using audio-aware VAD clips.")
-    parser.add_argument("input", type=Path, help="Input Japanese SRT")
+    parser.add_argument("input", type=Path, nargs="?", help="Input Japanese SRT (omit when using --transcribe-output)")
     parser.add_argument("--audio", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--fills-output", type=Path)
+    parser.add_argument(
+        "--transcribe-output",
+        type=Path,
+        help="Transcribe the audio first (sharing one loaded model), write the raw Japanese SRT here, then fill gaps.",
+    )
+    parser.add_argument("--condition-on-previous-text", action="store_true")
+    parser.add_argument("--no-vad", action="store_true")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--language", default="ja")
     parser.add_argument("--beam-size", type=int, default=5)
@@ -289,7 +303,16 @@ def main() -> None:
     parser.add_argument("--duplicate-window-seconds", type=float, default=8.0)
     args = parser.parse_args()
 
-    fill_gaps(args)
+    if args.transcribe_output:
+        model = load_model(str(args.model))
+        entries = transcribe_audio(model, args.audio, args)
+        write_entries(entries, args.transcribe_output)
+        print(f"Wrote {args.transcribe_output}")
+        fill_gaps(args, model=model, existing_entries=entries)
+    else:
+        if args.input is None:
+            raise SystemExit("input SRT is required unless --transcribe-output is set")
+        fill_gaps(args)
 
 
 if __name__ == "__main__":

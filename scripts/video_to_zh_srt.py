@@ -90,48 +90,50 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
         "16000",
         str(audio),
     ])
-    transcribe_command = [
-        sys.executable,
-        str(TRANSCRIBE_SCRIPT),
-        str(audio),
-        "--output",
-        str(ja_srt),
-        "--model",
-        str(WHISPER_MODEL),
-        "--language",
-        args.language,
-        "--min-duration",
-        str(args.min_duration),
-        "--max-duration",
-        str(args.max_duration),
-        "--max-chars",
-        str(args.max_chars),
-        "--vad-threshold",
-        str(args.vad_threshold),
-        "--vad-min-silence-ms",
-        str(args.vad_min_silence_ms),
-        "--vad-speech-pad-ms",
-        str(args.vad_speech_pad_ms),
-        "--max-word-gap",
-        str(args.max_word_gap),
-        "--max-merge-gap",
-        str(args.max_merge_gap),
-    ]
-    if args.condition_on_previous_text:
-        transcribe_command.append("--condition-on-previous-text")
-    if args.no_vad:
-        transcribe_command.append("--no-vad")
-    run(transcribe_command)
-
-    if not args.skip_gap_fill:
+    if args.skip_gap_fill:
+        transcribe_command = [
+            sys.executable,
+            str(TRANSCRIBE_SCRIPT),
+            str(audio),
+            "--output",
+            str(ja_srt),
+            "--model",
+            str(WHISPER_MODEL),
+            "--language",
+            args.language,
+            "--min-duration",
+            str(args.min_duration),
+            "--max-duration",
+            str(args.max_duration),
+            "--max-chars",
+            str(args.max_chars),
+            "--vad-threshold",
+            str(args.vad_threshold),
+            "--vad-min-silence-ms",
+            str(args.vad_min_silence_ms),
+            "--vad-speech-pad-ms",
+            str(args.vad_speech_pad_ms),
+            "--max-word-gap",
+            str(args.max_word_gap),
+            "--max-merge-gap",
+            str(args.max_merge_gap),
+        ]
+        if args.condition_on_previous_text:
+            transcribe_command.append("--condition-on-previous-text")
+        if args.no_vad:
+            transcribe_command.append("--no-vad")
+        run(transcribe_command)
+    else:
+        # Transcribe and gap-fill share one loaded Whisper model in a single process.
         filled_ja_srt = job_dir / f"{video.stem}.filled.ja.srt"
         fills_srt = job_dir / f"{video.stem}.fills.ja.srt"
         fill_command = [
             sys.executable,
             str(FILL_GAPS_SCRIPT),
-            str(ja_srt),
             "--audio",
             str(audio),
+            "--transcribe-output",
+            str(ja_srt),
             "--output",
             str(filled_ja_srt),
             "--fills-output",
@@ -165,6 +167,10 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             "--min-fill-chars",
             str(args.fill_min_chars),
         ]
+        if args.condition_on_previous_text:
+            fill_command.append("--condition-on-previous-text")
+        if args.no_vad:
+            fill_command.append("--no-vad")
         run(fill_command)
         translate_input_srt = filled_ja_srt
 
@@ -253,6 +259,12 @@ def main() -> None:
         help="Do not copy the final Chinese SRT next to the input video",
     )
     args = parser.parse_args()
+
+    if args.keep_audio:
+        print("Warning: --keep-audio is deprecated and has no effect (audio is kept by default).", flush=True)
+
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")
 
     require_file(WHISPER_MODEL / "model.bin", "Whisper model")
     require_file(TRANSLATE_MODEL, "HY-MT model")

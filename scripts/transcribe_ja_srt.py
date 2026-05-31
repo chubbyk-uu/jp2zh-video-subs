@@ -55,7 +55,7 @@ def word_text(word) -> str:
     return str(getattr(word, "word", "")).strip()
 
 
-def word_timestamps_are_reliable(segment, words: list, max_word_gap: float) -> bool:
+def word_timestamps_are_reliable(segment, words: list) -> bool:
     if not words:
         return False
 
@@ -97,7 +97,7 @@ def segment_entries(
         and getattr(word, "start", None) is not None
         and getattr(word, "end", None) is not None
     ]
-    if not word_timestamps_are_reliable(segment, words, max_word_gap):
+    if not word_timestamps_are_reliable(segment, words):
         start, end = repaired_segment_times(segment, text, min_duration, max_duration)
         return [SubtitleEntry(start, end, text)]
 
@@ -203,6 +203,34 @@ def load_model(model_name_or_path: str) -> WhisperModel:
         return WhisperModel(model_name_or_path, device="cpu", compute_type="int8")
 
 
+def transcribe_audio(model, audio_path: Path, args: argparse.Namespace) -> list[SubtitleEntry]:
+    vad_parameters = None
+    if not args.no_vad:
+        vad_parameters = {
+            "threshold": args.vad_threshold,
+            "min_silence_duration_ms": args.vad_min_silence_ms,
+            "speech_pad_ms": args.vad_speech_pad_ms,
+        }
+    segments, info = model.transcribe(
+        str(audio_path),
+        language=args.language,
+        beam_size=5,
+        vad_filter=not args.no_vad,
+        vad_parameters=vad_parameters,
+        word_timestamps=True,
+        condition_on_previous_text=args.condition_on_previous_text,
+    )
+    print(f"Detected language: {info.language} ({info.language_probability:.2f})")
+    return collect_entries(
+        segments,
+        args.min_duration,
+        args.max_duration,
+        args.max_chars,
+        args.max_word_gap,
+        args.max_merge_gap,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("audio", type=Path)
@@ -222,31 +250,7 @@ def main() -> None:
     args = parser.parse_args()
 
     model = load_model(args.model)
-    vad_parameters = None
-    if not args.no_vad:
-        vad_parameters = {
-            "threshold": args.vad_threshold,
-            "min_silence_duration_ms": args.vad_min_silence_ms,
-            "speech_pad_ms": args.vad_speech_pad_ms,
-        }
-    segments, info = model.transcribe(
-        str(args.audio),
-        language=args.language,
-        beam_size=5,
-        vad_filter=not args.no_vad,
-        vad_parameters=vad_parameters,
-        word_timestamps=True,
-        condition_on_previous_text=args.condition_on_previous_text,
-    )
-    print(f"Detected language: {info.language} ({info.language_probability:.2f})")
-    entries = collect_entries(
-        segments,
-        args.min_duration,
-        args.max_duration,
-        args.max_chars,
-        args.max_word_gap,
-        args.max_merge_gap,
-    )
+    entries = transcribe_audio(model, args.audio, args)
     write_entries(entries, args.output)
     print(f"Wrote {args.output}")
 
