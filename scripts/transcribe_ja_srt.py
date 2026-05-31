@@ -6,6 +6,8 @@ from pathlib import Path
 
 from faster_whisper import WhisperModel
 
+from srt_utils import compact_text, srt_time
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
 DEFAULT_MODEL = PROJECT_ROOT / "models" / "faster-whisper-large-v3"
@@ -20,10 +22,6 @@ class SubtitleEntry:
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(value, maximum))
-
-
-def compact_text(text: str) -> str:
-    return "".join(text.split())
 
 
 def estimate_display_duration(text: str, min_duration: float, max_duration: float) -> float:
@@ -175,12 +173,16 @@ def collect_entries(
     return merge_short_entries(entries, max_merge_gap, max_chars)
 
 
-def srt_time(seconds: float) -> str:
-    milliseconds = int(round(seconds * 1000))
-    hours, remainder = divmod(milliseconds, 3_600_000)
-    minutes, remainder = divmod(remainder, 60_000)
-    secs, millis = divmod(remainder, 1000)
-    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
+def resolve_overlaps(entries: list[SubtitleEntry]) -> list[SubtitleEntry]:
+    """Sort entries and trim any overlap so each subtitle ends no later than the next starts.
+
+    Trimming is skipped when two entries share a start time, to avoid creating a
+    zero-duration cue."""
+    ordered = sorted(entries, key=lambda item: (item.start, item.end))
+    for previous, current in zip(ordered, ordered[1:]):
+        if previous.end > current.start and current.start > previous.start:
+            previous.end = current.start
+    return ordered
 
 
 def write_entries(entries: list[SubtitleEntry], output_path: Path) -> None:
@@ -251,7 +253,7 @@ def main() -> None:
 
     model = load_model(args.model)
     entries = transcribe_audio(model, args.audio, args)
-    write_entries(entries, args.output)
+    write_entries(resolve_overlaps(entries), args.output)
     print(f"Wrote {args.output}")
 
 

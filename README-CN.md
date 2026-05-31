@@ -14,6 +14,8 @@
 4. 用本地 `HY-MT1.5-7B-GGUF` 把补漏后的日语 SRT 翻译成简体中文字幕 SRT。
 5. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕和中文字幕里的日文残留。
 
+开启二阶段补漏时（默认开启），第 2、3 步会在同一个进程里完成，Whisper 模型只加载一次，而不是加载两次。翻译阶段仍是独立进程，这样 Whisper 和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
+
 项目不依赖在线 API。模型文件不包含在仓库里，也不建议提交到 Git。
 
 ## 目录结构
@@ -29,10 +31,12 @@
 │   ├── transcribe_ja_srt.py         # 音频到日语 SRT
 │   ├── fill_ja_srt_gaps.py          # 基于 WAV 的日语字幕二阶段补漏
 │   ├── quality_report.py            # 字幕质量报告
-│   └── translate_srt_hymt.py        # 日语 SRT 到中文字幕 SRT
+│   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕 SRT
+│   └── srt_utils.py                 # 共享的 SRT 解析、时间和区间工具
 ├── subtitles/
 │   ├── ja/                          # 可选：保存日语 SRT
 │   └── zh/                          # 可选：保存中文字幕 SRT
+├── tests/                           # 纯函数的 pytest 单元测试
 ├── videos/                          # 输入视频
 └── work/                            # 中间文件
 ```
@@ -294,6 +298,15 @@ PY
 ```
 
 如果输出里能看到 `CUDA`、`CUDA0` 或 `offloaded ... layers to GPU`，说明翻译模型可以使用 GPU。
+
+## 测试
+
+纯函数部分（SRT 解析、时间换算、区间计算、噪声/重复判定、翻译清洗）有 `pytest` 单元测试覆盖，不需要模型或 GPU：
+
+```bash
+python -m pip install pytest
+python -m pytest tests/ -q
+```
 
 ## 常见问题
 

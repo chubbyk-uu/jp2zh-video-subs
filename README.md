@@ -14,6 +14,8 @@ The one-command pipeline performs these steps:
 4. Translate the filled Japanese SRT into Simplified Chinese with local `HY-MT1.5-7B-GGUF`.
 5. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese text left in Chinese subtitles.
 
+When gap filling is enabled (the default), steps 2 and 3 run in a single process that loads the Whisper model once, instead of loading it twice. The translation step stays in its own process so the Whisper and translation models never share VRAM. All generated SRTs are sorted and de-overlapped so cues never overlap or go out of order.
+
 No online API is required for inference. Model files are not included in this repository and should not be committed.
 
 ## Project Layout
@@ -29,10 +31,12 @@ No online API is required for inference. Model files are not included in this re
 │   ├── transcribe_ja_srt.py         # WAV/audio to Japanese SRT
 │   ├── fill_ja_srt_gaps.py          # Audio-aware Japanese SRT gap filling
 │   ├── quality_report.py            # Subtitle quality report
-│   └── translate_srt_hymt.py        # Japanese SRT to Chinese SRT
+│   ├── translate_srt_hymt.py        # Japanese SRT to Chinese SRT
+│   └── srt_utils.py                 # Shared SRT parsing, timing, and interval helpers
 ├── subtitles/
 │   ├── ja/                          # Optional Japanese SRT storage
 │   └── zh/                          # Optional Chinese SRT storage
+├── tests/                           # Pytest unit tests for the pure helpers
 ├── videos/                          # Input videos
 └── work/                            # Intermediate files
 ```
@@ -294,6 +298,15 @@ PY
 ```
 
 If the output includes `CUDA`, `CUDA0`, or `offloaded ... layers to GPU`, translation can use the GPU.
+
+## Testing
+
+The pure helper functions (SRT parsing, timing, interval math, noise/duplicate detection, translation cleanup) are covered by `pytest` and do not need the models or a GPU:
+
+```bash
+python -m pip install pytest
+python -m pytest tests/ -q
+```
 
 ## Troubleshooting
 

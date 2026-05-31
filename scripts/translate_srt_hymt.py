@@ -7,6 +7,8 @@ from pathlib import Path
 
 from llama_cpp import Llama
 
+from srt_utils import compact_text
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
 DEFAULT_MODEL = PROJECT_ROOT / "models" / "HY-MT1.5-7B-GGUF" / "HY-MT1.5-7B-Q4_K_M.gguf"
@@ -24,7 +26,7 @@ def parse_srt(path: Path) -> list[Entry]:
     entries: list[Entry] = []
     for block in blocks:
         lines = block.splitlines()
-        if len(lines) < 3:
+        if len(lines) < 3 or "-->" not in lines[1]:
             continue
         entries.append(Entry(lines[0].strip(), lines[1].strip(), "\n".join(lines[2:]).strip()))
     return entries
@@ -48,9 +50,7 @@ def clean_translation(text: str) -> str:
 
 
 def normalize_source(text: str) -> str:
-    replacements = {
-        "禁欲チャット": "禁欲ちゃんと",
-    }
+    replacements: dict[str, str] = {}
     for source, target in replacements.items():
         text = text.replace(source, target)
     return text
@@ -88,10 +88,6 @@ def looks_context_leaked(source: str, translated: str) -> bool:
     if len(source_compact) <= 2 and len(translated_compact) > 10:
         return True
     return len(translated_compact) > max(36, len(source_compact) * 3 + 18)
-
-
-def compact_text(text: str) -> str:
-    return re.sub(r"\s+", "", text)
 
 
 def translate_one(llm: Llama, text: str, context: str, extra_instruction: str = "") -> str:

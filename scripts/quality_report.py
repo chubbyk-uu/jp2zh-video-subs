@@ -6,6 +6,16 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from srt_utils import (
+    Interval,
+    compact_text,
+    format_time,
+    merge_intervals,
+    overlap_seconds,
+    parse_time,
+    srt_gaps,
+)
+
 
 @dataclass
 class Entry:
@@ -13,36 +23,6 @@ class Entry:
     start: float
     end: float
     text: str
-
-
-@dataclass
-class Interval:
-    start: float
-    end: float
-
-
-def parse_time(value: str) -> float:
-    hours, minutes, rest = value.split(":")
-    seconds, milliseconds = rest.split(",")
-    return (
-        int(hours) * 3600
-        + int(minutes) * 60
-        + int(seconds)
-        + int(milliseconds) / 1000
-    )
-
-
-def format_time(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    hours = int(seconds // 3600)
-    seconds -= hours * 3600
-    minutes = int(seconds // 60)
-    seconds -= minutes * 60
-    return f"{hours:02}:{minutes:02}:{seconds:06.3f}"
-
-
-def compact_text(text: str) -> str:
-    return re.sub(r"\s+", "", text)
 
 
 def parse_srt(path: Path | None) -> list[Entry]:
@@ -80,35 +60,10 @@ def percentile(values: list[float], q: float) -> float:
     return sorted_values[lower] * (upper - position) + sorted_values[upper] * (position - lower)
 
 
-def overlap_seconds(interval: Interval, intervals: list[Interval]) -> float:
-    total = 0.0
-    for item in intervals:
-        if item.end <= interval.start:
-            continue
-        if item.start >= interval.end:
-            break
-        total += max(0.0, min(interval.end, item.end) - max(interval.start, item.start))
-    return total
-
-
 def padded_intervals(entries: list[Entry], padding: float) -> list[Interval]:
     return merge_intervals(
         [Interval(max(0.0, entry.start - padding), entry.end + padding) for entry in entries]
     )
-
-
-def merge_intervals(intervals: list[Interval]) -> list[Interval]:
-    if not intervals:
-        return []
-    intervals = sorted(intervals, key=lambda item: item.start)
-    merged = [Interval(intervals[0].start, intervals[0].end)]
-    for item in intervals[1:]:
-        last = merged[-1]
-        if item.start <= last.end:
-            last.end = max(last.end, item.end)
-        else:
-            merged.append(Interval(item.start, item.end))
-    return merged
 
 
 def speech_intervals_from_audio(
@@ -116,11 +71,13 @@ def speech_intervals_from_audio(
     threshold: float,
     min_silence_ms: int,
     speech_pad_ms: int,
+    audio=None,
 ) -> list[Interval]:
     from faster_whisper.audio import decode_audio
     from faster_whisper.vad import VadOptions, get_speech_timestamps
 
-    audio = decode_audio(str(audio_path), sampling_rate=16000)
+    if audio is None:
+        audio = decode_audio(str(audio_path), sampling_rate=16000)
     options = VadOptions(
         threshold=threshold,
         min_silence_duration_ms=min_silence_ms,
@@ -128,14 +85,6 @@ def speech_intervals_from_audio(
     )
     timestamps = get_speech_timestamps(audio, options, sampling_rate=16000)
     return [Interval(item["start"] / 16000, item["end"] / 16000) for item in timestamps]
-
-
-def srt_gaps(entries: list[Entry]) -> list[Interval]:
-    gaps: list[Interval] = []
-    for previous, current in zip(entries, entries[1:]):
-        if current.start > previous.end:
-            gaps.append(Interval(previous.end, current.start))
-    return gaps
 
 
 def adjacent_duplicate_candidates(ja_entries: list[Entry], zh_entries: list[Entry]) -> list[str]:

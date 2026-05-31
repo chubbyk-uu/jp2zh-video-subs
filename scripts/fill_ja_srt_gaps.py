@@ -9,19 +9,23 @@ from faster_whisper.audio import decode_audio
 
 from quality_report import (
     Entry,
+    parse_srt,
+    speech_intervals_from_audio,
+)
+from srt_utils import (
     Interval,
     compact_text,
     merge_intervals,
     overlap_seconds,
-    parse_srt,
-    speech_intervals_from_audio,
+    srt_gaps,
+    srt_time,
 )
 from transcribe_ja_srt import (
     DEFAULT_MODEL,
     SubtitleEntry,
     collect_entries,
     load_model,
-    srt_time,
+    resolve_overlaps,
     transcribe_audio,
     write_entries,
 )
@@ -40,14 +44,6 @@ def existing_intervals(entries: list[Entry], padding: float) -> list[Interval]:
     return merge_intervals(
         [Interval(max(0.0, entry.start - padding), entry.end + padding) for entry in entries]
     )
-
-
-def srt_gaps(entries: list[Entry]) -> list[Interval]:
-    gaps: list[Interval] = []
-    for previous, current in zip(entries, entries[1:]):
-        if current.start > previous.end:
-            gaps.append(Interval(previous.end, current.start))
-    return gaps
 
 
 def speech_clusters_for_gap(
@@ -190,11 +186,13 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
     if not existing_entries:
         raise SystemExit(f"No SRT entries found: {args.input}")
 
+    audio = decode_audio(str(args.audio), sampling_rate=16000)
     speech_intervals = speech_intervals_from_audio(
         args.audio,
         args.vad_threshold,
         args.vad_min_silence_ms,
         args.vad_speech_pad_ms,
+        audio=audio,
     )
     covered = existing_intervals(existing_entries, args.existing_pad_seconds)
     gaps = srt_gaps(existing_entries)
@@ -218,7 +216,6 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
     stats.candidate_clips = len(candidate_clips)
     if model is None:
         model = load_model(str(args.model))
-    audio = decode_audio(str(args.audio), sampling_rate=16000)
 
     filled_entries: list[SubtitleEntry] = []
     for index, clip in enumerate(candidate_clips, start=1):
@@ -241,8 +238,7 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
             filled_entries.append(entry)
 
     stats.kept_entries = len(filled_entries)
-    merged = convert_existing(existing_entries) + filled_entries
-    merged.sort(key=lambda item: (item.start, item.end, item.text))
+    merged = resolve_overlaps(convert_existing(existing_entries) + filled_entries)
     write_srt(merged, args.output)
 
     if args.fills_output:
@@ -305,7 +301,9 @@ def main() -> None:
 
     if args.transcribe_output:
         model = load_model(str(args.model))
-        entries = transcribe_audio(model, args.audio, args)
+        # Resolve overlaps so the intermediate SRT matches standalone transcribe
+        # output, and feed the resolved entries into gap filling.
+        entries = resolve_overlaps(transcribe_audio(model, args.audio, args))
         write_entries(entries, args.transcribe_output)
         print(f"Wrote {args.transcribe_output}")
         fill_gaps(args, model=model, existing_entries=entries)
