@@ -11,6 +11,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().p
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt.py"
 TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_hymt.py"
+QUALITY_REPORT_SCRIPT = SCRIPTS_DIR / "quality_report.py"
+FILL_GAPS_SCRIPT = SCRIPTS_DIR / "fill_ja_srt_gaps.py"
 WHISPER_MODEL = PROJECT_ROOT / "models" / "faster-whisper-large-v3"
 TRANSLATE_MODEL = PROJECT_ROOT / "models" / "HY-MT1.5-7B-GGUF" / "HY-MT1.5-7B-Q4_K_M.gguf"
 VIDEO_EXTENSIONS = {
@@ -74,6 +76,7 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
     job_dir.mkdir(parents=True, exist_ok=True)
     audio = job_dir / f"{video.stem}.wav"
     ja_srt = job_dir / f"{video.stem}.ja.srt"
+    translate_input_srt = ja_srt
 
     run([
         "ffmpeg",
@@ -109,25 +112,99 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
         str(args.vad_min_silence_ms),
         "--vad-speech-pad-ms",
         str(args.vad_speech_pad_ms),
+        "--max-word-gap",
+        str(args.max_word_gap),
+        "--max-merge-gap",
+        str(args.max_merge_gap),
     ]
     if args.condition_on_previous_text:
         transcribe_command.append("--condition-on-previous-text")
     if args.no_vad:
         transcribe_command.append("--no-vad")
     run(transcribe_command)
-    run([
+
+    if not args.skip_gap_fill:
+        filled_ja_srt = job_dir / f"{video.stem}.filled.ja.srt"
+        fills_srt = job_dir / f"{video.stem}.fills.ja.srt"
+        fill_command = [
+            sys.executable,
+            str(FILL_GAPS_SCRIPT),
+            str(ja_srt),
+            "--audio",
+            str(audio),
+            "--output",
+            str(filled_ja_srt),
+            "--fills-output",
+            str(fills_srt),
+            "--model",
+            str(WHISPER_MODEL),
+            "--language",
+            args.language,
+            "--min-duration",
+            str(args.min_duration),
+            "--max-duration",
+            str(args.max_duration),
+            "--max-chars",
+            str(args.max_chars),
+            "--max-word-gap",
+            str(args.max_word_gap),
+            "--max-merge-gap",
+            str(args.max_merge_gap),
+            "--vad-threshold",
+            str(args.vad_threshold),
+            "--vad-min-silence-ms",
+            str(args.vad_min_silence_ms),
+            "--vad-speech-pad-ms",
+            str(args.vad_speech_pad_ms),
+            "--min-gap-seconds",
+            str(args.fill_min_gap_seconds),
+            "--min-speech-seconds",
+            str(args.fill_min_speech_seconds),
+            "--max-clip-seconds",
+            str(args.fill_max_clip_seconds),
+            "--min-fill-chars",
+            str(args.fill_min_chars),
+        ]
+        run(fill_command)
+        translate_input_srt = filled_ja_srt
+
+    translate_command = [
         sys.executable,
         str(TRANSLATE_SCRIPT),
-        str(ja_srt),
+        str(translate_input_srt),
         "--output",
         str(output),
         "--model-path",
         str(TRANSLATE_MODEL),
         "--context-size",
         str(args.context_size),
-    ])
+    ]
+    run(translate_command)
 
-    if not args.keep_audio:
+    if not args.skip_quality_report:
+        report_path = job_dir / f"{video.stem}.quality.txt"
+        quality_command = [
+            sys.executable,
+            str(QUALITY_REPORT_SCRIPT),
+            "--ja-srt",
+            str(translate_input_srt),
+            "--zh-srt",
+            str(output),
+            "--audio",
+            str(audio),
+            "--output",
+            str(report_path),
+            "--vad-threshold",
+            str(args.vad_threshold),
+            "--vad-min-silence-ms",
+            str(args.vad_min_silence_ms),
+            "--vad-speech-pad-ms",
+            str(args.vad_speech_pad_ms),
+        ]
+        run(quality_command)
+        print(f"Quality report: {report_path}")
+
+    if args.delete_audio:
         audio.unlink(missing_ok=True)
 
     copied_output = video.parent / output.name
@@ -138,6 +215,8 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
     if not args.no_copy_to_video_dir:
         print(f"Chinese SRT next to video: {copied_output}")
     print(f"Intermediate Japanese SRT: {ja_srt}")
+    if translate_input_srt != ja_srt:
+        print(f"Gap-filled Japanese SRT: {translate_input_srt}")
 
 
 def main() -> None:
@@ -148,8 +227,11 @@ def main() -> None:
     parser.add_argument("--work-dir", type=Path, default=PROJECT_ROOT / "work")
     parser.add_argument("--recursive", action="store_true", help="Process videos in subdirectories")
     parser.add_argument("--continue-on-error", action="store_true", help="Continue batch processing after a video fails")
-    parser.add_argument("--keep-audio", action="store_true", help="Keep extracted WAV audio")
-    parser.add_argument("--context-size", type=int, default=2)
+    parser.add_argument("--keep-audio", action="store_true", help="Deprecated: audio is kept by default")
+    parser.add_argument("--delete-audio", action="store_true", help="Delete extracted WAV audio after processing")
+    parser.add_argument("--skip-quality-report", action="store_true", help="Do not write a quality report")
+    parser.add_argument("--skip-gap-fill", action="store_true", help="Do not run the audio-aware gap fill stage")
+    parser.add_argument("--context-size", type=int, default=1)
     parser.add_argument("--language", default="ja")
     parser.add_argument("--condition-on-previous-text", action="store_true")
     parser.add_argument("--min-duration", type=float, default=1.0)
@@ -159,6 +241,12 @@ def main() -> None:
     parser.add_argument("--vad-threshold", type=float, default=0.35)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
+    parser.add_argument("--max-word-gap", type=float, default=6.0)
+    parser.add_argument("--max-merge-gap", type=float, default=1.0)
+    parser.add_argument("--fill-min-gap-seconds", type=float, default=10.0)
+    parser.add_argument("--fill-min-speech-seconds", type=float, default=4.0)
+    parser.add_argument("--fill-max-clip-seconds", type=float, default=45.0)
+    parser.add_argument("--fill-min-chars", type=int, default=3)
     parser.add_argument(
         "--no-copy-to-video-dir",
         action="store_true",
@@ -170,6 +258,8 @@ def main() -> None:
     require_file(TRANSLATE_MODEL, "HY-MT model")
     require_file(TRANSCRIBE_SCRIPT, "transcription script")
     require_file(TRANSLATE_SCRIPT, "translation script")
+    require_file(QUALITY_REPORT_SCRIPT, "quality report script")
+    require_file(FILL_GAPS_SCRIPT, "gap fill script")
 
     input_path = args.input.resolve()
     videos = discover_videos(input_path, args.recursive)

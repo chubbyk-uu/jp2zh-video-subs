@@ -1,37 +1,45 @@
 # Local Video Subtitle Pipeline
 
-[中文版 README](README_CN.md)
+English | [Chinese](README-CN.md)
 
-This project automatically generates Simplified Chinese SRT subtitles from video files. The default pipeline targets Japanese speech:
+This project generates Simplified Chinese SRT subtitles from local video files. The default pipeline is tuned for Japanese audio and runs fully offline after the required models are downloaded.
 
-1. Extract a 16 kHz mono WAV track from the video with `ffmpeg`.
-2. Transcribe Japanese audio into a source-language SRT with the local `faster-whisper-large-v3` model.
-3. Translate the source SRT into Simplified Chinese with the local `HY-MT1.5-7B-GGUF` model.
+## What It Does
 
-All inference runs locally; no online APIs are required. The model files must be downloaded the first time you reproduce the setup and should not be committed to GitHub.
+The one-command pipeline performs these steps:
 
-## Directory Layout
+1. Extract a 16 kHz mono WAV file from the input video with `ffmpeg`.
+2. Transcribe Japanese audio into a Japanese SRT with local `faster-whisper-large-v3`.
+3. Run an audio-aware second pass to fill likely missed speech in subtitle gaps.
+4. Translate the filled Japanese SRT into Simplified Chinese with local `HY-MT1.5-7B-GGUF`.
+5. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese text left in Chinese subtitles.
+
+No online API is required for inference. Model files are not included in this repository and should not be committed.
+
+## Project Layout
 
 ```text
 .
-├── models/                         # Local model files, do not commit
-│   ├── faster-whisper-large-v3/     # CTranslate2-format Whisper ASR model
+├── models/                         # Local models, not committed
+│   ├── faster-whisper-large-v3/     # CTranslate2 Whisper ASR model
 │   └── HY-MT1.5-7B-GGUF/            # GGUF translation model
-├── outputs/                         # Final Chinese subtitle output
+├── outputs/                         # Final Chinese SRT files
 ├── scripts/
-│   ├── video_to_zh_srt.py           # One-shot: video → Chinese SRT
-│   ├── transcribe_ja_srt.py         # Audio → Japanese SRT
-│   └── translate_srt_hymt.py        # Source SRT → Chinese SRT
+│   ├── video_to_zh_srt.py           # One-command video-to-Chinese-SRT pipeline
+│   ├── transcribe_ja_srt.py         # WAV/audio to Japanese SRT
+│   ├── fill_ja_srt_gaps.py          # Audio-aware Japanese SRT gap filling
+│   ├── quality_report.py            # Subtitle quality report
+│   └── translate_srt_hymt.py        # Japanese SRT to Chinese SRT
 ├── subtitles/
-│   ├── ja/                          # Optional: Japanese SRT archive
-│   └── zh/                          # Optional: Chinese SRT archive
+│   ├── ja/                          # Optional Japanese SRT storage
+│   └── zh/                          # Optional Chinese SRT storage
 ├── videos/                          # Input videos
 └── work/                            # Intermediate files
 ```
 
-## Environment
+## Requirements
 
-Verified setup:
+Verified environment:
 
 - OS: Ubuntu 24.04 / Linux x86_64
 - Python: 3.11
@@ -42,40 +50,23 @@ Verified setup:
 
 Recommended hardware:
 
-- GPU: an NVIDIA GPU with 12 GB VRAM or more is preferred. With less VRAM, lower the concurrency, fall back to CPU, or pick smaller ASR/translation models.
+- GPU: NVIDIA GPU with 12 GB VRAM or more is recommended.
 - CPU: 8 cores or more.
 - RAM: 16 GB minimum, 32 GB recommended.
-- Disk: keep at least 10 GB free. The two default models take roughly:
-  - `faster-whisper-large-v3`: ~2.9 GB
-  - `HY-MT1.5-7B-Q4_K_M.gguf`: ~4.4 GB
+- Disk: at least 10 GB free for the default models and outputs.
 
-CPU-only execution works but is noticeably slower. The scripts try CUDA first; if CUDA is not available for ASR, they fall back to CPU int8 automatically.
+CPU-only execution works, but long videos will be much slower. The ASR script tries CUDA first and falls back to CPU int8 if CUDA is unavailable.
 
-## Install Dependencies
+## Installation
 
-A Python 3.11 virtual environment is recommended:
+Create and activate a Python 3.11 virtual environment:
 
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
-```
-
-Install the Python dependencies:
-
-```bash
 python -m pip install -r requirements.txt
 ```
-
-> ⚠️ **Note:** The `llama-cpp-python` wheel on PyPI is the **CPU-only prebuilt** version, so the translation step will not use the GPU.
-> If you have an NVIDIA GPU, rebuild from source on top of the previous step (the CUDA Toolkit and a build toolchain must already be installed):
->
-> ```bash
-> CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
->   python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.23
-> ```
->
-> After the rebuild, verify with the "CUDA verification" section below that the output contains `CUDA` / `offloaded ... layers to GPU`.
 
 Install FFmpeg:
 
@@ -84,14 +75,21 @@ sudo apt update
 sudo apt install -y ffmpeg
 ```
 
-## Download the Models
+`llama-cpp-python` installed from PyPI is usually CPU-only. If you want GPU acceleration for translation, reinstall it with CUDA support after installing the CUDA toolkit and build tools:
 
-The models live on Hugging Face:
+```bash
+CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
+  python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.23
+```
+
+## Download Models
+
+Default models:
 
 - ASR: [`Systran/faster-whisper-large-v3`](https://huggingface.co/Systran/faster-whisper-large-v3)
 - Translation: [`tencent/HY-MT1.5-7B-GGUF`](https://huggingface.co/tencent/HY-MT1.5-7B-GGUF)
 
-Download them with `huggingface-hub` into the script defaults:
+Download them to the default paths:
 
 ```bash
 mkdir -p models
@@ -103,7 +101,7 @@ hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
   --local-dir models/HY-MT1.5-7B-GGUF
 ```
 
-After the download finishes, the directories should at least contain:
+Required files include:
 
 ```text
 models/faster-whisper-large-v3/model.bin
@@ -114,124 +112,131 @@ models/faster-whisper-large-v3/preprocessor_config.json
 models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
-If the `hf` command is not available, make sure the virtual environment is active and install:
+## One-Command Usage
 
-```bash
-python -m pip install -U huggingface-hub
-```
-
-Alternatively, download via Git LFS:
-
-```bash
-git lfs install
-git clone https://huggingface.co/Systran/faster-whisper-large-v3 models/faster-whisper-large-v3
-git clone https://huggingface.co/tencent/HY-MT1.5-7B-GGUF models/HY-MT1.5-7B-GGUF
-```
-
-## One-Shot Chinese Subtitles
-
-Drop a video into `videos/`, then run:
+Process one video:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4
 ```
 
-Defaults:
-
-- ASR model: `models/faster-whisper-large-v3`
-- Translation model: `models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf`
-- ASR language: Japanese (`ja`)
-- Whisper `condition_on_previous_text`: off by default, to reduce cross-line bleed and hallucinations on long videos
-- Max display time per subtitle line: 10 s by default, to avoid stretched lines over silence
-- Translation context: previous 2 source lines by default; short lines, ellipses, and suspected bleed are re-translated without context
-- VAD: an aggressive configuration is used by default to minimize missed low-volume dialogue
-- Intermediate files: `work/<video_filename>/`
-
-When the run finishes you get:
-
-- `work/input/input.ja.srt`: intermediate Japanese subtitles
-- `outputs/input.zh.srt`: final Chinese subtitles
-- `videos/input.zh.srt`: a copy of the Chinese SRT next to the input video
-
-Batch-process every video in a directory:
+Process all supported video files in a directory:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/
 ```
 
-By default, common video files in the directory are processed in filename order, including `.mp4`, `.mkv`, `.mov`, `.avi`, `.wmv`, `.flv`, `.webm`, `.m4v`, `.ts`. To recurse into subdirectories:
+Process subdirectories as well:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/ --recursive
 ```
 
+If your videos are on a Windows drive mounted by WSL, use the generic mounted Linux path:
+
+```bash
+python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
+```
+
+Do not put private local paths in public documentation or issue reports.
+
+## Default Behavior
+
+The one-command pipeline uses:
+
+- ASR model: `models/faster-whisper-large-v3`
+- Translation model: `models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf`
+- Source language: Japanese, `ja`
+- Whisper previous-text conditioning: disabled by default
+- Max subtitle display duration: 10 seconds
+- Translation context: previous 1 source subtitle in the one-command pipeline
+- VAD: enabled with a sensitive default configuration
+- Gap fill: enabled by default
+- Quality report: enabled by default
+- Extracted WAV audio: kept by default
+
+Default gap-fill parameters:
+
+- `--fill-min-gap-seconds 10`: only inspect subtitle gaps longer than 10 seconds.
+- `--fill-min-speech-seconds 4`: fill only when the gap contains at least 4 seconds of VAD speech.
+- `--fill-max-clip-seconds 45`: cap one fill clip at 45 seconds.
+- `--fill-min-chars 3`: ignore very short fill results.
+
+## Outputs
+
+For `videos/input.mp4`, the default outputs are:
+
+- `work/input/input.wav`: extracted 16 kHz mono WAV audio.
+- `work/input/input.ja.srt`: first-pass Japanese subtitles.
+- `work/input/input.filled.ja.srt`: gap-filled Japanese subtitles used for translation.
+- `work/input/input.fills.ja.srt`: only the second-pass added Japanese lines.
+- `work/input/input.quality.txt`: quality report.
+- `outputs/input.zh.srt`: final Chinese SRT.
+- `videos/input.zh.srt`: final Chinese SRT copied next to the input video.
+
 ## Common Options
 
-Set an explicit output path:
+Set output path for a single video:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
 ```
 
-Set an output directory for batch mode:
+Set output directory for batch processing:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/ --output-dir outputs
 ```
 
-The default baseline is already tuned to the `stable` profile. To change the translation context window:
+Disable gap filling:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 3
+python scripts/video_to_zh_srt.py videos/input.mp4 --skip-gap-fill
 ```
 
-If the translator starts dragging earlier lines into the current output, lower the context:
+Disable quality report generation:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 1
+python scripts/video_to_zh_srt.py videos/input.mp4 --skip-quality-report
 ```
 
-Cap the maximum display time per subtitle:
+Delete extracted WAV audio after processing:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --max-duration 8
+python scripts/video_to_zh_srt.py videos/input.mp4 --delete-audio
 ```
 
-Re-enable Whisper's previous-text conditioning:
-
-```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --condition-on-previous-text
-```
-
-For long videos with a lot of quiet dialogue, leaving this flag off is recommended. Turning it on can recover more fillers and particles, but it also makes repetition, cross-line bleed, and fragmentation more likely.
-
-Keep the extracted WAV around for debugging:
-
-```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --keep-audio
-```
-
-Skip copying the final SRT next to the input video:
+Do not copy the final SRT next to the input video:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/input.mp4 --no-copy-to-video-dir
 ```
 
-Pick a different scratch directory:
+Reduce translation context if translated lines include previous subtitles:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --work-dir work
+python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 0
 ```
 
-Keep going through the rest of the batch when one video fails:
+Use a more aggressive gap-fill setting:
+
+```bash
+python scripts/video_to_zh_srt.py videos/input.mp4 \
+  --fill-min-gap-seconds 6 \
+  --fill-min-speech-seconds 2
+```
+
+This may recover more quiet speech, but can also introduce less stable short lines.
+
+Continue batch processing after one video fails:
 
 ```bash
 python scripts/video_to_zh_srt.py videos/ --continue-on-error
 ```
 
-## Single Steps
+## Step-by-Step Usage
 
-Just the ASR step:
+Transcribe audio to Japanese SRT:
 
 ```bash
 python scripts/transcribe_ja_srt.py work/input/input.wav \
@@ -240,16 +245,35 @@ python scripts/transcribe_ja_srt.py work/input/input.wav \
   --max-duration 10
 ```
 
-Translation only, given an existing source SRT:
+Fill likely missed Japanese subtitles with WAV audio:
 
 ```bash
-python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
-  --output subtitles/zh/input.zh.srt \
-  --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
-  --context-size 2
+python scripts/fill_ja_srt_gaps.py subtitles/ja/input.ja.srt \
+  --audio work/input/input.wav \
+  --output subtitles/ja/input.filled.ja.srt \
+  --fills-output subtitles/ja/input.fills.ja.srt
 ```
 
-Limit the translation to the first N lines for quick smoke tests:
+Translate Japanese SRT to Chinese SRT:
+
+```bash
+python scripts/translate_srt_hymt.py subtitles/ja/input.filled.ja.srt \
+  --output subtitles/zh/input.zh.srt \
+  --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
+  --context-size 1
+```
+
+Generate a quality report:
+
+```bash
+python scripts/quality_report.py \
+  --ja-srt subtitles/ja/input.filled.ja.srt \
+  --zh-srt subtitles/zh/input.zh.srt \
+  --audio work/input/input.wav \
+  --output work/input/input.quality.txt
+```
+
+Translate only the first N entries for debugging:
 
 ```bash
 python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
@@ -257,9 +281,9 @@ python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
   --limit 20
 ```
 
-## CUDA Verification
+## CUDA Check
 
-Check whether `llama-cpp-python` has CUDA enabled:
+Check whether `llama-cpp-python` was built with CUDA:
 
 ```bash
 python - <<'PY'
@@ -269,122 +293,69 @@ print(info.decode() if isinstance(info, bytes) else info)
 PY
 ```
 
-If you see `CUDA`, `CUDA0`, or `offloaded ... layers to GPU` in the output, the translator is on the GPU.
+If the output includes `CUDA`, `CUDA0`, or `offloaded ... layers to GPU`, translation can use the GPU.
 
-If only CPU instruction sets are listed, reinstall the CUDA build:
+## Troubleshooting
 
-```bash
-CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
-  python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.23
-```
+### Missing Models
 
-The ASR stage uses `faster-whisper` with CUDA. The script first tries:
-
-```python
-WhisperModel(model_name_or_path, device="cuda", compute_type="float16")
-```
-
-If CUDA initialization fails, it falls back to:
-
-```python
-WhisperModel(model_name_or_path, device="cpu", compute_type="int8")
-```
-
-## Reproduction Checklist
-
-Before running, confirm:
-
-- `ffmpeg -version` prints a version banner.
-- `python --version` is 3.11 or compatible.
-- `models/faster-whisper-large-v3/model.bin` exists.
-- `models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf` exists.
-- The input video exists, e.g. `videos/input.mp4`.
-- `outputs/` and `work/` are writable.
-
-Minimal smoke test:
-
-```bash
-python scripts/video_to_zh_srt.py videos/input.mp4
-```
-
-To quickly sanity-check only the translation chain, prepare a short SRT and use `--limit`:
-
-```bash
-python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
-  --output outputs/input.sample.zh.srt \
-  --limit 5
-```
-
-## FAQ
-
-### Missing model files
-
-Errors like:
+If you see errors like:
 
 ```text
 Missing Whisper model: .../models/faster-whisper-large-v3/model.bin
 Missing HY-MT model: .../models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
-Re-download per the "Download the Models" section, keeping the directory and file names exactly as listed.
+Download the models again and keep the default directory and file names.
 
-### Translation is very slow
+### Translation Is Slow
 
-The usual cause is `llama-cpp-python` running on CPU, or GPU VRAM being too small so some layers spill onto CPU. Run the CUDA verification first. If you cannot use a GPU, CPU still works but long videos take a long time.
+Usually `llama-cpp-python` is running on CPU or the GPU does not have enough VRAM. Run the CUDA check above. CPU translation still works, but long videos will take much longer.
 
-### `ffmpeg` not found
+### `ffmpeg` Not Found
 
-Install FFmpeg and make sure it is on `PATH`:
+Install FFmpeg and confirm it is on `PATH`:
 
 ```bash
 sudo apt install -y ffmpeg
 ffmpeg -version
 ```
 
-### Translated lines bleed from earlier subtitles
+### Translated Lines Include Previous Subtitles
 
-The translator uses the previous 2 lines as context by default. If the translation grows too long or starts to bleed earlier content, lower the context:
-
-```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 1
-```
-
-The script also disables context automatically for short lines, ellipses, and fillers, and re-translates without context when the output is clearly too long.
-
-### Subtitle timing too long
-
-The ASR script enables word-level timestamps and caps abnormally long lines to `--max-duration`. The default cap is 10 s, the current `stable` baseline. If lines still linger too long, drop the cap to 8 s:
+Lower or disable translation context:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --max-duration 8
+python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 0
 ```
 
-### Non-Japanese input
+### Some Speech Is Missed
 
-The default is `language="ja"`, tuned for Japanese audio. For English, Chinese, or other languages, pass `--language` and adjust the translation prompt accordingly.
+Gap fill is enabled by default. It does not judge gaps by duration alone; it checks the WAV audio with VAD and only re-transcribes gaps with enough speech. For more aggressive filling, lower the gap or speech threshold.
 
-## GitHub Commit Notes
+### Duplicate-Looking Lines
 
-Committed in the repo:
+Check the quality report, especially `Suspicious adjacent duplicate zh entries`. The ASR step already splits long internal word gaps and merges short adjacent fragments, while translation retries adjacent duplicate-looking output once without context.
 
-- `README.md`, `README_CN.md`, `requirements.txt`
+## Git Policy
+
+Commit source files and documentation:
+
+- `README.md`, `README-CN.md`, `requirements.txt`
 - `scripts/`
-- `.gitignore` and `.gitkeep` placeholders in each directory
+- `.gitignore` and placeholder files
 
-Not committed (excluded via `.gitignore`):
+Do not commit:
 
-- `models/`: local models, downloaded from Hugging Face per above
-- `videos/`: input videos
-- `work/`: intermediate files
-- `outputs/`, `subtitles/`: generated results
-- `__pycache__/` and virtualenv directories
+- `models/`
+- private input videos
+- `work/`
+- generated `outputs/` and `subtitles/`
+- virtual environments and `__pycache__/`
 
-## Roadmap
+## Future Work
 
-- Merge over-fragmented subtitles. The `stable` baseline carries enough information, but single- or two-character lines can still appear around quiet breaths and long silences; adjacent fragments should be merged automatically.
-- Add a Whisper `initial_prompt` glossary to improve recognition of proper nouns, person names, product terms, and scene-specific vocabulary.
-- Add a term-replacement table to fix common recognition mistakes.
-- Add ASR post-processing to filter isolated punctuation, meaningless short lines, garbled English, and end-of-video noise tokens.
-- Add a quality report listing suspect subtitles: ultra-short fragments, repeated short lines, overlapping timing, blanks, garbled text, leftover Japanese, overly long translations, and so on.
-- Support batch processing of a directory of videos.
-- Support multiple output formats: source SRT, Chinese SRT, bilingual SRT, etc.
+- Add configurable ASR initial prompts for names, terms, products, and scene-specific vocabulary.
+- Add a configurable glossary for recurring names and terms.
+- Continue improving ASR post-processing for isolated symbols, meaningless short subtitles, OCR-like noise, and end-credit noise.
+- Add bilingual SRT or ASS output.

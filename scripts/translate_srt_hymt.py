@@ -90,21 +90,28 @@ def looks_context_leaked(source: str, translated: str) -> bool:
     return len(translated_compact) > max(36, len(source_compact) * 3 + 18)
 
 
-def translate_one(llm: Llama, text: str, context: str) -> str:
+def compact_text(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+def translate_one(llm: Llama, text: str, context: str, extra_instruction: str = "") -> str:
     text = normalize_source(text)
     if is_context_sensitive_short_text(text):
         context = ""
+    instruction = f"{extra_instruction}" if extra_instruction else ""
     if context:
         prompt = (
             "以下是前文字幕，仅用于理解语境，不要翻译前文，也不要输出前文：\n"
             f"<context>{context}</context>\n\n"
             "参考上面的信息，把 <current> 标签内的日语字幕翻译成自然、口语化的简体中文。"
+            f"{instruction}"
             "只输出当前句的中文纯文本译文，不要解释，不要保留日文，不要输出任何 XML 标签：\n"
             f"<current>{text}</current>"
         )
     else:
         prompt = (
             "将以下日语字幕翻译为自然、口语化的简体中文。"
+            f"{instruction}"
             "只输出译文，不要解释，不要保留日文：\n"
             f"{text}"
         )
@@ -119,10 +126,35 @@ def translate_one(llm: Llama, text: str, context: str) -> str:
     return clean_translation(result["choices"][0]["message"]["content"])
 
 
-def translate_with_retry(llm: Llama, text: str, context: str) -> str:
+def translate_with_retry(
+    llm: Llama,
+    text: str,
+    context: str,
+    previous_source: str = "",
+    previous_translation: str = "",
+) -> str:
     translated = translate_one(llm, text, context)
     if context and looks_context_leaked(text, translated):
         translated = translate_one(llm, text, "")
+    if (
+        context
+        and previous_translation
+        and compact_text(text) != compact_text(previous_source)
+        and compact_text(translated) == compact_text(previous_translation)
+    ):
+        translated = translate_one(
+            llm,
+            text,
+            "",
+            "这句和上一句原文不同，必须只翻译当前句，不能照抄上一句译文。",
+        )
+    if re.search(r"[ぁ-ゟ゠-ヿ]", translated):
+        translated = translate_one(
+            llm,
+            text,
+            "",
+            "译文中不能出现任何日文假名或片假名；人名请音译成中文。",
+        )
     return translated
 
 
@@ -142,6 +174,8 @@ def main() -> None:
     parser.add_argument("--context-size", type=int, default=2)
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
     args = parser.parse_args()
+    if args.context_size < 0:
+        raise SystemExit("--context-size must be >= 0")
 
     entries = parse_srt(args.input)
     if args.limit:
@@ -156,13 +190,23 @@ def main() -> None:
 
     with args.output.open("w", encoding="utf-8") as f:
         previous_source: list[str] = []
+        previous_translation = ""
         for entry in entries:
-            context = "\n".join(previous_source[-args.context_size :])
-            translated = translate_with_retry(llm, entry.text, context)
+            context = ""
+            if args.context_size > 0:
+                context = "\n".join(previous_source[-args.context_size :])
+            translated = translate_with_retry(
+                llm,
+                entry.text,
+                context,
+                previous_source[-1] if previous_source else "",
+                previous_translation,
+            )
             if not translated:
                 translated = entry.text
             write_entry(f, entry, translated)
             previous_source.append(normalize_source(entry.text))
+            previous_translation = translated
             print(f"{entry.index}: {translated}", flush=True)
 
     print(f"Wrote {args.output}")
