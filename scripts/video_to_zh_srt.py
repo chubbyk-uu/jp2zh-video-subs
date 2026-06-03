@@ -183,6 +183,7 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
         # Transcribe and gap-fill share one loaded Whisper model in a single process.
         filled_ja_srt = job_dir / f"{video.stem}.filled.ja.srt"
         fills_srt = job_dir / f"{video.stem}.fills.ja.srt"
+        fills_metadata = job_dir / f"{video.stem}.fills.tsv"
         fill_command = [
             sys.executable,
             str(FILL_GAPS_SCRIPT),
@@ -194,6 +195,8 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(filled_ja_srt),
             "--fills-output",
             str(fills_srt),
+            "--fills-metadata-output",
+            str(fills_metadata),
             "--model",
             str(WHISPER_MODEL),
             "--language",
@@ -285,6 +288,8 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             "--vad-speech-pad-ms",
             str(args.vad_speech_pad_ms),
         ]
+        if not args.skip_gap_fill:
+            quality_command.extend(["--fills-metadata", str(job_dir / f"{video.stem}.fills.tsv")])
         run(quality_command)
         print(f"Quality report: {report_path}")
 

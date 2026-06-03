@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 import re
 from dataclasses import dataclass
@@ -25,6 +26,21 @@ class Entry:
     text: str
 
 
+@dataclass
+class FillMetadataRow:
+    status: str
+    reason: str
+    start: float
+    end: float
+    duration: float
+    clip_start: float
+    clip_end: float
+    avg_logprob: float | None
+    no_speech_prob: float | None
+    compression_ratio: float | None
+    text: str
+
+
 def parse_srt(path: Path | None) -> list[Entry]:
     if path is None or not path.exists():
         return []
@@ -46,6 +62,37 @@ def parse_srt(path: Path | None) -> list[Entry]:
             )
         )
     return entries
+
+
+def parse_optional_float(value: str | None) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def parse_fills_metadata(path: Path | None) -> list[FillMetadataRow]:
+    if path is None or not path.exists():
+        return []
+    rows: list[FillMetadataRow] = []
+    with path.open("r", encoding="utf-8", newline="") as file:
+        reader = csv.DictReader(file, delimiter="\t")
+        for row in reader:
+            rows.append(
+                FillMetadataRow(
+                    status=row.get("status", ""),
+                    reason=row.get("reason", ""),
+                    start=float(row.get("start") or 0.0),
+                    end=float(row.get("end") or 0.0),
+                    duration=float(row.get("duration") or 0.0),
+                    clip_start=float(row.get("clip_start") or 0.0),
+                    clip_end=float(row.get("clip_end") or 0.0),
+                    avg_logprob=parse_optional_float(row.get("avg_logprob")),
+                    no_speech_prob=parse_optional_float(row.get("no_speech_prob")),
+                    compression_ratio=parse_optional_float(row.get("compression_ratio")),
+                    text=row.get("text", ""),
+                )
+            )
+    return rows
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -108,6 +155,11 @@ def adjacent_duplicate_candidates(ja_entries: list[Entry], zh_entries: list[Entr
 def build_report(args: argparse.Namespace) -> str:
     ja_entries = parse_srt(args.ja_srt)
     zh_entries = parse_srt(args.zh_srt)
+    fills_metadata = parse_fills_metadata(getattr(args, "fills_metadata", None))
+    warn_avg_logprob_below = getattr(args, "warn_avg_logprob_below", -0.80)
+    warn_no_speech_prob_above = getattr(args, "warn_no_speech_prob_above", 0.50)
+    warn_compression_ratio_above = getattr(args, "warn_compression_ratio_above", 2.20)
+    max_samples = getattr(args, "max_samples", 20)
 
     lines: list[str] = []
     lines.append("Subtitle quality report")
@@ -169,7 +221,7 @@ def build_report(args: argparse.Namespace) -> str:
             lines.append(f"vad_speech_uncovered_s: {speech_uncovered:.1f}")
             lines.append(f"vad_speech_coverage: {speech_covered / speech_total:.1%}" if speech_total > 0 else "vad_speech_coverage: n/a")
             lines.append(f"subtitle_gaps_with_vad_speech: {len(suspicious)}")
-            for gap, speech_seconds in sorted(suspicious, key=lambda item: item[1], reverse=True)[: args.max_samples]:
+            for gap, speech_seconds in sorted(suspicious, key=lambda item: item[1], reverse=True)[:max_samples]:
                 lines.append(
                     f"- {format_time(gap.start)} -> {format_time(gap.end)} "
                     f"gap={gap.end - gap.start:.1f}s vad_speech={speech_seconds:.1f}s"
@@ -183,10 +235,64 @@ def build_report(args: argparse.Namespace) -> str:
         lines.append(f"japanese_kana_left: {len(jp_left)}")
         duplicate_candidates = adjacent_duplicate_candidates(ja_entries, zh_entries)
         lines.append(f"suspicious_adjacent_duplicates: {len(duplicate_candidates)}")
-        for item in duplicate_candidates[: args.max_samples]:
+        for item in duplicate_candidates[:max_samples]:
             lines.append(f"- {item}")
-        for item in jp_left[: args.max_samples]:
+        for item in jp_left[:max_samples]:
             lines.append(f"- kana left at {item.index}: {item.text[:80]}")
+        lines.append("")
+
+    if fills_metadata:
+        kept = [item for item in fills_metadata if item.status == "kept"]
+        filtered = [item for item in fills_metadata if item.status == "filtered"]
+        logprobs = [item.avg_logprob for item in kept if item.avg_logprob is not None]
+        no_speech_probs = [item.no_speech_prob for item in kept if item.no_speech_prob is not None]
+        compression_ratios = [item.compression_ratio for item in kept if item.compression_ratio is not None]
+        low_confidence = [
+            item for item in kept
+            if (
+                (item.avg_logprob is not None and item.avg_logprob < warn_avg_logprob_below)
+                or (item.no_speech_prob is not None and item.no_speech_prob > warn_no_speech_prob_above)
+                or (item.compression_ratio is not None and item.compression_ratio > warn_compression_ratio_above)
+            )
+        ]
+        reason_counts: dict[str, int] = {}
+        for item in filtered:
+            reason_counts[item.reason] = reason_counts.get(item.reason, 0) + 1
+
+        lines.append("[Gap Fill Metadata]")
+        lines.append(f"metadata_entries: {len(fills_metadata)}")
+        lines.append(f"kept_entries: {len(kept)}")
+        lines.append(f"filtered_entries: {len(filtered)}")
+        if reason_counts:
+            lines.append(
+                "filtered_reasons: "
+                + ", ".join(f"{reason}={count}" for reason, count in sorted(reason_counts.items()))
+            )
+        if logprobs:
+            lines.append(f"kept_avg_logprob_median: {percentile(logprobs, 0.5):.2f}")
+            lines.append(f"kept_avg_logprob_min: {min(logprobs):.2f}")
+        if no_speech_probs:
+            lines.append(f"kept_no_speech_prob_median: {percentile(no_speech_probs, 0.5):.2f}")
+            lines.append(f"kept_no_speech_prob_max: {max(no_speech_probs):.2f}")
+        if compression_ratios:
+            lines.append(f"kept_compression_ratio_median: {percentile(compression_ratios, 0.5):.2f}")
+            lines.append(f"kept_compression_ratio_max: {max(compression_ratios):.2f}")
+        lines.append(f"low_confidence_kept_entries: {len(low_confidence)}")
+        for item in sorted(
+            low_confidence,
+            key=lambda value: (
+                value.avg_logprob if value.avg_logprob is not None else 0.0,
+                -(value.no_speech_prob or 0.0),
+                -(value.compression_ratio or 0.0),
+            ),
+        )[:max_samples]:
+            lines.append(
+                f"- {format_time(item.start)} -> {format_time(item.end)} "
+                f"avg_logprob={item.avg_logprob if item.avg_logprob is not None else 'n/a'} "
+                f"no_speech_prob={item.no_speech_prob if item.no_speech_prob is not None else 'n/a'} "
+                f"compression_ratio={item.compression_ratio if item.compression_ratio is not None else 'n/a'} "
+                f"text={item.text[:80]}"
+            )
         lines.append("")
 
     return "\n".join(lines)
@@ -197,6 +303,7 @@ def main() -> None:
     parser.add_argument("--ja-srt", type=Path, required=True)
     parser.add_argument("--zh-srt", type=Path)
     parser.add_argument("--audio", type=Path)
+    parser.add_argument("--fills-metadata", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--vad-threshold", type=float, default=0.35)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
@@ -204,6 +311,9 @@ def main() -> None:
     parser.add_argument("--min-gap-seconds", type=float, default=10.0)
     parser.add_argument("--min-speech-seconds", type=float, default=2.0)
     parser.add_argument("--subtitle-pad-seconds", type=float, default=0.5)
+    parser.add_argument("--warn-avg-logprob-below", type=float, default=-0.80)
+    parser.add_argument("--warn-no-speech-prob-above", type=float, default=0.50)
+    parser.add_argument("--warn-compression-ratio-above", type=float, default=2.20)
     parser.add_argument("--max-samples", type=int, default=20)
     args = parser.parse_args()
 

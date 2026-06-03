@@ -175,6 +175,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - `work/input/input.ja.srt`：第一阶段日语字幕。
 - `work/input/input.filled.ja.srt`：补漏后的日语字幕，也是默认翻译输入。
 - `work/input/input.fills.ja.srt`：二阶段新增的日语字幕片段。
+- `work/input/input.fills.tsv`：补漏置信度元数据和过滤原因。
 - `work/input/input.quality.txt`：质量报告。
 - `outputs/input.zh.srt`：最终中文字幕。
 - `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。加 `--bilingual` 时，放到视频同目录的是双语 `input.zh.ass`，而**不是** SRT（SRT 仍保留在 `outputs/`）。
@@ -264,7 +265,8 @@ python scripts/transcribe_ja_srt.py work/input/input.wav \
 python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
   --audio work/input/input.wav \
   --output work/input/input.filled.ja.srt \
-  --fills-output work/input/input.fills.ja.srt
+  --fills-output work/input/input.fills.ja.srt \
+  --fills-metadata-output work/input/input.fills.tsv
 ```
 
 已有日语 SRT，只做翻译：
@@ -292,6 +294,7 @@ python scripts/quality_report.py \
   --ja-srt work/input/input.filled.ja.srt \
   --zh-srt outputs/input.zh.srt \
   --audio work/input/input.wav \
+  --fills-metadata work/input/input.fills.tsv \
   --output work/input/input.quality.txt
 ```
 
@@ -367,6 +370,16 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ### 字幕有重复内容
 
 先查看质量报告里的 `Suspicious adjacent duplicate zh entries`。ASR 阶段会按词级时间戳切分过长内部空隙，并合并很短的相邻片段；翻译阶段也会对相邻重复译文做一次无上下文重试。
+
+### 补漏字幕置信度偏低或疑似幻觉
+
+补漏字幕是在安静或不确定的音频上补出来的，所以最容易被听错或产生幻觉。流水线会把每条补漏字幕的 Whisper 置信度记录到 `work/<名称>/<名称>.fills.tsv`，质量报告则在 `[Gap Fill Metadata]` 一节汇总，包含 `low_confidence_kept_entries` 和一份样例列表。三个指标含义：
+
+- `avg_logprob`：平均 token 对数概率，**越低越不可信**（低于 `--warn-avg-logprob-below`，默认 `-0.80` 时标记）。
+- `no_speech_prob`：该片段不是语音的概率，**越高越可能是在近乎静音处的幻觉**（高于 `--warn-no-speech-prob-above`，默认 `0.50` 时标记）。
+- `compression_ratio`：文本重复度，**越高越像重复/乱码**（高于 `--warn-compression-ratio-above`，默认 `2.20` 时标记）。
+
+按样例列表里的时间戳去日语 SRT 里抽查，再按需收紧或放宽阈值。注意：它只覆盖二阶段补漏，不含第一阶段主转写。
 
 ## Git 提交建议
 

@@ -178,6 +178,7 @@ For `path/to/input.mp4`, the default outputs are:
 - `work/input/input.ja.srt`: first-pass Japanese subtitles.
 - `work/input/input.filled.ja.srt`: gap-filled Japanese subtitles used for translation.
 - `work/input/input.fills.ja.srt`: only the second-pass added Japanese lines.
+- `work/input/input.fills.tsv`: gap-fill confidence metadata and filter reasons.
 - `work/input/input.quality.txt`: quality report.
 - `outputs/input.zh.srt`: final Chinese SRT.
 - `path/to/input.zh.srt`: final Chinese SRT copied next to the input video. With
@@ -277,7 +278,8 @@ Fill likely missed Japanese subtitles with WAV audio:
 python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
   --audio work/input/input.wav \
   --output work/input/input.filled.ja.srt \
-  --fills-output work/input/input.fills.ja.srt
+  --fills-output work/input/input.fills.ja.srt \
+  --fills-metadata-output work/input/input.fills.tsv
 ```
 
 Translate Japanese SRT to Chinese SRT:
@@ -305,6 +307,7 @@ python scripts/quality_report.py \
   --ja-srt work/input/input.filled.ja.srt \
   --zh-srt outputs/input.zh.srt \
   --audio work/input/input.wav \
+  --fills-metadata work/input/input.fills.tsv \
   --output work/input/input.quality.txt
 ```
 
@@ -380,6 +383,20 @@ Gap fill is enabled by default. It does not judge gaps by duration alone; it che
 ### Duplicate-Looking Lines
 
 Check the quality report, especially `Suspicious adjacent duplicate zh entries`. The ASR step already splits long internal word gaps and merges short adjacent fragments, while translation retries adjacent duplicate-looking output once without context.
+
+### Low-Confidence or Hallucinated Gap Fills
+
+Gap-fill lines are added on quiet or uncertain audio, so they are the most likely
+to be misheard or hallucinated. For each gap-fill entry the pipeline records the
+Whisper confidence to `work/<name>/<name>.fills.tsv`, and the quality report
+summarises it under `[Gap Fill Metadata]`, including `low_confidence_kept_entries`
+and a sample list. The three signals are:
+
+- `avg_logprob`: average token log-probability; **lower is less confident** (flagged below `--warn-avg-logprob-below`, default `-0.80`).
+- `no_speech_prob`: probability the clip is not speech; **higher means more likely a hallucination on near-silence** (flagged above `--warn-no-speech-prob-above`, default `0.50`).
+- `compression_ratio`: text repetitiveness; **higher means more repetitive/garbled** (flagged above `--warn-compression-ratio-above`, default `2.20`).
+
+Use the sample list to spot-check those timestamps in the Japanese SRT, and tighten or loosen the thresholds to taste. This only covers the second-pass gap fills, not the first-pass transcription.
 
 ## Git Policy
 

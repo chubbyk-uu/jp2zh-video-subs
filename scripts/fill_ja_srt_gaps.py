@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,14 @@ class FillStats:
     raw_entries: int = 0
     kept_entries: int = 0
     filtered_entries: int = 0
+
+
+@dataclass
+class FillMetadata:
+    entry: SubtitleEntry
+    clip: Interval
+    status: str
+    reason: str
 
 
 def existing_intervals(entries: list[Entry], padding: float) -> list[Interval]:
@@ -168,7 +177,46 @@ def transcribe_clip(
     return entries
 
 
+def confidence_text(value: float | None) -> str:
+    return "" if value is None else f"{value:.4f}"
+
+
+def write_fills_metadata(items: list[FillMetadata], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, delimiter="\t")
+        writer.writerow([
+            "status",
+            "reason",
+            "start",
+            "end",
+            "duration",
+            "clip_start",
+            "clip_end",
+            "avg_logprob",
+            "no_speech_prob",
+            "compression_ratio",
+            "text",
+        ])
+        for item in sorted(items, key=lambda value: (value.entry.start, value.entry.end, value.status)):
+            entry = item.entry
+            writer.writerow([
+                item.status,
+                item.reason,
+                f"{entry.start:.3f}",
+                f"{entry.end:.3f}",
+                f"{max(0.0, entry.end - entry.start):.3f}",
+                f"{item.clip.start:.3f}",
+                f"{item.clip.end:.3f}",
+                confidence_text(entry.avg_logprob),
+                confidence_text(entry.no_speech_prob),
+                confidence_text(entry.compression_ratio),
+                entry.text,
+            ])
+
+
 def write_srt(entries: list[SubtitleEntry], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
         for index, entry in enumerate(entries, start=1):
             file.write(f"{index}\n")
@@ -218,6 +266,7 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
         model = load_model(str(args.model))
 
     filled_entries: list[SubtitleEntry] = []
+    metadata: list[FillMetadata] = []
     for index, clip in enumerate(candidate_clips, start=1):
         print(f"[{index}/{len(candidate_clips)}] fill {clip.start:.2f}-{clip.end:.2f}", flush=True)
         raw_entries = transcribe_clip(model, audio, clip, args)
@@ -225,17 +274,22 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
         for entry in raw_entries:
             if looks_like_noise(entry.text, args.min_fill_chars):
                 stats.filtered_entries += 1
+                metadata.append(FillMetadata(entry, clip, "filtered", "noise"))
                 continue
             if is_duplicate_of_nearby(entry, existing_entries, args.duplicate_window_seconds):
                 stats.filtered_entries += 1
+                metadata.append(FillMetadata(entry, clip, "filtered", "duplicate_existing"))
                 continue
             if is_duplicate_of_nearby(entry, filled_entries, args.duplicate_window_seconds):
                 stats.filtered_entries += 1
+                metadata.append(FillMetadata(entry, clip, "filtered", "duplicate_fill"))
                 continue
             if overlap_seconds(Interval(entry.start, entry.end), covered) > args.max_existing_overlap_seconds:
                 stats.filtered_entries += 1
+                metadata.append(FillMetadata(entry, clip, "filtered", "overlap_existing"))
                 continue
             filled_entries.append(entry)
+            metadata.append(FillMetadata(entry, clip, "kept", ""))
 
     stats.kept_entries = len(filled_entries)
     merged = resolve_overlaps(convert_existing(existing_entries) + filled_entries)
@@ -244,9 +298,14 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
     if args.fills_output:
         write_srt(sorted(filled_entries, key=lambda item: (item.start, item.end)), args.fills_output)
 
+    if args.fills_metadata_output:
+        write_fills_metadata(metadata, args.fills_metadata_output)
+
     print(f"Wrote {args.output}")
     if args.fills_output:
         print(f"Wrote fills {args.fills_output}")
+    if args.fills_metadata_output:
+        print(f"Wrote fills metadata {args.fills_metadata_output}")
     print(
         "Fill stats: "
         f"candidate_gaps={stats.candidate_gaps} "
@@ -265,6 +324,7 @@ def main() -> None:
     parser.add_argument("--audio", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--fills-output", type=Path)
+    parser.add_argument("--fills-metadata-output", type=Path)
     parser.add_argument(
         "--transcribe-output",
         type=Path,

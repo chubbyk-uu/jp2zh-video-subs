@@ -18,6 +18,9 @@ class SubtitleEntry:
     start: float
     end: float
     text: str
+    avg_logprob: float | None = None
+    no_speech_prob: float | None = None
+    compression_ratio: float | None = None
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
@@ -87,6 +90,9 @@ def segment_entries(
     text = segment.text.strip()
     if not text:
         return []
+    avg_logprob = getattr(segment, "avg_logprob", None)
+    no_speech_prob = getattr(segment, "no_speech_prob", None)
+    compression_ratio = getattr(segment, "compression_ratio", None)
 
     words = [
         word
@@ -97,7 +103,7 @@ def segment_entries(
     ]
     if not word_timestamps_are_reliable(segment, words):
         start, end = repaired_segment_times(segment, text, min_duration, max_duration)
-        return [SubtitleEntry(start, end, text)]
+        return [SubtitleEntry(start, end, text, avg_logprob, no_speech_prob, compression_ratio)]
 
     entries: list[SubtitleEntry] = []
     chunk_words: list = []
@@ -113,7 +119,7 @@ def segment_entries(
             chunk_words = []
             return
         end = max(chunk_end, chunk_start + min_duration)
-        entries.append(SubtitleEntry(chunk_start, end, chunk_text))
+        entries.append(SubtitleEntry(chunk_start, end, chunk_text, avg_logprob, no_speech_prob, compression_ratio))
         chunk_words = []
 
     for word in words:
@@ -135,6 +141,21 @@ def segment_entries(
 
 def merge_short_entries(entries: list[SubtitleEntry], max_merge_gap: float, max_chars: int) -> list[SubtitleEntry]:
     merged: list[SubtitleEntry] = []
+
+    def merge_confidence(target: SubtitleEntry, source: SubtitleEntry) -> None:
+        if source.avg_logprob is not None:
+            target.avg_logprob = (
+                source.avg_logprob if target.avg_logprob is None else min(target.avg_logprob, source.avg_logprob)
+            )
+        if source.no_speech_prob is not None:
+            target.no_speech_prob = (
+                source.no_speech_prob if target.no_speech_prob is None else max(target.no_speech_prob, source.no_speech_prob)
+            )
+        if source.compression_ratio is not None:
+            target.compression_ratio = (
+                source.compression_ratio if target.compression_ratio is None else max(target.compression_ratio, source.compression_ratio)
+            )
+
     for entry in entries:
         text = compact_text(entry.text)
         if (
@@ -145,6 +166,7 @@ def merge_short_entries(entries: list[SubtitleEntry], max_merge_gap: float, max_
         ):
             merged[-1].end = max(merged[-1].end, entry.end)
             merged[-1].text = merged[-1].text + entry.text
+            merge_confidence(merged[-1], entry)
             continue
         if (
             merged
@@ -154,8 +176,19 @@ def merge_short_entries(entries: list[SubtitleEntry], max_merge_gap: float, max_
         ):
             merged[-1].end = max(merged[-1].end, entry.end)
             merged[-1].text = merged[-1].text + entry.text
+            merge_confidence(merged[-1], entry)
             continue
-        merged.append(SubtitleEntry(entry.start, entry.end, entry.text))
+        # Copy (carrying confidence) so merging never mutates the caller's entries.
+        merged.append(
+            SubtitleEntry(
+                entry.start,
+                entry.end,
+                entry.text,
+                entry.avg_logprob,
+                entry.no_speech_prob,
+                entry.compression_ratio,
+            )
+        )
     return merged
 
 

@@ -34,3 +34,15 @@ def test_merge_short_entries_merges_trailing_punctuation():
     assert len(merged) == 1
     assert merged[0].text == "はい。"
     assert merged[0].end == 2
+
+
+def test_merge_short_entries_preserves_confidence_metadata():
+    entries = [
+        SubtitleEntry(0, 1, "あ", avg_logprob=-0.2, no_speech_prob=0.1, compression_ratio=0.8),
+        SubtitleEntry(1.1, 2, "い", avg_logprob=-0.7, no_speech_prob=0.6, compression_ratio=1.4),
+    ]
+    merged = merge_short_entries(entries, max_merge_gap=1.0, max_chars=42)
+    assert len(merged) == 1
+    assert merged[0].avg_logprob == -0.7
+    assert merged[0].no_speech_prob == 0.6
+    assert merged[0].compression_ratio == 1.4
