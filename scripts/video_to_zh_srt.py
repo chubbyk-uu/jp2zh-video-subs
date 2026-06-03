@@ -68,7 +68,9 @@ def run_pipeline(
     Audio extraction is CPU/IO bound and the GPU stages are GPU bound, so a single
     serial extractor running one step ahead hides extraction behind the recognition
     and translation of the previous video. The bounded queue (maxsize=1) provides
-    backpressure so at most a couple of WAVs exist at once."""
+    backpressure: the extractor runs at most one unprocessed video ahead (it blocks
+    on put once the slot is full). It does not delete WAVs; whether they accumulate
+    on disk depends on the caller's --delete-audio handling."""
     work_queue: queue.Queue = queue.Queue(maxsize=1)
     done = object()
 
@@ -349,7 +351,7 @@ def main() -> None:
     parser.add_argument(
         "--no-copy-to-video-dir",
         action="store_true",
-        help="Do not copy the final Chinese SRT next to the input video",
+        help="Do not copy the final subtitle file (SRT, or ASS with --bilingual) next to the input video",
     )
     args = parser.parse_args()
 

@@ -180,7 +180,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - `work/input/input.fills.ja.srt`：二阶段新增的日语字幕片段。
 - `work/input/input.quality.txt`：质量报告。
 - `outputs/input.zh.srt`：最终中文字幕。
-- `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。加 `--bilingual` 时,放到视频同目录的是双语 `input.zh.ass` 而**不是** SRT(SRT 仍保留在 `outputs/`)。
+- `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。加 `--bilingual` 时，放到视频同目录的是双语 `input.zh.ass`，而**不是** SRT（SRT 仍保留在 `outputs/`）。
 
 ## 常用参数
 
