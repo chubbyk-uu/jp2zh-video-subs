@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,11 @@ from srt_utils import compact_text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
 DEFAULT_MODEL = PROJECT_ROOT / "models" / "HY-MT1.5-7B-GGUF" / "HY-MT1.5-7B-Q4_K_M.gguf"
+
+# Context-bleed detection: the current translation echoes the previous one even
+# though the two source lines are clearly different. Retranslate without context.
+DUP_TRANSLATION_RATIO = 0.8  # current vs previous translation must be at least this similar
+DIFF_SOURCE_RATIO = 0.5  # current vs previous source must be at most this similar
 
 
 @dataclass
@@ -76,6 +82,38 @@ def is_context_sensitive_short_text(text: str) -> bool:
     return compact in filler_words
 
 
+def text_ratio(a: str, b: str) -> float:
+    """Order- and length-aware similarity in [0, 1] on whitespace-stripped text.
+
+    Uses difflib (Ratcliff/Obershelp), not a character-set overlap, so frequent
+    shared CJK characters do not inflate the score for unrelated lines."""
+    a, b = compact_text(a), compact_text(b)
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def is_context_bleed(
+    source: str,
+    translated: str,
+    previous_source: str,
+    previous_translation: str,
+    translation_ratio: float = DUP_TRANSLATION_RATIO,
+    source_ratio: float = DIFF_SOURCE_RATIO,
+) -> bool:
+    """True when the translation echoes the previous one while the sources differ.
+
+    The asymmetry is the signal: a genuinely repeated line keeps a similar source,
+    so it is left alone; only a translation that copies the previous line despite a
+    different source is treated as context leaking in."""
+    if not previous_translation:
+        return False
+    return (
+        text_ratio(translated, previous_translation) >= translation_ratio
+        and text_ratio(source, previous_source) <= source_ratio
+    )
+
+
 def looks_context_leaked(source: str, translated: str) -> bool:
     source_compact = re.sub(r"\s+", "", source)
     translated_compact = re.sub(r"\s+", "", translated)
@@ -132,12 +170,7 @@ def translate_with_retry(
     translated = translate_one(llm, text, context)
     if context and looks_context_leaked(text, translated):
         translated = translate_one(llm, text, "")
-    if (
-        context
-        and previous_translation
-        and compact_text(text) != compact_text(previous_source)
-        and compact_text(translated) == compact_text(previous_translation)
-    ):
+    if context and is_context_bleed(text, translated, previous_source, previous_translation):
         translated = translate_one(
             llm,
             text,
