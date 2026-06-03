@@ -219,7 +219,7 @@ Delete extracted WAV audio after processing:
 python scripts/video_to_zh_srt.py path/to/input.mp4 --delete-audio
 ```
 
-Do not copy the final SRT next to the input video:
+Do not copy the final subtitle file (the SRT, or the ASS with `--bilingual`) next to the input video:
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
