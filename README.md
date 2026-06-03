@@ -176,7 +176,9 @@ For `path/to/input.mp4`, the default outputs are:
 - `work/input/input.fills.ja.srt`: only the second-pass added Japanese lines.
 - `work/input/input.quality.txt`: quality report.
 - `outputs/input.zh.srt`: final Chinese SRT.
-- `path/to/input.zh.srt`: final Chinese SRT copied next to the input video.
+- `path/to/input.zh.srt`: final Chinese SRT copied next to the input video. With
+  `--bilingual`, the bilingual `input.zh.ass` is copied next to the video instead
+  of the SRT (the SRT still stays in `outputs/`).
 
 ## Common Options
 
@@ -222,10 +224,12 @@ Also write a bilingual subtitle (Chinese on top, Japanese below):
 python scripts/video_to_zh_srt.py path/to/input.mp4 --bilingual
 ```
 
-This writes `outputs/input.zh.ass` next to the Chinese SRT (and a copy beside the
-input video). SRT cannot reliably style each line differently, so the bilingual
-output is ASS: the Chinese line is larger and coloured, the Japanese line is
-smaller and gray. Defaults can be changed with `--bilingual-zh-font-size`,
+This writes `outputs/input.zh.ass` and copies it next to the input video. In
+bilingual mode only the ASS is placed beside the video (the SRT is not), while
+`outputs/` still keeps both the SRT and the ASS. SRT cannot reliably style each
+line differently, so the bilingual output is ASS: the Chinese line is larger and
+coloured, the Japanese line is smaller and gray. Defaults can be changed with
+`--bilingual-zh-font-size`,
 `--bilingual-ja-font-size`, `--bilingual-zh-colour`, and `--bilingual-ja-colour`
 (colours use the ASS `&HAABBGGRR` format). The Japanese line is the gap-filled
 SRT used for translation, so the two lines stay aligned cue by cue.

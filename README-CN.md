@@ -176,7 +176,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - `work/input/input.fills.ja.srt`：二阶段新增的日语字幕片段。
 - `work/input/input.quality.txt`：质量报告。
 - `outputs/input.zh.srt`：最终中文字幕。
-- `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。
+- `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。加 `--bilingual` 时,放到视频同目录的是双语 `input.zh.ass` 而**不是** SRT(SRT 仍保留在 `outputs/`)。
 
 ## 常用参数
 
@@ -222,7 +222,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
 python scripts/video_to_zh_srt.py path/to/input.mp4 --bilingual
 ```
 
-会在中文 SRT 旁边生成 `outputs/input.zh.ass`，并拷贝到输入视频同目录。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour` 调整（颜色用 ASS 的 `&HAABBGGRR` 格式）。下面那行日文用的是参与翻译的补漏后 SRT，因此中日两行逐条对齐。
+会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下,视频同目录只放 ASS、**不放 SRT**;`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour` 调整（颜色用 ASS 的 `&HAABBGGRR` 格式）。下面那行日文用的是参与翻译的补漏后 SRT，因此中日两行逐条对齐。
 
 如果发现翻译把前文一起输出，可以关闭翻译上下文：
 

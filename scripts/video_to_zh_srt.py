@@ -236,17 +236,21 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
     if args.delete_audio:
         audio.unlink(missing_ok=True)
 
-    copied_output = video.parent / output.name
-    if not args.no_copy_to_video_dir and copied_output != output:
-        shutil.copy2(output, copied_output)
-        if bilingual_output is not None:
-            shutil.copy2(bilingual_output, video.parent / bilingual_output.name)
+    # In bilingual mode only the ASS is placed next to the video; otherwise the SRT is.
+    copied_to_video: Path | None = None
+    if not args.no_copy_to_video_dir:
+        source = bilingual_output if bilingual_output is not None else output
+        destination = video.parent / source.name
+        if destination != source:
+            shutil.copy2(source, destination)
+        copied_to_video = destination
 
     print(f"Wrote {output}")
     if bilingual_output is not None:
         print(f"Bilingual ASS: {bilingual_output}")
-    if not args.no_copy_to_video_dir:
-        print(f"Chinese SRT next to video: {copied_output}")
+    if copied_to_video is not None:
+        label = "Bilingual ASS" if bilingual_output is not None else "Chinese SRT"
+        print(f"{label} next to video: {copied_to_video}")
     print(f"Intermediate Japanese SRT: {ja_srt}")
     if translate_input_srt != ja_srt:
         print(f"Gap-filled Japanese SRT: {translate_input_srt}")
