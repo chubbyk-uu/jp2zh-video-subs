@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import queue
 import shutil
 import subprocess
 import sys
+import threading
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Iterable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
@@ -39,6 +43,68 @@ def require_file(path: Path, label: str) -> None:
         raise SystemExit(f"Missing {label}: {path}")
 
 
+@dataclass
+class VideoJob:
+    index: int
+    video: Path
+    output: Path
+    job_dir: Path
+    audio: Path
+
+
+def extract_audio(video: Path, audio: Path) -> None:
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    run(["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)])
+
+
+def run_pipeline(
+    jobs: Iterable[VideoJob],
+    extract: Callable[[VideoJob], None],
+    process: Callable[[VideoJob], None],
+    continue_on_error: bool,
+) -> list[tuple[VideoJob, Exception]]:
+    """Extract audio one video ahead in a background thread while the GPU stages run.
+
+    Audio extraction is CPU/IO bound and the GPU stages are GPU bound, so a single
+    serial extractor running one step ahead hides extraction behind the recognition
+    and translation of the previous video. The bounded queue (maxsize=1) provides
+    backpressure so at most a couple of WAVs exist at once."""
+    work_queue: queue.Queue = queue.Queue(maxsize=1)
+    done = object()
+
+    def producer() -> None:
+        for job in jobs:
+            try:
+                extract(job)
+                work_queue.put((job, None))
+            except Exception as exc:  # noqa: BLE001 - reported to the consumer
+                work_queue.put((job, exc))
+        work_queue.put(done)
+
+    thread = threading.Thread(target=producer, daemon=True)
+    thread.start()
+
+    failures: list[tuple[VideoJob, Exception]] = []
+    while True:
+        item = work_queue.get()
+        if item is done:
+            break
+        job, exc = item
+        if exc is not None:
+            if not continue_on_error:
+                raise exc
+            failures.append((job, exc))
+            continue
+        try:
+            process(job)
+        except Exception as exc:  # noqa: BLE001
+            if not continue_on_error:
+                raise
+            failures.append((job, exc))
+    thread.join()
+    return failures
+
+
 def is_video_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
 
@@ -71,26 +137,13 @@ def work_dir_for(video: Path, input_path: Path, work_dir: Path, recursive: bool)
     return (work_dir / video.stem).resolve()
 
 
-def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: Path) -> None:
+def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: Path, audio: Path) -> None:
     print(f"\n==> Processing {video}", flush=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     job_dir.mkdir(parents=True, exist_ok=True)
-    audio = job_dir / f"{video.stem}.wav"
     ja_srt = job_dir / f"{video.stem}.ja.srt"
     translate_input_srt = ja_srt
 
-    run([
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(video),
-        "-vn",
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        str(audio),
-    ])
     if args.skip_gap_fill:
         transcribe_command = [
             sys.executable,
@@ -322,18 +375,29 @@ def main() -> None:
     if input_path.is_dir() and args.output:
         raise SystemExit("Use --output-dir for directory input; --output is only for a single video.")
 
-    failed: list[tuple[Path, str]] = []
+    # Smallest first: extraction time scales with file size, so the smallest video
+    # minimizes the unavoidable wait before the GPU can start on the first one.
+    videos.sort(key=lambda item: item.stat().st_size)
+
+    jobs: list[VideoJob] = []
     for index, video in enumerate(videos, start=1):
-        print(f"\n[{index}/{len(videos)}]", flush=True)
         output = args.output.resolve() if args.output else output_path_for(video, input_path, args.output_dir, args.recursive)
         job_dir = work_dir_for(video, input_path, args.work_dir, args.recursive)
-        try:
-            process_video(args, video, output, job_dir)
-        except Exception as exc:
-            if not args.continue_on_error:
-                raise
-            failed.append((video, str(exc)))
-            print(f"Failed {video}: {exc}", flush=True)
+        jobs.append(VideoJob(index, video, output, job_dir, job_dir / f"{video.stem}.wav"))
+
+    total = len(jobs)
+
+    def extract(job: VideoJob) -> None:
+        extract_audio(job.video, job.audio)
+
+    def process(job: VideoJob) -> None:
+        print(f"\n[{job.index}/{total}]", flush=True)
+        process_video(args, job.video, job.output, job.job_dir, job.audio)
+
+    failures = run_pipeline(jobs, extract, process, args.continue_on_error)
+    failed = [(job.video, str(exc)) for job, exc in failures]
+    for video, error in failed:
+        print(f"Failed {video}: {error}", flush=True)
 
     if failed:
         print("\nFailed videos:")

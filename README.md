@@ -16,6 +16,8 @@ The one-command pipeline performs these steps:
 
 When gap filling is enabled (the default), steps 2 and 3 run in a single process that loads the Whisper model once, instead of loading it twice. The translation step stays in its own process so the Whisper and translation models never share VRAM. All generated SRTs are sorted and de-overlapped so cues never overlap or go out of order.
 
+In batch mode, videos are processed smallest first, and each video's audio (step 1) is extracted one step ahead in a background thread. Audio extraction is CPU/IO bound while recognition and translation are GPU bound, so extracting the next video while the current one is on the GPU hides extraction behind the GPU work instead of blocking on it. Extraction stays a single serial read stream, so this behaves the same on HDD and SSD.
+
 No online API is required for inference. Model files are not included in this repository and should not be committed.
 
 ## Project Layout
@@ -37,7 +39,7 @@ No online API is required for inference. Model files are not included in this re
 ├── subtitles/
 │   ├── ja/                          # Optional Japanese SRT storage
 │   └── zh/                          # Optional Chinese SRT storage
-├── tests/                           # Pytest unit tests for the pure helpers
+├── tests/                           # Pytest unit tests for the pure helpers and batch pipeline
 └── work/                            # Intermediate files (audio, intermediate SRTs)
 ```
 
@@ -135,6 +137,11 @@ Process subdirectories as well:
 ```bash
 python scripts/video_to_zh_srt.py path/to/videos/ --recursive
 ```
+
+In a batch, videos are processed in ascending file-size order so the smallest one
+is ready first and the GPU starts sooner, and the next video's audio is extracted
+in the background while the current video is being recognised and translated. No
+extra flags are needed and nothing runs in parallel on the GPU.
 
 If your videos are on a Windows drive mounted by WSL, use the generic mounted Linux path:
 
