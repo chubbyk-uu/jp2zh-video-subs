@@ -36,9 +36,6 @@ No online API is required for inference. Model files are not included in this re
 │   ├── translate_srt_hymt.py        # Japanese SRT to Chinese SRT
 │   ├── make_bilingual_ass.py        # Bilingual ASS (Chinese on top, Japanese below)
 │   └── srt_utils.py                 # Shared SRT parsing, timing, and interval helpers
-├── subtitles/
-│   ├── ja/                          # Optional Japanese SRT storage
-│   └── zh/                          # Optional Chinese SRT storage
 ├── tests/                           # Pytest unit tests for the pure helpers and batch pipeline
 └── work/                            # Intermediate files (audio, intermediate SRTs)
 ```
@@ -269,7 +266,7 @@ Transcribe audio to Japanese SRT:
 
 ```bash
 python scripts/transcribe_ja_srt.py work/input/input.wav \
-  --output subtitles/ja/input.ja.srt \
+  --output work/input/input.ja.srt \
   --model models/faster-whisper-large-v3 \
   --max-duration 10
 ```
@@ -277,17 +274,17 @@ python scripts/transcribe_ja_srt.py work/input/input.wav \
 Fill likely missed Japanese subtitles with WAV audio:
 
 ```bash
-python scripts/fill_ja_srt_gaps.py subtitles/ja/input.ja.srt \
+python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
   --audio work/input/input.wav \
-  --output subtitles/ja/input.filled.ja.srt \
-  --fills-output subtitles/ja/input.fills.ja.srt
+  --output work/input/input.filled.ja.srt \
+  --fills-output work/input/input.fills.ja.srt
 ```
 
 Translate Japanese SRT to Chinese SRT:
 
 ```bash
-python scripts/translate_srt_hymt.py subtitles/ja/input.filled.ja.srt \
-  --output subtitles/zh/input.zh.srt \
+python scripts/translate_srt_hymt.py work/input/input.filled.ja.srt \
+  --output outputs/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
   --context-size 1
 ```
@@ -296,17 +293,17 @@ Build a bilingual ASS from the aligned Japanese and Chinese SRTs:
 
 ```bash
 python scripts/make_bilingual_ass.py \
-  --zh-srt subtitles/zh/input.zh.srt \
-  --ja-srt subtitles/ja/input.filled.ja.srt \
-  --output subtitles/zh/input.bilingual.ass
+  --zh-srt outputs/input.zh.srt \
+  --ja-srt work/input/input.filled.ja.srt \
+  --output outputs/input.zh.ass
 ```
 
 Generate a quality report:
 
 ```bash
 python scripts/quality_report.py \
-  --ja-srt subtitles/ja/input.filled.ja.srt \
-  --zh-srt subtitles/zh/input.zh.srt \
+  --ja-srt work/input/input.filled.ja.srt \
+  --zh-srt outputs/input.zh.srt \
   --audio work/input/input.wav \
   --output work/input/input.quality.txt
 ```
@@ -314,8 +311,8 @@ python scripts/quality_report.py \
 Translate only the first N entries for debugging:
 
 ```bash
-python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
-  --output subtitles/zh/input.sample.zh.srt \
+python scripts/translate_srt_hymt.py work/input/input.ja.srt \
+  --output outputs/input.sample.zh.srt \
   --limit 20
 ```
 
@@ -398,7 +395,7 @@ Do not commit:
 - `models/`
 - private input videos
 - `work/`
-- generated `outputs/` and `subtitles/`
+- generated `outputs/`
 - virtual environments and `__pycache__/`
 
 ## Future Work

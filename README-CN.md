@@ -36,9 +36,6 @@
 │   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕 SRT
 │   ├── make_bilingual_ass.py        # 双语 ASS（中文在上，日文在下）
 │   └── srt_utils.py                 # 共享的 SRT 解析、时间和区间工具
-├── subtitles/
-│   ├── ja/                          # 可选：保存日语 SRT
-│   └── zh/                          # 可选：保存中文字幕 SRT
 ├── tests/                           # 纯函数与批处理流水线的 pytest 单元测试
 └── work/                            # 中间文件（音频、各阶段 SRT）
 ```
@@ -256,7 +253,7 @@ python scripts/video_to_zh_srt.py path/to/videos/ --continue-on-error
 
 ```bash
 python scripts/transcribe_ja_srt.py work/input/input.wav \
-  --output subtitles/ja/input.ja.srt \
+  --output work/input/input.ja.srt \
   --model models/faster-whisper-large-v3 \
   --max-duration 10
 ```
@@ -264,17 +261,17 @@ python scripts/transcribe_ja_srt.py work/input/input.wav \
 对已有日语 SRT 做音频补漏：
 
 ```bash
-python scripts/fill_ja_srt_gaps.py subtitles/ja/input.ja.srt \
+python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
   --audio work/input/input.wav \
-  --output subtitles/ja/input.filled.ja.srt \
-  --fills-output subtitles/ja/input.fills.ja.srt
+  --output work/input/input.filled.ja.srt \
+  --fills-output work/input/input.fills.ja.srt
 ```
 
 已有日语 SRT，只做翻译：
 
 ```bash
-python scripts/translate_srt_hymt.py subtitles/ja/input.filled.ja.srt \
-  --output subtitles/zh/input.zh.srt \
+python scripts/translate_srt_hymt.py work/input/input.filled.ja.srt \
+  --output outputs/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
   --context-size 1
 ```
@@ -283,17 +280,17 @@ python scripts/translate_srt_hymt.py subtitles/ja/input.filled.ja.srt \
 
 ```bash
 python scripts/make_bilingual_ass.py \
-  --zh-srt subtitles/zh/input.zh.srt \
-  --ja-srt subtitles/ja/input.filled.ja.srt \
-  --output subtitles/zh/input.bilingual.ass
+  --zh-srt outputs/input.zh.srt \
+  --ja-srt work/input/input.filled.ja.srt \
+  --output outputs/input.zh.ass
 ```
 
 生成质量报告：
 
 ```bash
 python scripts/quality_report.py \
-  --ja-srt subtitles/ja/input.filled.ja.srt \
-  --zh-srt subtitles/zh/input.zh.srt \
+  --ja-srt work/input/input.filled.ja.srt \
+  --zh-srt outputs/input.zh.srt \
   --audio work/input/input.wav \
   --output work/input/input.quality.txt
 ```
@@ -301,8 +298,8 @@ python scripts/quality_report.py \
 只翻译前 N 条，方便调试：
 
 ```bash
-python scripts/translate_srt_hymt.py subtitles/ja/input.ja.srt \
-  --output subtitles/zh/input.sample.zh.srt \
+python scripts/translate_srt_hymt.py work/input/input.ja.srt \
+  --output outputs/input.sample.zh.srt \
   --limit 20
 ```
 
@@ -385,7 +382,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 - `models/`
 - 私有输入视频
 - `work/`
-- 生成的 `outputs/` 和 `subtitles/`
+- 生成的 `outputs/`
 - 虚拟环境和 `__pycache__/`
 
 ## 后续改进

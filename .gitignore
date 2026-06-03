@@ -5,8 +5,6 @@ work/*
 !work/.gitkeep
 outputs/*
 !outputs/.gitkeep
-subtitles/*
-!subtitles/.gitkeep
 
 # Input videos can live anywhere; never commit them
 *.mp4
