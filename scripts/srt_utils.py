@@ -79,3 +79,22 @@ def srt_gaps(entries) -> list[Interval]:
             gaps.append(Interval(covered_until, entry.start))
         covered_until = entry.end if covered_until is None else max(covered_until, entry.end)
     return gaps
+
+
+def padded_end(
+    start: float,
+    end: float,
+    next_start: float | None,
+    lead_out: float,
+    min_display: float,
+    min_gap: float = 0.04,
+) -> float:
+    """Display end time that lingers after speech without overlapping the next cue.
+
+    Lengthens the cue to max(end + lead_out, start + min_display); never shortens it
+    below the original end, and never extends past next_start - min_gap when a next
+    cue exists. With lead_out and min_display both 0 the original end is returned."""
+    desired = max(end + lead_out, start + min_display)
+    if next_start is not None:
+        desired = min(desired, next_start - min_gap)
+    return max(end, desired)

@@ -243,6 +243,10 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
         str(TRANSLATE_MODEL),
         "--context-size",
         str(args.context_size),
+        "--lead-out-seconds",
+        str(args.lead_out_seconds),
+        "--min-display-seconds",
+        str(args.min_display_seconds),
     ]
     run(translate_command)
 
@@ -338,6 +342,8 @@ def main() -> None:
     parser.add_argument("--bilingual-zh-colour", default="&H0000FFFF", help="ASS colour &HAABBGGRR for the Chinese line")
     parser.add_argument("--bilingual-ja-colour", default="&H00B4B4B4", help="ASS colour &HAABBGGRR for the Japanese line")
     parser.add_argument("--context-size", type=int, default=1)
+    parser.add_argument("--lead-out-seconds", type=float, default=0.5)
+    parser.add_argument("--min-display-seconds", type=float, default=1.5)
     parser.add_argument("--language", default="ja")
     parser.add_argument("--condition-on-previous-text", action="store_true")
     parser.add_argument("--min-duration", type=float, default=1.0)
@@ -362,6 +368,10 @@ def main() -> None:
 
     if args.keep_audio:
         print("Warning: --keep-audio is deprecated and has no effect (audio is kept by default).", flush=True)
+    if args.lead_out_seconds < 0:
+        raise SystemExit("--lead-out-seconds must be >= 0")
+    if args.min_display_seconds < 0:
+        raise SystemExit("--min-display-seconds must be >= 0")
 
     if shutil.which("ffmpeg") is None:
         raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")

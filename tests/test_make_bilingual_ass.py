@@ -78,3 +78,15 @@ def test_parse_srt_reads_index_times_and_text(tmp_path):
         ("1", 1.0, 3.0, "你好"),
         ("2", 3.0, 4.5, "世界"),
     ]
+
+
+def test_parse_srt_ignores_timing_settings(tmp_path):
+    srt = tmp_path / "x.srt"
+    srt.write_text(
+        "1\n00:00:01,000 --> 00:00:03,000 position:50%\n你好\n",
+        encoding="utf-8",
+    )
+
+    entries = parse_srt(srt)
+
+    assert [(e.index, e.start, e.end, e.text) for e in entries] == [("1", 1.0, 3.0, "你好")]

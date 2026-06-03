@@ -8,7 +8,7 @@ from pathlib import Path
 
 from llama_cpp import Llama
 
-from srt_utils import compact_text
+from srt_utils import compact_text, padded_end, parse_time, srt_time
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
@@ -25,6 +25,9 @@ class Entry:
     index: str
     time: str
     text: str
+    start: float
+    end: float
+    settings: str = ""
 
 
 def parse_srt(path: Path) -> list[Entry]:
@@ -34,7 +37,20 @@ def parse_srt(path: Path) -> list[Entry]:
         lines = block.splitlines()
         if len(lines) < 3 or "-->" not in lines[1]:
             continue
-        entries.append(Entry(lines[0].strip(), lines[1].strip(), "\n".join(lines[2:]).strip()))
+        start_text, end_text = [item.strip() for item in lines[1].split("-->", 1)]
+        end_parts = end_text.split(maxsplit=1)
+        end_time = end_parts[0]
+        settings = f" {end_parts[1]}" if len(end_parts) > 1 else ""
+        entries.append(
+            Entry(
+                lines[0].strip(),
+                lines[1].strip(),
+                "\n".join(lines[2:]).strip(),
+                parse_time(start_text),
+                parse_time(end_time),
+                settings,
+            )
+        )
     return entries
 
 
@@ -187,9 +203,22 @@ def translate_with_retry(
     return translated
 
 
-def write_entry(f, entry: Entry, text: str) -> None:
+def padded_time(entry: Entry, next_entry: Entry | None, lead_out: float, min_display: float) -> str:
+    next_start = next_entry.start if next_entry is not None else None
+    end = padded_end(entry.start, entry.end, next_start, lead_out, min_display)
+    return f"{srt_time(entry.start)} --> {srt_time(end)}{entry.settings}"
+
+
+def write_entry(
+    f,
+    entry: Entry,
+    text: str,
+    next_entry: Entry | None = None,
+    lead_out: float = 0.0,
+    min_display: float = 0.0,
+) -> None:
     f.write(f"{entry.index}\n")
-    f.write(f"{entry.time}\n")
+    f.write(f"{padded_time(entry, next_entry, lead_out, min_display)}\n")
     f.write(f"{text}\n\n")
     f.flush()
 
@@ -202,9 +231,15 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--context-size", type=int, default=2)
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
+    parser.add_argument("--lead-out-seconds", type=float, default=0.0)
+    parser.add_argument("--min-display-seconds", type=float, default=0.0)
     args = parser.parse_args()
     if args.context_size < 0:
         raise SystemExit("--context-size must be >= 0")
+    if args.lead_out_seconds < 0:
+        raise SystemExit("--lead-out-seconds must be >= 0")
+    if args.min_display_seconds < 0:
+        raise SystemExit("--min-display-seconds must be >= 0")
 
     entries = parse_srt(args.input)
     if args.limit:
@@ -220,7 +255,8 @@ def main() -> None:
     with args.output.open("w", encoding="utf-8") as f:
         previous_source: list[str] = []
         previous_translation = ""
-        for entry in entries:
+        for index, entry in enumerate(entries):
+            next_entry = entries[index + 1] if index + 1 < len(entries) else None
             context = ""
             if args.context_size > 0:
                 context = "\n".join(previous_source[-args.context_size :])
@@ -233,7 +269,7 @@ def main() -> None:
             )
             if not translated:
                 translated = entry.text
-            write_entry(f, entry, translated)
+            write_entry(f, entry, translated, next_entry, args.lead_out_seconds, args.min_display_seconds)
             previous_source.append(normalize_source(entry.text))
             previous_translation = translated
             print(f"{entry.index}: {translated}", flush=True)

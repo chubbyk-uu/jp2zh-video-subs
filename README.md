@@ -34,6 +34,7 @@ No online API is required for inference. Model files are not included in this re
 │   ├── fill_ja_srt_gaps.py          # Audio-aware Japanese SRT gap filling
 │   ├── quality_report.py            # Subtitle quality report
 │   ├── translate_srt_hymt.py        # Japanese SRT to Chinese SRT
+│   ├── retime_existing_subtitles.py # Retiming + ASS refresh from existing outputs
 │   ├── make_bilingual_ass.py        # Bilingual ASS (Chinese on top, Japanese below)
 │   └── srt_utils.py                 # Shared SRT parsing, timing, and interval helpers
 ├── tests/                           # Pytest unit tests for the pure helpers and batch pipeline
@@ -158,6 +159,7 @@ The one-command pipeline uses:
 - Whisper previous-text conditioning: disabled by default
 - Max subtitle display duration: 10 seconds
 - Translation context: previous 1 source subtitle in the one-command pipeline
+- Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
 - VAD: enabled with a sensitive default configuration
 - Gap fill: enabled by default
 - Quality report: enabled by default
@@ -184,6 +186,13 @@ For `path/to/input.mp4`, the default outputs are:
 - `path/to/input.zh.srt`: final Chinese SRT copied next to the input video. With
   `--bilingual`, the bilingual `input.zh.ass` is copied next to the video instead
   of the SRT (the SRT still stays in `outputs/`).
+
+Japanese SRT files keep the recognized speech timing and are used for gap
+analysis, VAD coverage, and quality reports. The Chinese SRT is the display
+subtitle: the one-command pipeline slightly extends its cue end times so short
+lines do not disappear immediately when speech ends. Bilingual ASS files take
+their timing from the Chinese SRT; Japanese text in ASS is aligned by subtitle
+index only.
 
 ## Common Options
 
@@ -239,6 +248,35 @@ coloured, the Japanese line is smaller and gray. Defaults can be changed with
 (colours use the ASS `&HAABBGGRR` format). The Japanese line is the gap-filled
 SRT used for translation, so the two lines stay aligned cue by cue.
 
+Adjust display timing padding for the final Chinese SRT and bilingual ASS:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 \
+  --lead-out-seconds 0.5 \
+  --min-display-seconds 1.5
+```
+
+These options only affect `outputs/input.zh.srt` and any generated ASS. The
+Japanese SRT remains at the real speech timing, so gap filling and quality
+analysis are not affected. Standalone `translate_srt_hymt.py` defaults to
+`0/0` for backward compatibility; the one-command pipeline defaults to
+`0.5/1.5`.
+
+Refresh existing batch outputs without rerunning ASR or translation:
+
+```bash
+python scripts/retime_existing_subtitles.py path/to/videos/ \
+  --lead-out-seconds 0.5 \
+  --min-display-seconds 1.5
+```
+
+This reads `outputs/<name>.zh.srt` and the matching Japanese SRT from
+`work/<name>/<name>.filled.ja.srt` (falling back to `<name>.ja.srt` if needed),
+writes `outputs/<name>.retimed.zh.srt` and `outputs/<name>.retimed.zh.ass`,
+then copies the refreshed ASS next to each video as `<name>.zh.ass`. Use
+`--dry-run` to check matches first, and `--no-copy-to-video-dir` to only write
+the files under `outputs/`.
+
 Reduce translation context if translated lines include previous subtitles:
 
 ```bash
@@ -288,7 +326,9 @@ Translate Japanese SRT to Chinese SRT:
 python scripts/translate_srt_hymt.py work/input/input.filled.ja.srt \
   --output outputs/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
-  --context-size 1
+  --context-size 1 \
+  --lead-out-seconds 0.5 \
+  --min-display-seconds 1.5
 ```
 
 Build a bilingual ASS from the aligned Japanese and Chinese SRTs:

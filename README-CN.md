@@ -34,6 +34,7 @@
 │   ├── fill_ja_srt_gaps.py          # 基于 WAV 的日语字幕二阶段补漏
 │   ├── quality_report.py            # 字幕质量报告
 │   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕 SRT
+│   ├── retime_existing_subtitles.py # 基于已有产物批量重定时并刷新 ASS
 │   ├── make_bilingual_ass.py        # 双语 ASS（中文在上，日文在下）
 │   └── srt_utils.py                 # 共享的 SRT 解析、时间和区间工具
 ├── tests/                           # 纯函数与批处理流水线的 pytest 单元测试
@@ -155,6 +156,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - Whisper 前文串联：默认关闭，减少长视频串文和幻觉
 - 单条字幕最大显示时长：默认 10 秒
 - 翻译上下文：一键流程默认前 1 条原文字幕
+- 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
 - VAD：默认开启，并使用较敏感配置
 - 二阶段补漏：默认开启
 - 质量报告：默认开启
@@ -179,6 +181,11 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - `work/input/input.quality.txt`：质量报告。
 - `outputs/input.zh.srt`：最终中文字幕。
 - `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。加 `--bilingual` 时，放到视频同目录的是双语 `input.zh.ass`，而**不是** SRT（SRT 仍保留在 `outputs/`）。
+
+日语 SRT 保持识别到的真实语音时间，用于补漏、VAD 覆盖率和质量报告。
+中文字幕 SRT 是最终显示字幕：一键流程会轻微延长每条字幕的结束时间，
+避免短句在语音结束瞬间立刻消失。双语 ASS 的时间轴来自中文字幕 SRT；
+ASS 里的日文只按字幕序号对齐贡献文本。
 
 ## 常用参数
 
@@ -225,6 +232,32 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --bilingual
 ```
 
 会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour` 调整（颜色用 ASS 的 `&HAABBGGRR` 格式）。下面那行日文用的是参与翻译的补漏后 SRT，因此中日两行逐条对齐。
+
+调整最终中文字幕和双语 ASS 的显示留白：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 \
+  --lead-out-seconds 0.5 \
+  --min-display-seconds 1.5
+```
+
+这些参数只影响 `outputs/input.zh.srt` 和生成的 ASS。日语 SRT 仍保持真实
+语音时间，所以补漏和质量分析不受影响。单独运行 `translate_srt_hymt.py`
+时默认是 `0/0`，保持向后兼容；一键流程默认是 `0.5/1.5`。
+
+对已经跑完的一批视频，只基于现有产物刷新时间轴和 ASS，不重新识别、不重新翻译：
+
+```bash
+python scripts/retime_existing_subtitles.py path/to/videos/ \
+  --lead-out-seconds 0.5 \
+  --min-display-seconds 1.5
+```
+
+这个脚本读取 `outputs/<名称>.zh.srt` 和匹配的日语 SRT：优先使用
+`work/<名称>/<名称>.filled.ja.srt`，没有时回退到 `<名称>.ja.srt`。
+它会生成 `outputs/<名称>.retimed.zh.srt`、`outputs/<名称>.retimed.zh.ass`，
+并把新的 ASS 复制到视频同目录覆盖 `<名称>.zh.ass`。先用 `--dry-run`
+可以只检查匹配关系；加 `--no-copy-to-video-dir` 则只写 `outputs/`，不覆盖视频同目录字幕。
 
 如果发现翻译把前文一起输出，可以关闭翻译上下文：
 
@@ -275,7 +308,9 @@ python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
 python scripts/translate_srt_hymt.py work/input/input.filled.ja.srt \
   --output outputs/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
-  --context-size 1
+  --context-size 1 \
+  --lead-out-seconds 0.5 \
+  --min-display-seconds 1.5
 ```
 
 用对齐的日语和中文 SRT 生成双语 ASS：

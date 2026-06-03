@@ -1,9 +1,12 @@
 from translate_srt_hymt import (
+    Entry,
     clean_translation,
     is_context_bleed,
     is_context_sensitive_short_text,
     looks_context_leaked,
     normalize_source,
+    padded_time,
+    parse_srt,
     text_ratio,
 )
 
@@ -73,3 +76,26 @@ def test_is_context_bleed_ignores_distinct_translation():
 
 def test_is_context_bleed_needs_a_previous_translation():
     assert is_context_bleed("甲", "乙", "", "") is False
+
+
+def test_padded_time_keeps_default_timing():
+    entry = Entry("1", "00:00:01,000 --> 00:00:02,000", "こんにちは", 1.0, 2.0)
+    assert padded_time(entry, None, lead_out=0.0, min_display=0.0) == "00:00:01,000 --> 00:00:02,000"
+
+
+def test_padded_time_clamps_to_next_entry():
+    entry = Entry("1", "00:00:01,000 --> 00:00:02,000", "こんにちは", 1.0, 2.0)
+    next_entry = Entry("2", "00:00:02,300 --> 00:00:03,000", "またね", 2.3, 3.0)
+    assert padded_time(entry, next_entry, lead_out=1.0, min_display=0.0) == "00:00:01,000 --> 00:00:02,260"
+
+
+def test_parse_srt_preserves_timing_settings(tmp_path):
+    path = tmp_path / "input.srt"
+    path.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000 position:50%\nこんにちは\n\n",
+        encoding="utf-8",
+    )
+    entry = parse_srt(path)[0]
+    assert padded_time(entry, None, lead_out=0.5, min_display=0.0) == (
+        "00:00:01,000 --> 00:00:02,500 position:50%"
+    )

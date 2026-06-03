@@ -6,6 +6,7 @@ from srt_utils import (
     format_time,
     merge_intervals,
     overlap_seconds,
+    padded_end,
     parse_time,
     srt_gaps,
     srt_time,
@@ -61,3 +62,23 @@ def test_srt_gaps_ignores_contained_entry():
     entries = [SimpleNamespace(start=0, end=10), SimpleNamespace(start=2, end=3), SimpleNamespace(start=12, end=14)]
     gaps = srt_gaps(entries)
     assert [(g.start, g.end) for g in gaps] == [(10, 12)]
+
+
+def test_padded_end_extends_by_lead_out():
+    assert padded_end(10.0, 11.0, 20.0, lead_out=0.5, min_display=0.0) == 11.5
+
+
+def test_padded_end_uses_min_display_when_larger():
+    assert padded_end(10.0, 10.5, 20.0, lead_out=0.2, min_display=1.5) == 11.5
+
+
+def test_padded_end_clamps_before_next_start():
+    assert round(padded_end(10.0, 11.0, 11.3, lead_out=1.0, min_display=0.0, min_gap=0.04), 3) == 11.26
+
+
+def test_padded_end_never_shortens_back_to_back_cues():
+    assert padded_end(10.0, 11.0, 11.0, lead_out=0.5, min_display=1.5, min_gap=0.04) == 11.0
+
+
+def test_padded_end_last_cue_uses_desired_end():
+    assert padded_end(10.0, 11.0, None, lead_out=0.5, min_display=2.0) == 12.0
