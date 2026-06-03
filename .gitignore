@@ -1,14 +1,23 @@
 # Large data / model directories — keep dir, ignore contents
 models/*
 !models/.gitkeep
-videos/*
-!videos/.gitkeep
 work/*
 !work/.gitkeep
 outputs/*
 !outputs/.gitkeep
 subtitles/*
 !subtitles/.gitkeep
+
+# Input videos can live anywhere; never commit them
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.wmv
+*.flv
+*.webm
+*.m4v
+*.ts
 
 # Python
 __pycache__/

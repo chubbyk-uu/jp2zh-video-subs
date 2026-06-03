@@ -32,13 +32,13 @@
 │   ├── fill_ja_srt_gaps.py          # 基于 WAV 的日语字幕二阶段补漏
 │   ├── quality_report.py            # 字幕质量报告
 │   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕 SRT
+│   ├── make_bilingual_ass.py        # 双语 ASS（中文在上，日文在下）
 │   └── srt_utils.py                 # 共享的 SRT 解析、时间和区间工具
 ├── subtitles/
 │   ├── ja/                          # 可选：保存日语 SRT
 │   └── zh/                          # 可选：保存中文字幕 SRT
 ├── tests/                           # 纯函数的 pytest 单元测试
-├── videos/                          # 输入视频
-└── work/                            # 中间文件
+└── work/                            # 中间文件（音频、各阶段 SRT）
 ```
 
 ## 运行环境
@@ -121,19 +121,19 @@ models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 处理单个视频：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4
+python scripts/video_to_zh_srt.py path/to/input.mp4
 ```
 
 批量处理目录下的常见视频文件：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/
+python scripts/video_to_zh_srt.py path/to/videos/
 ```
 
 递归处理子目录：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/ --recursive
+python scripts/video_to_zh_srt.py path/to/videos/ --recursive
 ```
 
 如果在 WSL 里处理 Windows 盘里的视频，请使用泛化后的 Linux 挂载路径：
@@ -168,7 +168,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 
 ## 输出文件
 
-以 `videos/input.mp4` 为例，默认输出：
+以 `path/to/input.mp4` 为例，默认输出：
 
 - `work/input/input.wav`：抽取出来的 16 kHz 单声道音频。
 - `work/input/input.ja.srt`：第一阶段日语字幕。
@@ -176,56 +176,64 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - `work/input/input.fills.ja.srt`：二阶段新增的日语字幕片段。
 - `work/input/input.quality.txt`：质量报告。
 - `outputs/input.zh.srt`：最终中文字幕。
-- `videos/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。
+- `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。
 
 ## 常用参数
 
 指定单个视频的输出路径：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
+python scripts/video_to_zh_srt.py path/to/input.mp4 --output outputs/input.zh.srt
 ```
 
 批量处理时指定输出目录：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/ --output-dir outputs
+python scripts/video_to_zh_srt.py path/to/videos/ --output-dir outputs
 ```
 
 关闭二阶段补漏：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --skip-gap-fill
+python scripts/video_to_zh_srt.py path/to/input.mp4 --skip-gap-fill
 ```
 
 不生成质量报告：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --skip-quality-report
+python scripts/video_to_zh_srt.py path/to/input.mp4 --skip-quality-report
 ```
 
 处理完成后删除抽取出来的 WAV：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --delete-audio
+python scripts/video_to_zh_srt.py path/to/input.mp4 --delete-audio
 ```
 
 不把最终字幕拷贝到输入视频同目录：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --no-copy-to-video-dir
+python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
 ```
+
+同时输出双语字幕（中文在上，日文在下）：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --bilingual
+```
+
+会在中文 SRT 旁边生成 `outputs/input.zh.ass`，并拷贝到输入视频同目录。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour` 调整（颜色用 ASS 的 `&HAABBGGRR` 格式）。下面那行日文用的是参与翻译的补漏后 SRT，因此中日两行逐条对齐。
 
 如果发现翻译把前文一起输出，可以关闭翻译上下文：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 0
+python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
 更激进地补漏：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 \
+python scripts/video_to_zh_srt.py path/to/input.mp4 \
   --fill-min-gap-seconds 6 \
   --fill-min-speech-seconds 2
 ```
@@ -235,7 +243,7 @@ python scripts/video_to_zh_srt.py videos/input.mp4 \
 批量处理时，如果某个视频失败后继续处理后面的视频：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/ --continue-on-error
+python scripts/video_to_zh_srt.py path/to/videos/ --continue-on-error
 ```
 
 ## 单步运行
@@ -265,6 +273,15 @@ python scripts/translate_srt_hymt.py subtitles/ja/input.filled.ja.srt \
   --output subtitles/zh/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
   --context-size 1
+```
+
+用对齐的日语和中文 SRT 生成双语 ASS：
+
+```bash
+python scripts/make_bilingual_ass.py \
+  --zh-srt subtitles/zh/input.zh.srt \
+  --ja-srt subtitles/ja/input.filled.ja.srt \
+  --output subtitles/zh/input.bilingual.ass
 ```
 
 生成质量报告：
@@ -339,7 +356,7 @@ ffmpeg -version
 降低或关闭翻译上下文：
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 0
+python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
 ### 字幕有漏识别
@@ -372,4 +389,3 @@ python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 0
 - 给 Whisper 增加可配置 `initial_prompt`，用于人名、术语、作品名和场景词。
 - 增加可配置术语表，用于修正常见人名、地名、作品名和专有词。
 - 继续改进 ASR 后处理，减少孤立符号、无意义短字幕、乱码和片尾噪声词。
-- 增加双语 SRT 或 ASS 输出格式。

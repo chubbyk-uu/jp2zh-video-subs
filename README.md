@@ -32,13 +32,13 @@ No online API is required for inference. Model files are not included in this re
 │   ├── fill_ja_srt_gaps.py          # Audio-aware Japanese SRT gap filling
 │   ├── quality_report.py            # Subtitle quality report
 │   ├── translate_srt_hymt.py        # Japanese SRT to Chinese SRT
+│   ├── make_bilingual_ass.py        # Bilingual ASS (Chinese on top, Japanese below)
 │   └── srt_utils.py                 # Shared SRT parsing, timing, and interval helpers
 ├── subtitles/
 │   ├── ja/                          # Optional Japanese SRT storage
 │   └── zh/                          # Optional Chinese SRT storage
 ├── tests/                           # Pytest unit tests for the pure helpers
-├── videos/                          # Input videos
-└── work/                            # Intermediate files
+└── work/                            # Intermediate files (audio, intermediate SRTs)
 ```
 
 ## Requirements
@@ -121,19 +121,19 @@ models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 Process one video:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4
+python scripts/video_to_zh_srt.py path/to/input.mp4
 ```
 
 Process all supported video files in a directory:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/
+python scripts/video_to_zh_srt.py path/to/videos/
 ```
 
 Process subdirectories as well:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/ --recursive
+python scripts/video_to_zh_srt.py path/to/videos/ --recursive
 ```
 
 If your videos are on a Windows drive mounted by WSL, use the generic mounted Linux path:
@@ -168,7 +168,7 @@ Default gap-fill parameters:
 
 ## Outputs
 
-For `videos/input.mp4`, the default outputs are:
+For `path/to/input.mp4`, the default outputs are:
 
 - `work/input/input.wav`: extracted 16 kHz mono WAV audio.
 - `work/input/input.ja.srt`: first-pass Japanese subtitles.
@@ -176,56 +176,70 @@ For `videos/input.mp4`, the default outputs are:
 - `work/input/input.fills.ja.srt`: only the second-pass added Japanese lines.
 - `work/input/input.quality.txt`: quality report.
 - `outputs/input.zh.srt`: final Chinese SRT.
-- `videos/input.zh.srt`: final Chinese SRT copied next to the input video.
+- `path/to/input.zh.srt`: final Chinese SRT copied next to the input video.
 
 ## Common Options
 
 Set output path for a single video:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --output outputs/input.zh.srt
+python scripts/video_to_zh_srt.py path/to/input.mp4 --output outputs/input.zh.srt
 ```
 
 Set output directory for batch processing:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/ --output-dir outputs
+python scripts/video_to_zh_srt.py path/to/videos/ --output-dir outputs
 ```
 
 Disable gap filling:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --skip-gap-fill
+python scripts/video_to_zh_srt.py path/to/input.mp4 --skip-gap-fill
 ```
 
 Disable quality report generation:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --skip-quality-report
+python scripts/video_to_zh_srt.py path/to/input.mp4 --skip-quality-report
 ```
 
 Delete extracted WAV audio after processing:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --delete-audio
+python scripts/video_to_zh_srt.py path/to/input.mp4 --delete-audio
 ```
 
 Do not copy the final SRT next to the input video:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --no-copy-to-video-dir
+python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
 ```
+
+Also write a bilingual subtitle (Chinese on top, Japanese below):
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --bilingual
+```
+
+This writes `outputs/input.zh.ass` next to the Chinese SRT (and a copy beside the
+input video). SRT cannot reliably style each line differently, so the bilingual
+output is ASS: the Chinese line is larger and coloured, the Japanese line is
+smaller and gray. Defaults can be changed with `--bilingual-zh-font-size`,
+`--bilingual-ja-font-size`, `--bilingual-zh-colour`, and `--bilingual-ja-colour`
+(colours use the ASS `&HAABBGGRR` format). The Japanese line is the gap-filled
+SRT used for translation, so the two lines stay aligned cue by cue.
 
 Reduce translation context if translated lines include previous subtitles:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 0
+python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
 Use a more aggressive gap-fill setting:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 \
+python scripts/video_to_zh_srt.py path/to/input.mp4 \
   --fill-min-gap-seconds 6 \
   --fill-min-speech-seconds 2
 ```
@@ -235,7 +249,7 @@ This may recover more quiet speech, but can also introduce less stable short lin
 Continue batch processing after one video fails:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/ --continue-on-error
+python scripts/video_to_zh_srt.py path/to/videos/ --continue-on-error
 ```
 
 ## Step-by-Step Usage
@@ -265,6 +279,15 @@ python scripts/translate_srt_hymt.py subtitles/ja/input.filled.ja.srt \
   --output subtitles/zh/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
   --context-size 1
+```
+
+Build a bilingual ASS from the aligned Japanese and Chinese SRTs:
+
+```bash
+python scripts/make_bilingual_ass.py \
+  --zh-srt subtitles/zh/input.zh.srt \
+  --ja-srt subtitles/ja/input.filled.ja.srt \
+  --output subtitles/zh/input.bilingual.ass
 ```
 
 Generate a quality report:
@@ -339,7 +362,7 @@ ffmpeg -version
 Lower or disable translation context:
 
 ```bash
-python scripts/video_to_zh_srt.py videos/input.mp4 --context-size 0
+python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
 ### Some Speech Is Missed
@@ -372,4 +395,3 @@ Do not commit:
 - Add configurable ASR initial prompts for names, terms, products, and scene-specific vocabulary.
 - Add a configurable glossary for recurring names and terms.
 - Continue improving ASR post-processing for isolated symbols, meaningless short subtitles, OCR-like noise, and end-credit noise.
-- Add bilingual SRT or ASS output.

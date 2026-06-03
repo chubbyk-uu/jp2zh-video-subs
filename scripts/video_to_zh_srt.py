@@ -13,6 +13,7 @@ TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt.py"
 TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_hymt.py"
 QUALITY_REPORT_SCRIPT = SCRIPTS_DIR / "quality_report.py"
 FILL_GAPS_SCRIPT = SCRIPTS_DIR / "fill_ja_srt_gaps.py"
+BILINGUAL_SCRIPT = SCRIPTS_DIR / "make_bilingual_ass.py"
 WHISPER_MODEL = PROJECT_ROOT / "models" / "faster-whisper-large-v3"
 TRANSLATE_MODEL = PROJECT_ROOT / "models" / "HY-MT1.5-7B-GGUF" / "HY-MT1.5-7B-Q4_K_M.gguf"
 VIDEO_EXTENSIONS = {
@@ -187,6 +188,28 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
     ]
     run(translate_command)
 
+    bilingual_output: Path | None = None
+    if args.bilingual:
+        bilingual_output = output.with_suffix(".ass")
+        run([
+            sys.executable,
+            str(BILINGUAL_SCRIPT),
+            "--zh-srt",
+            str(output),
+            "--ja-srt",
+            str(translate_input_srt),
+            "--output",
+            str(bilingual_output),
+            "--zh-font-size",
+            str(args.bilingual_zh_font_size),
+            "--ja-font-size",
+            str(args.bilingual_ja_font_size),
+            "--zh-colour",
+            args.bilingual_zh_colour,
+            "--ja-colour",
+            args.bilingual_ja_colour,
+        ])
+
     if not args.skip_quality_report:
         report_path = job_dir / f"{video.stem}.quality.txt"
         quality_command = [
@@ -216,8 +239,12 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
     copied_output = video.parent / output.name
     if not args.no_copy_to_video_dir and copied_output != output:
         shutil.copy2(output, copied_output)
+        if bilingual_output is not None:
+            shutil.copy2(bilingual_output, video.parent / bilingual_output.name)
 
     print(f"Wrote {output}")
+    if bilingual_output is not None:
+        print(f"Bilingual ASS: {bilingual_output}")
     if not args.no_copy_to_video_dir:
         print(f"Chinese SRT next to video: {copied_output}")
     print(f"Intermediate Japanese SRT: {ja_srt}")
@@ -237,6 +264,15 @@ def main() -> None:
     parser.add_argument("--delete-audio", action="store_true", help="Delete extracted WAV audio after processing")
     parser.add_argument("--skip-quality-report", action="store_true", help="Do not write a quality report")
     parser.add_argument("--skip-gap-fill", action="store_true", help="Do not run the audio-aware gap fill stage")
+    parser.add_argument(
+        "--bilingual",
+        action="store_true",
+        help="Also write a bilingual ASS (Chinese on top, Japanese below) next to the Chinese SRT",
+    )
+    parser.add_argument("--bilingual-zh-font-size", type=int, default=36)
+    parser.add_argument("--bilingual-ja-font-size", type=int, default=24)
+    parser.add_argument("--bilingual-zh-colour", default="&H0000FFFF", help="ASS colour &HAABBGGRR for the Chinese line")
+    parser.add_argument("--bilingual-ja-colour", default="&H00B4B4B4", help="ASS colour &HAABBGGRR for the Japanese line")
     parser.add_argument("--context-size", type=int, default=1)
     parser.add_argument("--language", default="ja")
     parser.add_argument("--condition-on-previous-text", action="store_true")
@@ -272,6 +308,8 @@ def main() -> None:
     require_file(TRANSLATE_SCRIPT, "translation script")
     require_file(QUALITY_REPORT_SCRIPT, "quality report script")
     require_file(FILL_GAPS_SCRIPT, "gap fill script")
+    if args.bilingual:
+        require_file(BILINGUAL_SCRIPT, "bilingual ASS script")
 
     input_path = args.input.resolve()
     videos = discover_videos(input_path, args.recursive)
