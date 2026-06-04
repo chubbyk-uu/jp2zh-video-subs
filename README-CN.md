@@ -155,7 +155,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - 识别语言：日语 `ja`
 - Whisper 前文串联：默认关闭，减少长视频串文和幻觉
 - 单条字幕最大显示时长：默认 10 秒
-- 翻译上下文：一键流程默认前 1 条原文字幕
+- 翻译上下文：默认带前 1 轮对话历史（上一句原文/译文作为对话上文，当前轮只翻当前句）；设为 0 则逐句独立翻译
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
 - VAD：默认开启，并使用较敏感配置
 - 二阶段补漏：默认开启
@@ -409,7 +409,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### 字幕有重复内容
 
-先查看质量报告里的 `Suspicious adjacent duplicate zh entries`。ASR 阶段会按词级时间戳切分过长内部空隙，并合并很短的相邻片段；翻译阶段也会对相邻重复译文做一次无上下文重试。
+先查看质量报告里的 `Suspicious adjacent duplicate zh entries`。ASR 阶段会按词级时间戳切分过长内部空隙，并合并很短的相邻片段；翻译阶段把上下文作为对话历史传入（当前轮只放当前句），从源头避免把上一句翻进来，并在译文残留日文假名时无历史重试一次。
 
 ### 补漏字幕置信度偏低或疑似幻觉
 

@@ -1,13 +1,11 @@
 from translate_srt_hymt import (
     Entry,
+    build_messages,
     clean_translation,
-    is_context_bleed,
     is_context_sensitive_short_text,
-    looks_context_leaked,
     normalize_source,
     padded_time,
     parse_srt,
-    text_ratio,
 )
 
 
@@ -28,54 +26,26 @@ def test_is_context_sensitive_short_text():
     assert is_context_sensitive_short_text("今日はいい天気ですね") is False
 
 
-def test_looks_context_leaked_detects_kana():
-    assert looks_context_leaked("はい", "はい、そうですね") is True
-    assert looks_context_leaked("はい", "好的") is False
-
-
 def test_normalize_source_leaves_text_unchanged_without_replacements():
     assert normalize_source("今日はいい天気ですね") == "今日はいい天気ですね"
 
 
-def test_text_ratio_ignores_whitespace_and_handles_empty():
-    assert text_ratio("a b c", "abc") == 1.0
-    assert text_ratio("你好世界", "你好世界") == 1.0
-    assert text_ratio("", "你好") == 0.0
-    assert text_ratio("今天天气怎么样", "你叫什么名字") < 0.5
+def test_build_messages_without_history_is_single_instructed_turn():
+    msgs = build_messages("こんにちは", [])
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "user"
+    assert "翻译" in msgs[0]["content"]
+    assert msgs[0]["content"].endswith("こんにちは")
 
 
-def test_is_context_bleed_fires_when_translation_echoes_but_source_differs():
-    # Different source line, but the translation copies the previous translation.
-    assert is_context_bleed(
-        source="今天天气怎么样",
-        translated="我叫小明",
-        previous_source="你叫什么名字",
-        previous_translation="我叫小明",
-    ) is True
-
-
-def test_is_context_bleed_ignores_genuinely_repeated_line():
-    # Both source and translation stay similar -> a real repeat, not a leak.
-    assert is_context_bleed(
-        source="没有办公室啊",
-        translated="根本没有办公室啊",
-        previous_source="没有办公室",
-        previous_translation="根本没有办公室",
-    ) is False
-
-
-def test_is_context_bleed_ignores_distinct_translation():
-    # Source differs and the translation also differs -> normal, leave it.
-    assert is_context_bleed(
-        source="我想喝水",
-        translated="我想喝水",
-        previous_source="天气很好",
-        previous_translation="天气很好",
-    ) is False
-
-
-def test_is_context_bleed_needs_a_previous_translation():
-    assert is_context_bleed("甲", "乙", "", "") is False
+def test_build_messages_with_history_keeps_current_turn_source_only():
+    # Prior pair becomes user/assistant turns; the current turn carries only the current
+    # source, so the model has no previous-line text to fuse into the output.
+    msgs = build_messages("今のセリフ", [("前のセリフ", "上一句译文")])
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    assert "前のセリフ" in msgs[0]["content"] and "翻译" in msgs[0]["content"]
+    assert msgs[1] == {"role": "assistant", "content": "上一句译文"}
+    assert msgs[2] == {"role": "user", "content": "今のセリフ"}
 
 
 def test_padded_time_keeps_default_timing():

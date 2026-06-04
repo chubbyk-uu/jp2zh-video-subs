@@ -341,7 +341,13 @@ def main() -> None:
     parser.add_argument("--bilingual-ja-font-size", type=int, default=24)
     parser.add_argument("--bilingual-zh-colour", default="&H0000FFFF", help="ASS colour &HAABBGGRR for the Chinese line")
     parser.add_argument("--bilingual-ja-colour", default="&H00B4B4B4", help="ASS colour &HAABBGGRR for the Japanese line")
-    parser.add_argument("--context-size", type=int, default=1)
+    parser.add_argument(
+        "--context-size",
+        type=int,
+        default=1,
+        help="Prior dialogue turns supplied to the translator as chat history (previous "
+        "source/translation pairs). 0 translates each line standalone.",
+    )
     parser.add_argument("--lead-out-seconds", type=float, default=0.5)
     parser.add_argument("--min-display-seconds", type=float, default=1.5)
     parser.add_argument("--language", default="ja")

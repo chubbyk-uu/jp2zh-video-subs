@@ -158,7 +158,7 @@ The one-command pipeline uses:
 - Source language: Japanese, `ja`
 - Whisper previous-text conditioning: disabled by default
 - Max subtitle display duration: 10 seconds
-- Translation context: previous 1 source subtitle in the one-command pipeline
+- Translation context: previous 1 dialogue turn as chat history (previous source/translation pair; the current turn carries only the current line). 0 translates each line standalone
 - Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
 - VAD: enabled with a sensitive default configuration
 - Gap fill: enabled by default
@@ -430,7 +430,7 @@ Gap fill is enabled by default. It does not judge gaps by duration alone; it che
 
 ### Duplicate-Looking Lines
 
-Check the quality report, especially `Suspicious adjacent duplicate zh entries`. The ASR step already splits long internal word gaps and merges short adjacent fragments, while translation retries adjacent duplicate-looking output once without context.
+Check the quality report, especially `Suspicious adjacent duplicate zh entries`. The ASR step already splits long internal word gaps and merges short adjacent fragments, while translation supplies context as chat history (the current turn carries only the current line), which avoids fusing the previous line into the output at the source, and retries once without history if Japanese kana leaks into a translation.
 
 ### Low-Confidence or Hallucinated Gap Fills
 

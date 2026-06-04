@@ -1,23 +1,28 @@
 from __future__ import annotations
 
 import argparse
-import difflib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from llama_cpp import Llama
 
-from srt_utils import compact_text, padded_end, parse_time, srt_time
+from srt_utils import padded_end, parse_time, srt_time
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
 DEFAULT_MODEL = PROJECT_ROOT / "models" / "HY-MT1.5-7B-GGUF" / "HY-MT1.5-7B-Q4_K_M.gguf"
 
-# Context-bleed detection: the current translation echoes the previous one even
-# though the two source lines are clearly different. Retranslate without context.
-DUP_TRANSLATION_RATIO = 0.8  # current vs previous translation must be at least this similar
-DIFF_SOURCE_RATIO = 0.5  # current vs previous source must be at most this similar
+# HY-MT is a translation-specialised model: it translates whatever source it is shown, so
+# any "reference context" placed in the same request gets fused into the output (it bleeds
+# the previous line and drops the current one). Context is therefore supplied as prior chat
+# turns (previous source -> previous translation); the current turn carries only the line to
+# translate, which the model has no reason to merge.
+TRANSLATE_INSTRUCTION = "将以下日语字幕翻译为自然、口语化的简体中文。"
+TRANSLATE_SUFFIX = "只输出译文，不要解释，不要保留日文："
+# Drop carried history across a long silence: lines that far apart are usually different
+# scenes, so the previous line is misleading rather than helpful context.
+HISTORY_RESET_SECONDS = 10.0
 
 
 @dataclass
@@ -98,75 +103,36 @@ def is_context_sensitive_short_text(text: str) -> bool:
     return compact in filler_words
 
 
-def text_ratio(a: str, b: str) -> float:
-    """Order- and length-aware similarity in [0, 1] on whitespace-stripped text.
-
-    Uses difflib (Ratcliff/Obershelp), not a character-set overlap, so frequent
-    shared CJK characters do not inflate the score for unrelated lines."""
-    a, b = compact_text(a), compact_text(b)
-    if not a or not b:
-        return 0.0
-    return difflib.SequenceMatcher(None, a, b).ratio()
-
-
-def is_context_bleed(
-    source: str,
-    translated: str,
-    previous_source: str,
-    previous_translation: str,
-    translation_ratio: float = DUP_TRANSLATION_RATIO,
-    source_ratio: float = DIFF_SOURCE_RATIO,
-) -> bool:
-    """True when the translation echoes the previous one while the sources differ.
-
-    The asymmetry is the signal: a genuinely repeated line keeps a similar source,
-    so it is left alone; only a translation that copies the previous line despite a
-    different source is treated as context leaking in."""
-    if not previous_translation:
-        return False
-    return (
-        text_ratio(translated, previous_translation) >= translation_ratio
-        and text_ratio(source, previous_source) <= source_ratio
-    )
-
-
-def looks_context_leaked(source: str, translated: str) -> bool:
-    source_compact = re.sub(r"\s+", "", source)
-    translated_compact = re.sub(r"\s+", "", translated)
-    if not translated_compact:
-        return False
-    if re.search(r"[ぁ-ゟ゠-ヿ]", translated_compact):
-        return True
-    if any(token in translated_compact for token in ("さん", "ちゃん", "くん", "<context>", "<current>")):
-        return True
-    if len(source_compact) <= 2 and len(translated_compact) > 10:
-        return True
-    return len(translated_compact) > max(36, len(source_compact) * 3 + 18)
-
-
-def translate_one(llm: Llama, text: str, context: str, extra_instruction: str = "") -> str:
-    text = normalize_source(text)
-    if is_context_sensitive_short_text(text):
-        context = ""
-    instruction = f"{extra_instruction}" if extra_instruction else ""
-    if context:
-        prompt = (
-            "以下是前文字幕，仅用于理解语境，不要翻译前文，也不要输出前文：\n"
-            f"<context>{context}</context>\n\n"
-            "参考上面的信息，把 <current> 标签内的日语字幕翻译成自然、口语化的简体中文。"
-            f"{instruction}"
-            "只输出当前句的中文纯文本译文，不要解释，不要保留日文，不要输出任何 XML 标签：\n"
-            f"<current>{text}</current>"
-        )
+def build_messages(text: str, history: list[tuple[str, str]], extra_instruction: str = "") -> list[dict]:
+    """Chat turns for one translation: prior (source -> translation) pairs as history,
+    then the current source as its own user turn so only it gets translated."""
+    instruction = TRANSLATE_INSTRUCTION + extra_instruction + TRANSLATE_SUFFIX
+    messages: list[dict] = []
+    for position, (prev_source, prev_translation) in enumerate(history):
+        # The instruction rides on the first user turn; later turns continue the pattern.
+        content = f"{instruction}\n{prev_source}" if position == 0 else prev_source
+        messages.append({"role": "user", "content": content})
+        messages.append({"role": "assistant", "content": prev_translation})
+    if history:
+        messages.append({"role": "user", "content": text})
     else:
-        prompt = (
-            "将以下日语字幕翻译为自然、口语化的简体中文。"
-            f"{instruction}"
-            "只输出译文，不要解释，不要保留日文：\n"
-            f"{text}"
-        )
+        messages.append({"role": "user", "content": f"{instruction}\n{text}"})
+    return messages
+
+
+def translate_one(
+    llm: Llama,
+    text: str,
+    history: list[tuple[str, str]] | None = None,
+    extra_instruction: str = "",
+) -> str:
+    text = normalize_source(text)
+    # Short, context-sensitive fillers translate better standalone than swayed by a prior
+    # turn, so carry no history for them.
+    if history is None or is_context_sensitive_short_text(text):
+        history = []
     result = llm.create_chat_completion(
-        messages=[{"role": "user", "content": prompt}],
+        messages=build_messages(text, history, extra_instruction),
         max_tokens=160,
         temperature=0.2,
         top_k=20,
@@ -176,29 +142,12 @@ def translate_one(llm: Llama, text: str, context: str, extra_instruction: str = 
     return clean_translation(result["choices"][0]["message"]["content"])
 
 
-def translate_with_retry(
-    llm: Llama,
-    text: str,
-    context: str,
-    previous_source: str = "",
-    previous_translation: str = "",
-) -> str:
-    translated = translate_one(llm, text, context)
-    if context and looks_context_leaked(text, translated):
-        translated = translate_one(llm, text, "")
-    if context and is_context_bleed(text, translated, previous_source, previous_translation):
-        translated = translate_one(
-            llm,
-            text,
-            "",
-            "这句和上一句原文不同，必须只翻译当前句，不能照抄上一句译文。",
-        )
+def translate_with_retry(llm: Llama, text: str, history: list[tuple[str, str]] | None = None) -> str:
+    translated = translate_one(llm, text, history)
+    # If Japanese kana leaked into the output, retry once standalone with a stronger note.
     if re.search(r"[ぁ-ゟ゠-ヿ]", translated):
         translated = translate_one(
-            llm,
-            text,
-            "",
-            "译文中不能出现任何日文假名或片假名；人名请音译成中文。",
+            llm, text, [], "译文中不能出现任何日文假名或片假名；人名请音译成中文。"
         )
     return translated
 
@@ -229,7 +178,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--context-size", type=int, default=2)
+    parser.add_argument(
+        "--context-size",
+        type=int,
+        default=1,
+        help="Number of prior dialogue turns (previous source/translation pairs) supplied "
+        "as chat history for context. 0 disables context (translate each line standalone).",
+    )
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
     parser.add_argument("--lead-out-seconds", type=float, default=0.0)
     parser.add_argument("--min-display-seconds", type=float, default=0.0)
@@ -253,25 +208,20 @@ def main() -> None:
     )
 
     with args.output.open("w", encoding="utf-8") as f:
-        previous_source: list[str] = []
-        previous_translation = ""
+        history: list[tuple[str, str]] = []  # (source, translation) pairs, oldest -> newest
+        previous_end: float | None = None
         for index, entry in enumerate(entries):
             next_entry = entries[index + 1] if index + 1 < len(entries) else None
-            context = ""
-            if args.context_size > 0:
-                context = "\n".join(previous_source[-args.context_size :])
-            translated = translate_with_retry(
-                llm,
-                entry.text,
-                context,
-                previous_source[-1] if previous_source else "",
-                previous_translation,
-            )
+            # A long silence usually means a scene change; drop the stale history.
+            if previous_end is not None and entry.start - previous_end > HISTORY_RESET_SECONDS:
+                history = []
+            turns = history[-args.context_size :] if args.context_size > 0 else []
+            translated = translate_with_retry(llm, entry.text, turns)
             if not translated:
                 translated = entry.text
             write_entry(f, entry, translated, next_entry, args.lead_out_seconds, args.min_display_seconds)
-            previous_source.append(normalize_source(entry.text))
-            previous_translation = translated
+            history.append((normalize_source(entry.text), translated))
+            previous_end = entry.end
             print(f"{entry.index}: {translated}", flush=True)
 
     print(f"Wrote {args.output}")
