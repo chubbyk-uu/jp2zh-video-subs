@@ -225,6 +225,14 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.fill_max_clip_seconds),
             "--min-fill-chars",
             str(args.fill_min_chars),
+            "--hallucination-min-repeats",
+            str(args.hallucination_min_repeats),
+            "--hallucination-repeat-no-speech-prob",
+            str(args.hallucination_repeat_no_speech_prob),
+            "--hallucination-repeat-avg-logprob",
+            str(args.hallucination_repeat_avg_logprob),
+            "--hallucination-high-risk-max-repeats",
+            str(args.hallucination_high_risk_max_repeats),
         ]
         if args.condition_on_previous_text:
             fill_command.append("--condition-on-previous-text")
@@ -372,6 +380,10 @@ def main() -> None:
     parser.add_argument("--fill-min-speech-seconds", type=float, default=1.0)
     parser.add_argument("--fill-max-clip-seconds", type=float, default=45.0)
     parser.add_argument("--fill-min-chars", type=int, default=3)
+    parser.add_argument("--hallucination-min-repeats", type=int, default=10)
+    parser.add_argument("--hallucination-repeat-no-speech-prob", type=float, default=0.75)
+    parser.add_argument("--hallucination-repeat-avg-logprob", type=float, default=-0.80)
+    parser.add_argument("--hallucination-high-risk-max-repeats", type=int, default=3)
     parser.add_argument(
         "--no-copy-to-video-dir",
         action="store_true",

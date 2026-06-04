@@ -2,6 +2,7 @@ from argparse import Namespace
 
 from fill_ja_srt_gaps import (
     fill_gaps,
+    is_high_risk_repeat_phrase,
     looks_like_hallucination,
     looks_like_noise,
     normalize_phrase,
@@ -33,22 +34,23 @@ def test_split_clip():
     assert len(split_clip(Interval(0, 3), 4)) == 1
 
 
-def test_looks_like_hallucination_flags_boilerplate_and_greeting_family():
+def test_looks_like_hallucination_flags_only_platform_boilerplate():
     # Platform boilerplate.
     assert looks_like_hallucination("ご視聴ありがとうございました") is True
     assert looks_like_hallucination("チャンネル登録お願いします") is True
     assert looks_like_hallucination("それではまた") is True
-    # Conversational greeting / farewell / credits family that leaks from gap clips.
-    assert looks_like_hallucination("おやすみなさい") is True
-    assert looks_like_hallucination("ありがとうございました") is True
-    assert looks_like_hallucination("バイバイ") is True
     assert looks_like_hallucination("アーメン") is True
-    assert looks_like_hallucination("おはようございます") is True
-    # Real in-scene reactions must not be flagged.
+    assert looks_like_hallucination("笑い声") is True
+    assert looks_like_hallucination("拍手") is True
+    # Ordinary dialogue phrases are not filtered by text alone.
+    assert looks_like_hallucination("おやすみなさい") is False
+    assert looks_like_hallucination("ありがとうございました") is False
+    assert looks_like_hallucination("バイバイ") is False
+    assert looks_like_hallucination("おはようございます") is False
     assert looks_like_hallucination("気持ちいい") is False
     assert looks_like_hallucination("やばい") is False
     assert looks_like_hallucination("すごい") is False
-    assert looks_like_hallucination("お疲れ様") is False  # bare form; only お疲れ様でした is listed
+    assert looks_like_hallucination("お疲れ様でした") is False
 
 
 def test_normalize_phrase_strips_trailing_punctuation():
@@ -56,18 +58,61 @@ def test_normalize_phrase_strips_trailing_punctuation():
     assert normalize_phrase("いいね！") == "いいね"
 
 
-def test_repeated_hallucination_texts_catches_mass_repeats_not_real_reactions():
-    def entry(text):
-        return SubtitleEntry(0.0, 1.0, text)
+def test_is_high_risk_repeat_phrase_matches_fixed_greetings():
+    assert is_high_risk_repeat_phrase("おやすみなさい") is True
+    assert is_high_risk_repeat_phrase("どうもありがとうございました") is True
+    assert is_high_risk_repeat_phrase("お疲れ様でした") is True
+    assert is_high_risk_repeat_phrase("おいしい") is False
+    assert is_high_risk_repeat_phrase("気持ちいい") is False
+
+
+def test_repeated_hallucination_texts_requires_repeat_and_low_confidence():
+    def entry(text, avg_logprob=-0.2, no_speech_prob=0.1):
+        return SubtitleEntry(0.0, 1.0, text, avg_logprob, no_speech_prob)
 
     entries = (
-        [entry("ありがとうございました"), entry("ありがとうございました。")]
-        + [entry("ありがとうございました")] * 3  # 5 total once punctuation is normalized
-        + [entry("気持ちいい")] * 3  # a genuine reaction repeated only 3x
+        [entry("ありがとうございました", no_speech_prob=0.9)]
+        + [entry("ありがとうございました。", no_speech_prob=0.9)]
+        + [entry("ありがとうございました", no_speech_prob=0.9)] * 8
+        + [entry("気持ちいい")] * 10
     )
-    repeated = repeated_hallucination_texts(entries, min_repeats=5)
+    repeated = repeated_hallucination_texts(
+        entries,
+        min_repeats=10,
+        no_speech_prob_at_least=0.75,
+        avg_logprob_at_most=-0.8,
+        high_risk_max_repeats=20,
+    )
     assert "ありがとうございました" in repeated
     assert "気持ちいい" not in repeated
+
+
+def test_repeated_hallucination_texts_can_use_low_avg_logprob():
+    entries = [SubtitleEntry(0.0, 1.0, "またね", -0.9, 0.2) for _ in range(10)]
+
+    repeated = repeated_hallucination_texts(
+        entries,
+        min_repeats=10,
+        no_speech_prob_at_least=0.75,
+        avg_logprob_at_most=-0.8,
+        high_risk_max_repeats=20,
+    )
+
+    assert repeated == {"またね"}
+
+
+def test_repeated_hallucination_texts_drops_extreme_high_risk_repeats():
+    entries = [SubtitleEntry(0.0, 1.0, "おやすみなさい", -0.2, 0.1) for _ in range(20)]
+
+    repeated = repeated_hallucination_texts(
+        entries,
+        min_repeats=10,
+        no_speech_prob_at_least=0.75,
+        avg_logprob_at_most=-0.8,
+        high_risk_max_repeats=20,
+    )
+
+    assert repeated == {"おやすみなさい"}
 
 
 def test_fill_gaps_with_no_entries_writes_empty_output(tmp_path):

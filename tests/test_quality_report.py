@@ -7,6 +7,8 @@ from quality_report import (
     parse_fills_metadata,
     parse_srt,
     percentile,
+    possible_japanese_text_left,
+    repeated_fill_phrase_warnings,
 )
 
 
@@ -30,6 +32,20 @@ def test_parse_srt_skips_blocks_without_timecode(tmp_path):
     assert entries[0].end == 2.0
 
 
+def test_parse_srt_accepts_timecode_settings(tmp_path):
+    path = tmp_path / "settings.srt"
+    path.write_text(
+        "1\n00:00:01,000 --> 00:00:02,500 position:50%\nhello\n\n",
+        encoding="utf-8",
+    )
+
+    entries = parse_srt(path)
+
+    assert len(entries) == 1
+    assert entries[0].start == 1.0
+    assert entries[0].end == 2.5
+
+
 def test_parse_srt_missing_file_returns_empty(tmp_path):
     assert parse_srt(tmp_path / "missing.srt") == []
 
@@ -45,6 +61,21 @@ def test_adjacent_duplicate_candidates_ignores_when_ja_also_duplicates():
     ja = [Entry("1", 0, 1, "A"), Entry("2", 1, 2, "A")]
     zh = [Entry("1", 0, 1, "译"), Entry("2", 1, 2, "译")]
     assert adjacent_duplicate_candidates(ja, zh) == []
+
+
+def test_possible_japanese_text_left_flags_kana_and_non_simplified_cjk():
+    entries = [
+        Entry("1", 0, 1, "这里是简体中文，双方状态很好，争取写清楚，保持安静，回到旧地方"),
+        Entry("2", 1, 2, "関係者？"),
+        Entry("3", 2, 3, "こんにちは"),
+    ]
+
+    candidates = possible_japanese_text_left(entries)
+
+    assert [(item.index, reason) for item, reason in candidates] == [
+        ("2", "non_simplified_cjk"),
+        ("3", "kana"),
+    ]
 
 
 def test_parse_fills_metadata(tmp_path):
@@ -90,6 +121,7 @@ def _report_args(tmp_path):
         warn_avg_logprob_below=-0.80,
         warn_no_speech_prob_above=0.50,
         warn_compression_ratio_above=2.20,
+        warn_repeated_fill_phrase_count=5,
         max_samples=20,
     )
 
@@ -106,6 +138,65 @@ def test_build_report_flags_low_confidence_fills(tmp_path):
     assert "text=bad-line" in report
     assert "text=good-line" not in report
     assert "kept_fill_samples:" in report
+    assert "repeated_kept_fill_phrases: 0" in report
+
+
+def test_repeated_fill_phrase_warnings_counts_kept_repeated_phrases(tmp_path):
+    path = tmp_path / "fills.tsv"
+    path.write_text(
+        "status\treason\tstart\tend\tduration\tclip_start\tclip_end\t"
+        "avg_logprob\tno_speech_prob\tcompression_ratio\ttext\n"
+        + "".join(
+            f"kept\t\t{i}.0\t{i + 1}.0\t1.0\t{i}.0\t{i + 1}.0\t-0.50\t0.80\t1.10\tおやすみなさい\n"
+            for i in range(5)
+        )
+        + "filtered\tnoise\t10.0\t11.0\t1.0\t10.0\t11.0\t-0.50\t0.80\t1.10\tおやすみなさい\n",
+        encoding="utf-8",
+    )
+    rows = parse_fills_metadata(path)
+
+    warnings = repeated_fill_phrase_warnings(rows, 5)
+
+    assert len(warnings) == 1
+    assert warnings[0][0] == "おやすみなさい"
+    assert len(warnings[0][1]) == 5
+
+
+def test_build_report_lists_repeated_kept_fill_phrases(tmp_path):
+    path = tmp_path / "repeated-fills.tsv"
+    path.write_text(
+        "status\treason\tstart\tend\tduration\tclip_start\tclip_end\t"
+        "avg_logprob\tno_speech_prob\tcompression_ratio\ttext\n"
+        + "".join(
+            f"kept\t\t{i}.0\t{i + 1}.0\t1.0\t{i}.0\t{i + 1}.0\t-0.50\t0.80\t1.10\tありがとうございました。\n"
+            for i in range(5)
+        ),
+        encoding="utf-8",
+    )
+    args = _report_args(tmp_path)
+    args.fills_metadata = path
+
+    report = build_report(args)
+
+    assert "repeated_kept_fill_phrases: 1" in report
+    assert "count=5" in report
+    assert "text=ありがとうございました" in report
+
+
+def test_build_report_lists_possible_japanese_or_traditional_left(tmp_path):
+    zh = tmp_path / "zh.srt"
+    zh.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\n関係者？\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\n你好\n\n",
+        encoding="utf-8",
+    )
+    args = _report_args(tmp_path)
+    args.zh_srt = zh
+
+    report = build_report(args)
+
+    assert "possible_japanese_or_traditional_left: 1" in report
+    assert "possible non_simplified_cjk at 1" in report
 
 
 def test_build_report_respects_relaxed_thresholds(tmp_path):

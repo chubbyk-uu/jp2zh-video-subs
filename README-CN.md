@@ -12,11 +12,11 @@
 2. 用本地 `faster-whisper-large-v3` 识别日语并生成日语 SRT。
 3. 结合 WAV 音频和已有日语字幕，自动补识别字幕空窗里的有效语音。
 4. 用本地 `HY-MT1.5-7B-GGUF` 把补漏后的日语 SRT 翻译成简体中文字幕 SRT。
-5. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕和中文字幕里的日文残留。
+5. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
 
 开启二阶段补漏时（默认开启），第 2、3 步会在同一个进程里完成，Whisper 模型只加载一次，而不是加载两次。翻译阶段仍是独立进程，这样 Whisper 和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
 
-批量处理时，视频按文件大小从小到大处理，并且每个视频的音频（第 1 步）会由后台线程提前一个抽取。抽音频是 CPU/IO 密集、识别和翻译是 GPU 密集，所以"当前视频在 GPU 上跑的同时，提前抽下一个视频的音频"能把提取藏进 GPU 时间里，而不是卡在它前面。提取始终是单路串行读取，因此在机械盘和 SSD 上行为一致。
+批量处理时，视频按文件大小从小到大处理，并且每个视频的音频（第 1 步）会由后台线程提前一个抽取。抽音频是 CPU/IO 密集、识别和翻译是 GPU 密集，所以"当前视频在 GPU 上跑的同时，提前抽下一个视频的音频"能把提取藏进 GPU 时间里，而不是卡在它前面。提取始终保持单路串行读取，以降低机械盘随机 IO 压力；同一块机械盘上不建议同时跑多个流水线。
 
 项目不依赖在线 API。模型文件不包含在仓库里，也不建议提交到 Git。
 
@@ -169,9 +169,13 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - `--fill-max-clip-seconds 45`：单个补识别音频片段最长 45 秒。
 - `--fill-min-chars 3`：过短补漏结果不写入。
 
-由于激进门槛会对接近静音的片段重新识别，补漏阶段同时会过滤 Whisper 幻觉：一份精选的 YouTube 收尾套话清单
-（`ご視聴…`、`チャンネル登録`、`それではまた` 等），外加频次兜底（`--hallucination-min-repeats 5`）——
-同一短语在补漏结果中出现 5 次及以上即判为幻觉删除（失控幻觉的重复次数远超真实反应）。每条的过滤原因
+由于激进门槛会对接近静音的片段重新识别，补漏阶段同时会过滤 Whisper 幻觉。硬过滤清单只保留平台/字幕套话
+（`ご視聴…`、`チャンネル登録`、`それではまた` 等）以及明显字幕标签/语境错配短语
+（`笑い声`、`拍手`、`アーメン`）。问候、感谢、告别等普通对话不会只因为文本命中就被删除。
+频次兜底会检查同一视频补漏中重复至少 10 次的短语，但只有该重复组同时像近静音幻觉
+（`--hallucination-repeat-no-speech-prob 0.75`）或低置信度
+（`--hallucination-repeat-avg-logprob -0.80`）时才自动删除。高风险固定寒暄/感谢短句另有绝对重复上限
+（`--hallucination-high-risk-max-repeats 3`）。每条的过滤原因
 （`hallucination`、`hallucination_repeat`、`noise` 等）会记录在 `input.fills.tsv` 中。
 
 ## 输出文件
@@ -409,17 +413,17 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### 字幕有重复内容
 
-先查看质量报告里的 `Suspicious adjacent duplicate zh entries`。ASR 阶段会按词级时间戳切分过长内部空隙，并合并很短的相邻片段；翻译阶段把上下文作为对话历史传入（当前轮只放当前句），从源头避免把上一句翻进来，并在译文残留日文假名时无历史重试一次。
+先查看质量报告里的 `suspicious_adjacent_duplicates`、`japanese_kana_left` 和 `possible_japanese_or_traditional_left`。ASR 阶段会按词级时间戳切分过长内部空隙，并合并很短的相邻片段；翻译阶段把上下文作为对话历史传入（当前轮只放当前句），从源头避免把上一句翻进来，并在译文残留日文假名时无历史重试一次。`possible_japanese_or_traditional_left` 是针对纯汉字日文残留或非简体字符的保守复查提示，不会自动过滤字幕。
 
 ### 补漏字幕置信度偏低或疑似幻觉
 
-补漏字幕是在安静或不确定的音频上补出来的，所以最容易被听错或产生幻觉。流水线会把每条补漏字幕的 Whisper 置信度记录到 `work/<名称>/<名称>.fills.tsv`，质量报告则在 `[Gap Fill Metadata]` 一节汇总，包含 `low_confidence_kept_entries` 和一份样例列表。三个指标含义：
+补漏字幕是在安静或不确定的音频上补出来的，所以最容易被听错或产生幻觉。流水线会把每条补漏字幕的 Whisper 置信度记录到 `work/<名称>/<名称>.fills.tsv`，质量报告则在 `[Gap Fill Metadata]` 一节汇总，包含 `low_confidence_kept_entries`、`repeated_kept_fill_phrases` 和样例列表。置信度指标含义：
 
 - `avg_logprob`：平均 token 对数概率，**越低越不可信**（低于 `--warn-avg-logprob-below`，默认 `-0.80` 时标记）。
 - `no_speech_prob`：该片段不是语音的概率，**越高越可能是在近乎静音处的幻觉**（高于 `--warn-no-speech-prob-above`，默认 `0.50` 时标记）。
 - `compression_ratio`：文本重复度，**越高越像重复/乱码**（高于 `--warn-compression-ratio-above`，默认 `2.20` 时标记）。
 
-按样例列表里的时间戳去日语 SRT 里抽查，再按需收紧或放宽阈值。注意：它只覆盖二阶段补漏，不含第一阶段主转写。
+按样例列表里的时间戳去日语 SRT 里抽查，再按需收紧或放宽阈值。`repeated_kept_fill_phrases` 默认在保留补漏中重复 3 次时只提示复查，不自动删除。注意：它只覆盖二阶段补漏，不含第一阶段主转写。
 
 ## Git 提交建议
 

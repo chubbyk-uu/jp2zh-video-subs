@@ -28,6 +28,7 @@ env/
 # Editor / OS
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
 CLAUDE.md

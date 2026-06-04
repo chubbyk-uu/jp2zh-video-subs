@@ -12,11 +12,11 @@ The one-command pipeline performs these steps:
 2. Transcribe Japanese audio into a Japanese SRT with local `faster-whisper-large-v3`.
 3. Run an audio-aware second pass to fill likely missed speech in subtitle gaps.
 4. Translate the filled Japanese SRT into Simplified Chinese with local `HY-MT1.5-7B-GGUF`.
-5. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese text left in Chinese subtitles.
+5. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles.
 
 When gap filling is enabled (the default), steps 2 and 3 run in a single process that loads the Whisper model once, instead of loading it twice. The translation step stays in its own process so the Whisper and translation models never share VRAM. All generated SRTs are sorted and de-overlapped so cues never overlap or go out of order.
 
-In batch mode, videos are processed smallest first, and each video's audio (step 1) is extracted one step ahead in a background thread. Audio extraction is CPU/IO bound while recognition and translation are GPU bound, so extracting the next video while the current one is on the GPU hides extraction behind the GPU work instead of blocking on it. Extraction stays a single serial read stream, so this behaves the same on HDD and SSD.
+In batch mode, videos are processed smallest first, and each video's audio (step 1) is extracted one step ahead in a background thread. Audio extraction is CPU/IO bound while recognition and translation are GPU bound, so extracting the next video while the current one is on the GPU hides extraction behind the GPU work instead of blocking on it. Extraction stays a single serial read stream to reduce random IO pressure on HDDs; avoid running multiple pipeline instances against the same mechanical disk.
 
 No online API is required for inference. Model files are not included in this repository and should not be committed.
 
@@ -174,11 +174,16 @@ Default gap-fill parameters:
 - `--fill-min-chars 3`: ignore very short fill results.
 
 Because the aggressive gates re-transcribe near-silent clips, gap fill also drops Whisper
-hallucinations: a curated list of YouTube sign-off boilerplate (`ご視聴…`, `チャンネル登録`,
-`それではまた`, …), plus a frequency backstop (`--hallucination-min-repeats 5`) that removes any
-phrase repeated five or more times across the fills — runaway hallucinations repeat far more
-than genuine reactions do. Filter reasons (`hallucination`, `hallucination_repeat`, `noise`,
-…) are recorded per row in `input.fills.tsv`.
+hallucinations. The hard list is limited to platform/subtitle boilerplate (`ご視聴…`,
+`チャンネル登録`, `それではまた`, …) plus clear subtitle labels/context-mismatched set
+phrases (`笑い声`, `拍手`, `アーメン`). Ordinary dialogue such as greetings, thanks, and
+farewells is not filtered by text alone. A confidence-aware frequency backstop considers
+phrases repeated at least 10 times across one video's fills, but only removes the phrase when
+the repeated group is also likely near-silence (`--hallucination-repeat-no-speech-prob 0.75`)
+or low-confidence (`--hallucination-repeat-avg-logprob -0.80`). High-risk fixed greetings
+and thanks also have an absolute repeat cap (`--hallucination-high-risk-max-repeats 3`).
+Filter reasons (`hallucination`, `hallucination_repeat`, `noise`, …) are recorded per row in
+`input.fills.tsv`.
 
 ## Outputs
 
@@ -430,21 +435,21 @@ Gap fill is enabled by default. It does not judge gaps by duration alone; it che
 
 ### Duplicate-Looking Lines
 
-Check the quality report, especially `Suspicious adjacent duplicate zh entries`. The ASR step already splits long internal word gaps and merges short adjacent fragments, while translation supplies context as chat history (the current turn carries only the current line), which avoids fusing the previous line into the output at the source, and retries once without history if Japanese kana leaks into a translation.
+Check the quality report, especially `suspicious_adjacent_duplicates`, `japanese_kana_left`, and `possible_japanese_or_traditional_left`. The ASR step already splits long internal word gaps and merges short adjacent fragments, while translation supplies context as chat history (the current turn carries only the current line), which avoids fusing the previous line into the output at the source, and retries once without history if Japanese kana leaks into a translation. `possible_japanese_or_traditional_left` is a conservative review hint for kanji-only leftovers or non-Simplified characters; it does not filter subtitles automatically.
 
 ### Low-Confidence or Hallucinated Gap Fills
 
 Gap-fill lines are added on quiet or uncertain audio, so they are the most likely
 to be misheard or hallucinated. For each gap-fill entry the pipeline records the
 Whisper confidence to `work/<name>/<name>.fills.tsv`, and the quality report
-summarises it under `[Gap Fill Metadata]`, including `low_confidence_kept_entries`
-and a sample list. The three signals are:
+summarises it under `[Gap Fill Metadata]`, including `low_confidence_kept_entries`,
+`repeated_kept_fill_phrases`, and sample lists. The confidence signals are:
 
 - `avg_logprob`: average token log-probability; **lower is less confident** (flagged below `--warn-avg-logprob-below`, default `-0.80`).
 - `no_speech_prob`: probability the clip is not speech; **higher means more likely a hallucination on near-silence** (flagged above `--warn-no-speech-prob-above`, default `0.50`).
 - `compression_ratio`: text repetitiveness; **higher means more repetitive/garbled** (flagged above `--warn-compression-ratio-above`, default `2.20`).
 
-Use the sample list to spot-check those timestamps in the Japanese SRT, and tighten or loosen the thresholds to taste. This only covers the second-pass gap fills, not the first-pass transcription.
+Use the sample lists to spot-check those timestamps in the Japanese SRT, and tighten or loosen the thresholds to taste. `repeated_kept_fill_phrases` is report-only by default at 3 kept repeats; it does not delete subtitles. This only covers the second-pass gap fills, not the first-pass transcription.
 
 ## Git Policy
 
