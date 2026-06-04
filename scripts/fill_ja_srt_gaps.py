@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import csv
 import re
-from collections import Counter
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 
 from faster_whisper.audio import decode_audio
 
@@ -129,10 +130,8 @@ def looks_like_noise(text: str, min_text_chars: int) -> bool:
 # Canonical Japanese Whisper hallucinations: video sign-off / subscribe / credits
 # boilerplate the model learned from YouTube-style training data. They surface when it
 # decodes a near-silent gap clip and, unlike real lines, are unrelated to the audio.
-# Curated from observed gap-fill output plus known Whisper patterns. Only unambiguous
-# platform boilerplate is hard-listed; ambiguous greetings (おやすみ / ありがとう /
-# さようなら) are deliberately left out so a one-off real line survives, and the
-# frequency backstop below catches them when they repeat as runaway hallucinations.
+# Curated from observed gap-fill output plus known Whisper patterns. Only platform
+# boilerplate is hard-listed; ordinary dialogue phrases are not filtered by text alone.
 HALLUCINATION_PHRASES = (
     # Video-platform boilerplate (subscribe / sign-off / credits).
     "ご視聴",
@@ -150,36 +149,30 @@ HALLUCINATION_PHRASES = (
     "それではまた",
     "それでは",
     "最後までご視聴",
-    # Conversational greeting / farewell / set-phrase family. A cross-video pass over
-    # nine titles showed these leak repeatedly from near-silent gap clips and are never
-    # real in-scene lines here; they are filtered in gap fill only (the main pass keeps
-    # real greetings that occur in continuous speech). Genuine reactions (すごい,
-    # 気持ちいい, やばい, おいしい, …) are deliberately not listed.
+    # Subtitle labels or context-mismatched set phrases that repeatedly appear as
+    # gap-fill hallucinations in this corpus, not natural spoken lines here.
+    "笑い声",
+    "拍手",
+    "アーメン",
+)
+
+
+HIGH_RISK_REPEAT_PHRASES = (
+    "おやすみなさい",
+    "おやすみ",
+    "ありがとうございました",
+    "ありがとうございます",
+    "どうもありがとう",
+    "お疲れ様でした",
+    "おつかれさまでした",
     "バイバイ",
     "またね",
     "さよなら",
     "さようなら",
+    "おはようございます",
     "おはよう",
-    "こんにちは",
-    "こんばんは",
-    "おやすみ",
+    "ごちそうさまでした",
     "ごちそうさま",
-    "いただきます",
-    "お疲れ様でした",
-    "おつかれさまでした",
-    "おめでとう",
-    "いらっしゃいませ",
-    "失礼します",
-    "よろしくお願いします",
-    "お待ちしております",
-    "ありがとうございました",
-    "ありがとうございます",
-    "どうもありがとう",
-    "アーメン",
-    "笑い声",
-    "拍手",
-    "私はあなたを愛しています",
-    "アンニョン",
 )
 
 
@@ -194,12 +187,50 @@ def normalize_phrase(text: str) -> str:
     return compact_text(text).strip("。、．，！？!?…・ー～~ 　")
 
 
-def repeated_hallucination_texts(entries: list[SubtitleEntry], min_repeats: int) -> set[str]:
-    # A short phrase repeated >= min_repeats times across the fills is a runaway
-    # hallucination; genuine reactions (気持ちいい, いい, やばい) repeat fewer times, so
-    # this frequency backstop catches mass repeats without a hard-coded word list.
-    counts = Counter(normalize_phrase(entry.text) for entry in entries)
-    return {key for key, count in counts.items() if key and count >= min_repeats}
+def is_high_risk_repeat_phrase(text: str) -> bool:
+    return any(phrase in text for phrase in HIGH_RISK_REPEAT_PHRASES)
+
+
+def repeated_hallucination_texts(
+    entries: list[SubtitleEntry],
+    min_repeats: int,
+    no_speech_prob_at_least: float,
+    avg_logprob_at_most: float,
+    high_risk_max_repeats: int,
+) -> set[str]:
+    # Frequency is counted across all gap fills for one video. Repeated ordinary
+    # dialogue is auto-dropped when the repeated group is low-confidence; high-risk
+    # fixed greetings/thanks also have an absolute repeat cap because extreme counts
+    # are implausible even when the clip contains some VAD speech.
+    groups: dict[str, list[SubtitleEntry]] = defaultdict(list)
+    for entry in entries:
+        key = normalize_phrase(entry.text)
+        if key:
+            groups[key].append(entry)
+
+    repeated: set[str] = set()
+    for key, group in groups.items():
+        if (
+            high_risk_max_repeats > 0
+            and is_high_risk_repeat_phrase(key)
+            and len(group) >= high_risk_max_repeats
+        ):
+            repeated.add(key)
+            continue
+        if len(group) < min_repeats:
+            continue
+        no_speech_probs = [
+            entry.no_speech_prob for entry in group if entry.no_speech_prob is not None
+        ]
+        avg_logprobs = [
+            entry.avg_logprob for entry in group if entry.avg_logprob is not None
+        ]
+        if no_speech_probs and median(no_speech_probs) >= no_speech_prob_at_least:
+            repeated.add(key)
+            continue
+        if avg_logprobs and median(avg_logprobs) <= avg_logprob_at_most:
+            repeated.add(key)
+    return repeated
 
 
 def is_duplicate_of_nearby(entry: SubtitleEntry, existing: list[Entry], window_seconds: float) -> bool:
@@ -382,9 +413,15 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
             filled_entries.append(entry)
             metadata.append(FillMetadata(entry, clip, "kept", ""))
 
-    # Frequency backstop: drop phrases that repeat across the fills more than a real
-    # reaction would, catching runaway hallucinations the static list does not name.
-    repeated = repeated_hallucination_texts(filled_entries, args.hallucination_min_repeats)
+    # Frequency backstop: repeated ordinary dialogue is only auto-dropped when the
+    # repeated group is also low-confidence or likely near-silence hallucination.
+    repeated = repeated_hallucination_texts(
+        filled_entries,
+        args.hallucination_min_repeats,
+        args.hallucination_repeat_no_speech_prob,
+        args.hallucination_repeat_avg_logprob,
+        args.hallucination_high_risk_max_repeats,
+    )
     if repeated:
         kept_after: list[SubtitleEntry] = []
         for entry in filled_entries:
@@ -454,9 +491,9 @@ def main() -> None:
     parser.add_argument("--vad-threshold", type=float, default=0.05)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    # Gap-fill gates default to an aggressive setting (validated on MIDV-890) so the
-    # stage actually recovers the short, low-energy reactions VAD@0.05 still misses;
-    # the hallucination filters below keep the extra reach clean.
+    # Gap-fill gates default to an aggressive setting validated on local sample runs,
+    # so the stage actually recovers the short, low-energy reactions VAD@0.05 still
+    # misses; the hallucination filters below keep the extra reach clean.
     parser.add_argument("--min-gap-seconds", type=float, default=2.0)
     parser.add_argument("--min-speech-seconds", type=float, default=1.0)
     parser.add_argument("--min-clip-seconds", type=float, default=0.6)
@@ -470,9 +507,32 @@ def main() -> None:
     parser.add_argument(
         "--hallucination-min-repeats",
         type=int,
-        default=5,
-        help="Drop a fill phrase repeated at least this many times across the fills "
-        "(runaway hallucination). Genuine reactions repeat fewer times.",
+        default=10,
+        help="Consider a fill phrase repeated at least this many times across all gap "
+        "fills for one video as a repeat-hallucination candidate.",
+    )
+    parser.add_argument(
+        "--hallucination-repeat-no-speech-prob",
+        type=float,
+        default=0.75,
+        help="Drop a repeated fill phrase only when its median no_speech_prob is at "
+        "least this value.",
+    )
+    parser.add_argument(
+        "--hallucination-repeat-avg-logprob",
+        type=float,
+        default=-0.80,
+        help="Drop a repeated fill phrase only when its median avg_logprob is at most "
+        "this value.",
+    )
+    parser.add_argument(
+        "--hallucination-high-risk-max-repeats",
+        type=int,
+        default=3,
+        help="Always drop high-risk fixed greeting/thanks phrases repeated at least "
+        "this many times across all gap fills for one video (a fixed greeting recurring "
+        "in several near-silent gaps is almost always hallucination; a real one-off "
+        "greeting appears once and survives). Set 0 to disable.",
     )
     args = parser.parse_args()
 
