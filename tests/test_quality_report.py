@@ -101,9 +101,11 @@ def test_build_report_flags_low_confidence_fills(tmp_path):
     assert "filtered_entries: 1" in report
     assert "filtered_reasons: noise=1" in report
     assert "low_confidence_kept_entries: 1" in report
-    # Only the low-confidence kept line is listed; the healthy one is not.
-    assert "bad-line" in report
-    assert "good-line" not in report
+    # Only the low-confidence kept line is listed (text=...) in the warning list;
+    # the healthy one is not, though both appear under kept_fill_samples.
+    assert "text=bad-line" in report
+    assert "text=good-line" not in report
+    assert "kept_fill_samples:" in report
 
 
 def test_build_report_respects_relaxed_thresholds(tmp_path):
@@ -114,4 +116,6 @@ def test_build_report_respects_relaxed_thresholds(tmp_path):
     args.warn_compression_ratio_above = 5.0
     report = build_report(args)
     assert "low_confidence_kept_entries: 0" in report
-    assert "bad-line" not in report
+    # Nothing is flagged, so no text=... warning line appears (the line still shows
+    # under kept_fill_samples, which is not a low-confidence warning).
+    assert "text=bad-line" not in report

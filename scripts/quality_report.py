@@ -277,6 +277,9 @@ def build_report(args: argparse.Namespace) -> str:
         if compression_ratios:
             lines.append(f"kept_compression_ratio_median: {percentile(compression_ratios, 0.5):.2f}")
             lines.append(f"kept_compression_ratio_max: {max(compression_ratios):.2f}")
+        lines.append("kept_fill_samples:")
+        for item in sorted(kept, key=lambda value: value.start)[:max_samples]:
+            lines.append(f"- {format_time(item.start)} -> {format_time(item.end)} {item.text[:80]}")
         lines.append(f"low_confidence_kept_entries: {len(low_confidence)}")
         for item in sorted(
             low_confidence,
