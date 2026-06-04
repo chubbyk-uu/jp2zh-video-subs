@@ -17,6 +17,18 @@ from srt_utils import (
     srt_gaps,
 )
 
+KANA_RE = re.compile(r"[ぁ-ゟ゠-ヿ]")
+# Conservative candidates for Japanese/traditional CJK left in Simplified Chinese
+# output. These are review hints only; they are never used to filter subtitles.
+# Keep this intentionally small: prefer missing some kanji-only leftovers over
+# flagging normal Simplified Chinese as suspicious.
+NON_SIMPLIFIED_CJK_RE = re.compile(
+    r"[亜悪圧為隠栄駅円応桜仮価壊壌楽気帰拠挙郷暁経軽県険権験厳"
+    r"済児実釈収従処焼証乗嬢譲畳浄剰図跡摂戦銭選総増蔵続対滝聴"
+    r"鉄転伝徳読廃売発払仏辺変歩訳薬様頼覧竜両緑涙霊齢歴労録関"
+    r"與國會學聲體處廣電誰話聞買愛]"
+)
+
 
 @dataclass
 class Entry:
@@ -52,12 +64,13 @@ def parse_srt(path: Path | None) -> list[Entry]:
         lines = block.splitlines()
         if len(lines) < 3 or "-->" not in lines[1]:
             continue
-        start_text, end_text = [item.strip() for item in lines[1].split("-->")]
+        start_text, end_text = [item.strip() for item in lines[1].split("-->", 1)]
+        end_time = end_text.split(maxsplit=1)[0]
         entries.append(
             Entry(
                 index=lines[0].strip(),
                 start=parse_time(start_text),
-                end=parse_time(end_text),
+                end=parse_time(end_time),
                 text="\n".join(line.strip() for line in lines[2:]).strip(),
             )
         )
@@ -68,6 +81,10 @@ def parse_optional_float(value: str | None) -> float | None:
     if value is None or value == "":
         return None
     return float(value)
+
+
+def normalize_fill_phrase(text: str) -> str:
+    return compact_text(text).strip("。、．，！？!?…・ー～~ 　")
 
 
 def parse_fills_metadata(path: Path | None) -> list[FillMetadataRow]:
@@ -152,6 +169,34 @@ def adjacent_duplicate_candidates(ja_entries: list[Entry], zh_entries: list[Entr
     return candidates
 
 
+def repeated_fill_phrase_warnings(
+    fills_metadata: list[FillMetadataRow],
+    min_count: int,
+) -> list[tuple[str, list[FillMetadataRow]]]:
+    groups: dict[str, list[FillMetadataRow]] = {}
+    for item in fills_metadata:
+        if item.status != "kept":
+            continue
+        key = normalize_fill_phrase(item.text)
+        if not key:
+            continue
+        groups.setdefault(key, []).append(item)
+    return sorted(
+        ((key, items) for key, items in groups.items() if len(items) >= min_count),
+        key=lambda value: (-len(value[1]), value[0]),
+    )
+
+
+def possible_japanese_text_left(entries: list[Entry]) -> list[tuple[Entry, str]]:
+    candidates: list[tuple[Entry, str]] = []
+    for item in entries:
+        if KANA_RE.search(item.text):
+            candidates.append((item, "kana"))
+        elif NON_SIMPLIFIED_CJK_RE.search(item.text):
+            candidates.append((item, "non_simplified_cjk"))
+    return candidates
+
+
 def build_report(args: argparse.Namespace) -> str:
     ja_entries = parse_srt(args.ja_srt)
     zh_entries = parse_srt(args.zh_srt)
@@ -159,6 +204,7 @@ def build_report(args: argparse.Namespace) -> str:
     warn_avg_logprob_below = getattr(args, "warn_avg_logprob_below", -0.80)
     warn_no_speech_prob_above = getattr(args, "warn_no_speech_prob_above", 0.50)
     warn_compression_ratio_above = getattr(args, "warn_compression_ratio_above", 2.20)
+    warn_repeated_fill_phrase_count = getattr(args, "warn_repeated_fill_phrase_count", 3)
     max_samples = getattr(args, "max_samples", 20)
 
     lines: list[str] = []
@@ -231,14 +277,19 @@ def build_report(args: argparse.Namespace) -> str:
     if zh_entries:
         lines.append("[Chinese SRT]")
         lines.append(f"entries: {len(zh_entries)}")
-        jp_left = [item for item in zh_entries if re.search(r"[ぁ-ゟ゠-ヿ]", item.text)]
+        jp_left = [item for item in zh_entries if KANA_RE.search(item.text)]
+        possible_jp_left = possible_japanese_text_left(zh_entries)
         lines.append(f"japanese_kana_left: {len(jp_left)}")
+        lines.append(f"possible_japanese_or_traditional_left: {len(possible_jp_left)}")
         duplicate_candidates = adjacent_duplicate_candidates(ja_entries, zh_entries)
         lines.append(f"suspicious_adjacent_duplicates: {len(duplicate_candidates)}")
         for item in duplicate_candidates[:max_samples]:
             lines.append(f"- {item}")
         for item in jp_left[:max_samples]:
             lines.append(f"- kana left at {item.index}: {item.text[:80]}")
+        non_kana_candidates = [(item, reason) for item, reason in possible_jp_left if reason != "kana"]
+        for item, reason in non_kana_candidates[:max_samples]:
+            lines.append(f"- possible {reason} at {item.index}: {item.text[:80]}")
         lines.append("")
 
     if fills_metadata:
@@ -280,6 +331,29 @@ def build_report(args: argparse.Namespace) -> str:
         lines.append("kept_fill_samples:")
         for item in sorted(kept, key=lambda value: value.start)[:max_samples]:
             lines.append(f"- {format_time(item.start)} -> {format_time(item.end)} {item.text[:80]}")
+        repeated_warnings = repeated_fill_phrase_warnings(
+            fills_metadata,
+            warn_repeated_fill_phrase_count,
+        )
+        lines.append(f"repeated_kept_fill_phrases: {len(repeated_warnings)}")
+        for text, items in repeated_warnings[:max_samples]:
+            item_logprobs = [item.avg_logprob for item in items if item.avg_logprob is not None]
+            item_no_speech_probs = [
+                item.no_speech_prob for item in items if item.no_speech_prob is not None
+            ]
+            logprob_text = (
+                f"{percentile(item_logprobs, 0.5):.2f}" if item_logprobs else "n/a"
+            )
+            no_speech_text = (
+                f"{percentile(item_no_speech_probs, 0.5):.2f}"
+                if item_no_speech_probs
+                else "n/a"
+            )
+            samples = ", ".join(format_time(item.start) for item in sorted(items, key=lambda value: value.start)[:3])
+            lines.append(
+                f"- count={len(items)} avg_logprob_median={logprob_text} "
+                f"no_speech_prob_median={no_speech_text} samples={samples} text={text[:80]}"
+            )
         lines.append(f"low_confidence_kept_entries: {len(low_confidence)}")
         for item in sorted(
             low_confidence,
@@ -317,6 +391,7 @@ def main() -> None:
     parser.add_argument("--warn-avg-logprob-below", type=float, default=-0.80)
     parser.add_argument("--warn-no-speech-prob-above", type=float, default=0.50)
     parser.add_argument("--warn-compression-ratio-above", type=float, default=2.20)
+    parser.add_argument("--warn-repeated-fill-phrase-count", type=int, default=3)
     parser.add_argument("--max-samples", type=int, default=20)
     args = parser.parse_args()
 
