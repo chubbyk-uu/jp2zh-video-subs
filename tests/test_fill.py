@@ -33,16 +33,22 @@ def test_split_clip():
     assert len(split_clip(Interval(0, 3), 4)) == 1
 
 
-def test_looks_like_hallucination_flags_youtube_boilerplate():
+def test_looks_like_hallucination_flags_boilerplate_and_greeting_family():
+    # Platform boilerplate.
     assert looks_like_hallucination("ご視聴ありがとうございました") is True
     assert looks_like_hallucination("チャンネル登録お願いします") is True
     assert looks_like_hallucination("それではまた") is True
-    # Real in-scene reactions must not be flagged by the static list.
+    # Conversational greeting / farewell / credits family that leaks from gap clips.
+    assert looks_like_hallucination("おやすみなさい") is True
+    assert looks_like_hallucination("ありがとうございました") is True
+    assert looks_like_hallucination("バイバイ") is True
+    assert looks_like_hallucination("アーメン") is True
+    assert looks_like_hallucination("おはようございます") is True
+    # Real in-scene reactions must not be flagged.
     assert looks_like_hallucination("気持ちいい") is False
-    assert looks_like_hallucination("お疲れ様") is False
-    # Ambiguous greetings are deliberately left to the frequency backstop.
-    assert looks_like_hallucination("おやすみなさい") is False
-    assert looks_like_hallucination("ありがとうございました") is False
+    assert looks_like_hallucination("やばい") is False
+    assert looks_like_hallucination("すごい") is False
+    assert looks_like_hallucination("お疲れ様") is False  # bare form; only お疲れ様でした is listed
 
 
 def test_normalize_phrase_strips_trailing_punctuation():

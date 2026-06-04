@@ -134,8 +134,10 @@ def looks_like_noise(text: str, min_text_chars: int) -> bool:
 # さようなら) are deliberately left out so a one-off real line survives, and the
 # frequency backstop below catches them when they repeat as runaway hallucinations.
 HALLUCINATION_PHRASES = (
+    # Video-platform boilerplate (subscribe / sign-off / credits).
     "ご視聴",
     "ご清聴",
+    "ご覧いただき",
     "チャンネル登録",
     "高評価",
     "グッドボタン",
@@ -146,7 +148,38 @@ HALLUCINATION_PHRASES = (
     "お会いしましょう",
     "また会いましょう",
     "それではまた",
+    "それでは",
     "最後までご視聴",
+    # Conversational greeting / farewell / set-phrase family. A cross-video pass over
+    # nine titles showed these leak repeatedly from near-silent gap clips and are never
+    # real in-scene lines here; they are filtered in gap fill only (the main pass keeps
+    # real greetings that occur in continuous speech). Genuine reactions (すごい,
+    # 気持ちいい, やばい, おいしい, …) are deliberately not listed.
+    "バイバイ",
+    "またね",
+    "さよなら",
+    "さようなら",
+    "おはよう",
+    "こんにちは",
+    "こんばんは",
+    "おやすみ",
+    "ごちそうさま",
+    "いただきます",
+    "お疲れ様でした",
+    "おつかれさまでした",
+    "おめでとう",
+    "いらっしゃいませ",
+    "失礼します",
+    "よろしくお願いします",
+    "お待ちしております",
+    "ありがとうございました",
+    "ありがとうございます",
+    "どうもありがとう",
+    "アーメン",
+    "笑い声",
+    "拍手",
+    "私はあなたを愛しています",
+    "アンニョン",
 )
 
 
