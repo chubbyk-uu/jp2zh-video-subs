@@ -2,12 +2,16 @@ from argparse import Namespace
 
 from fill_ja_srt_gaps import (
     fill_gaps,
+    looks_like_hallucination,
     looks_like_noise,
+    normalize_phrase,
     repeated_character_ratio,
+    repeated_hallucination_texts,
     speech_clusters_for_gap,
     split_clip,
 )
 from srt_utils import Interval
+from transcribe_ja_srt import SubtitleEntry
 
 
 def test_repeated_character_ratio():
@@ -27,6 +31,37 @@ def test_split_clip():
     clips = split_clip(Interval(0, 10), 4)
     assert [(c.start, c.end) for c in clips] == [(0, 4), (4, 8), (8, 10)]
     assert len(split_clip(Interval(0, 3), 4)) == 1
+
+
+def test_looks_like_hallucination_flags_youtube_boilerplate():
+    assert looks_like_hallucination("ご視聴ありがとうございました") is True
+    assert looks_like_hallucination("チャンネル登録お願いします") is True
+    assert looks_like_hallucination("それではまた") is True
+    # Real in-scene reactions must not be flagged by the static list.
+    assert looks_like_hallucination("気持ちいい") is False
+    assert looks_like_hallucination("お疲れ様") is False
+    # Ambiguous greetings are deliberately left to the frequency backstop.
+    assert looks_like_hallucination("おやすみなさい") is False
+    assert looks_like_hallucination("ありがとうございました") is False
+
+
+def test_normalize_phrase_strips_trailing_punctuation():
+    assert normalize_phrase("ありがとうございました。") == normalize_phrase("ありがとうございました")
+    assert normalize_phrase("いいね！") == "いいね"
+
+
+def test_repeated_hallucination_texts_catches_mass_repeats_not_real_reactions():
+    def entry(text):
+        return SubtitleEntry(0.0, 1.0, text)
+
+    entries = (
+        [entry("ありがとうございました"), entry("ありがとうございました。")]
+        + [entry("ありがとうございました")] * 3  # 5 total once punctuation is normalized
+        + [entry("気持ちいい")] * 3  # a genuine reaction repeated only 3x
+    )
+    repeated = repeated_hallucination_texts(entries, min_repeats=5)
+    assert "ありがとうございました" in repeated
+    assert "気持ちいい" not in repeated
 
 
 def test_fill_gaps_with_no_entries_writes_empty_output(tmp_path):

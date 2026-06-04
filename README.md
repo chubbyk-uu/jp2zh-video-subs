@@ -167,10 +167,18 @@ The one-command pipeline uses:
 
 Default gap-fill parameters:
 
-- `--fill-min-gap-seconds 10`: only inspect subtitle gaps longer than 10 seconds.
-- `--fill-min-speech-seconds 4`: fill only when the gap contains at least 4 seconds of VAD speech.
+- `--fill-min-gap-seconds 2`: inspect subtitle gaps longer than 2 seconds (aggressive, to
+  catch the short low-energy reactions the main pass misses).
+- `--fill-min-speech-seconds 1`: fill when the gap contains at least 1 second of VAD speech.
 - `--fill-max-clip-seconds 45`: cap one fill clip at 45 seconds.
 - `--fill-min-chars 3`: ignore very short fill results.
+
+Because the aggressive gates re-transcribe near-silent clips, gap fill also drops Whisper
+hallucinations: a curated list of YouTube sign-off boilerplate (`ご視聴…`, `チャンネル登録`,
+`それではまた`, …), plus a frequency backstop (`--hallucination-min-repeats 5`) that removes any
+phrase repeated five or more times across the fills — runaway hallucinations repeat far more
+than genuine reactions do. Filter reasons (`hallucination`, `hallucination_repeat`, `noise`,
+…) are recorded per row in `input.fills.tsv`.
 
 ## Outputs
 

@@ -164,10 +164,15 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 
 当前二阶段补漏默认参数：
 
-- `--fill-min-gap-seconds 10`：只检查 10 秒以上字幕空窗。
-- `--fill-min-speech-seconds 4`：空窗内至少有 4 秒 VAD 语音才补识别。
+- `--fill-min-gap-seconds 2`：检查 2 秒以上字幕空窗（激进策略，用于捞回主识别漏掉的轻声短反应）。
+- `--fill-min-speech-seconds 1`：空窗内至少有 1 秒 VAD 语音才补识别。
 - `--fill-max-clip-seconds 45`：单个补识别音频片段最长 45 秒。
 - `--fill-min-chars 3`：过短补漏结果不写入。
+
+由于激进门槛会对接近静音的片段重新识别，补漏阶段同时会过滤 Whisper 幻觉：一份精选的 YouTube 收尾套话清单
+（`ご視聴…`、`チャンネル登録`、`それではまた` 等），外加频次兜底（`--hallucination-min-repeats 5`）——
+同一短语在补漏结果中出现 5 次及以上即判为幻觉删除（失控幻觉的重复次数远超真实反应）。每条的过滤原因
+（`hallucination`、`hallucination_repeat`、`noise` 等）会记录在 `input.fills.tsv` 中。
 
 ## 输出文件
 

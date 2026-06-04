@@ -362,8 +362,8 @@ def main() -> None:
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
     parser.add_argument("--max-word-gap", type=float, default=6.0)
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
-    parser.add_argument("--fill-min-gap-seconds", type=float, default=10.0)
-    parser.add_argument("--fill-min-speech-seconds", type=float, default=4.0)
+    parser.add_argument("--fill-min-gap-seconds", type=float, default=2.0)
+    parser.add_argument("--fill-min-speech-seconds", type=float, default=1.0)
     parser.add_argument("--fill-max-clip-seconds", type=float, default=45.0)
     parser.add_argument("--fill-min-chars", type=int, default=3)
     parser.add_argument(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -123,6 +124,49 @@ def looks_like_noise(text: str, min_text_chars: int) -> bool:
     if re.fullmatch(r"[あぁアァうぅウゥんンはハぁー〜…・。、,.!?！？]+", compact) and len(compact) >= 4:
         return True
     return False
+
+
+# Canonical Japanese Whisper hallucinations: video sign-off / subscribe / credits
+# boilerplate the model learned from YouTube-style training data. They surface when it
+# decodes a near-silent gap clip and, unlike real lines, are unrelated to the audio.
+# Curated from observed gap-fill output plus known Whisper patterns. Only unambiguous
+# platform boilerplate is hard-listed; ambiguous greetings (おやすみ / ありがとう /
+# さようなら) are deliberately left out so a one-off real line survives, and the
+# frequency backstop below catches them when they repeat as runaway hallucinations.
+HALLUCINATION_PHRASES = (
+    "ご視聴",
+    "ご清聴",
+    "チャンネル登録",
+    "高評価",
+    "グッドボタン",
+    "次の動画",
+    "次回の動画",
+    "また次回",
+    "また次の動画",
+    "お会いしましょう",
+    "また会いましょう",
+    "それではまた",
+    "最後までご視聴",
+)
+
+
+def looks_like_hallucination(text: str) -> bool:
+    compact = compact_text(text)
+    return any(phrase in compact for phrase in HALLUCINATION_PHRASES)
+
+
+def normalize_phrase(text: str) -> str:
+    # Frequency key: drop trailing punctuation/spacing so "ありがとうございました。" and
+    # "ありがとうございました" collapse to one phrase instead of evading the count.
+    return compact_text(text).strip("。、．，！？!?…・ー～~ 　")
+
+
+def repeated_hallucination_texts(entries: list[SubtitleEntry], min_repeats: int) -> set[str]:
+    # A short phrase repeated >= min_repeats times across the fills is a runaway
+    # hallucination; genuine reactions (気持ちいい, いい, やばい) repeat fewer times, so
+    # this frequency backstop catches mass repeats without a hard-coded word list.
+    counts = Counter(normalize_phrase(entry.text) for entry in entries)
+    return {key for key, count in counts.items() if key and count >= min_repeats}
 
 
 def is_duplicate_of_nearby(entry: SubtitleEntry, existing: list[Entry], window_seconds: float) -> bool:
@@ -286,6 +330,10 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
                 stats.filtered_entries += 1
                 metadata.append(FillMetadata(entry, clip, "filtered", "noise"))
                 continue
+            if looks_like_hallucination(entry.text):
+                stats.filtered_entries += 1
+                metadata.append(FillMetadata(entry, clip, "filtered", "hallucination"))
+                continue
             if is_duplicate_of_nearby(entry, existing_entries, args.duplicate_window_seconds):
                 stats.filtered_entries += 1
                 metadata.append(FillMetadata(entry, clip, "filtered", "duplicate_existing"))
@@ -300,6 +348,22 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
                 continue
             filled_entries.append(entry)
             metadata.append(FillMetadata(entry, clip, "kept", ""))
+
+    # Frequency backstop: drop phrases that repeat across the fills more than a real
+    # reaction would, catching runaway hallucinations the static list does not name.
+    repeated = repeated_hallucination_texts(filled_entries, args.hallucination_min_repeats)
+    if repeated:
+        kept_after: list[SubtitleEntry] = []
+        for entry in filled_entries:
+            if normalize_phrase(entry.text) in repeated:
+                stats.filtered_entries += 1
+                for item in metadata:
+                    if item.entry is entry and item.status == "kept":
+                        item.status, item.reason = "filtered", "hallucination_repeat"
+                        break
+            else:
+                kept_after.append(entry)
+        filled_entries = kept_after
 
     stats.kept_entries = len(filled_entries)
     merged = resolve_overlaps(convert_existing(existing_entries) + filled_entries)
@@ -357,16 +421,26 @@ def main() -> None:
     parser.add_argument("--vad-threshold", type=float, default=0.05)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    parser.add_argument("--min-gap-seconds", type=float, default=10.0)
-    parser.add_argument("--min-speech-seconds", type=float, default=4.0)
-    parser.add_argument("--min-clip-seconds", type=float, default=1.2)
+    # Gap-fill gates default to an aggressive setting (validated on MIDV-890) so the
+    # stage actually recovers the short, low-energy reactions VAD@0.05 still misses;
+    # the hallucination filters below keep the extra reach clean.
+    parser.add_argument("--min-gap-seconds", type=float, default=2.0)
+    parser.add_argument("--min-speech-seconds", type=float, default=1.0)
+    parser.add_argument("--min-clip-seconds", type=float, default=0.6)
     parser.add_argument("--min-fill-chars", type=int, default=3)
     parser.add_argument("--max-clip-seconds", type=float, default=45.0)
     parser.add_argument("--max-cluster-gap", type=float, default=2.0)
-    parser.add_argument("--clip-pad-seconds", type=float, default=0.8)
-    parser.add_argument("--existing-pad-seconds", type=float, default=0.5)
-    parser.add_argument("--max-existing-overlap-seconds", type=float, default=0.2)
+    parser.add_argument("--clip-pad-seconds", type=float, default=0.4)
+    parser.add_argument("--existing-pad-seconds", type=float, default=0.1)
+    parser.add_argument("--max-existing-overlap-seconds", type=float, default=1.0)
     parser.add_argument("--duplicate-window-seconds", type=float, default=8.0)
+    parser.add_argument(
+        "--hallucination-min-repeats",
+        type=int,
+        default=5,
+        help="Drop a fill phrase repeated at least this many times across the fills "
+        "(runaway hallucination). Genuine reactions repeat fewer times.",
+    )
     args = parser.parse_args()
 
     if args.transcribe_output:
