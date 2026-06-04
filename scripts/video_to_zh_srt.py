@@ -350,7 +350,14 @@ def main() -> None:
     parser.add_argument("--max-duration", type=float, default=10.0)
     parser.add_argument("--max-chars", type=int, default=42)
     parser.add_argument("--no-vad", action="store_true")
-    parser.add_argument("--vad-threshold", type=float, default=0.35)
+    parser.add_argument(
+        "--vad-threshold",
+        type=float,
+        default=0.05,
+        help="Silero VAD speech probability cutoff (lower keeps quieter speech). "
+        "0.05 recovers soft conversational lines that 0.35 silently drops; going "
+        "lower (e.g. 0.02) starts placing text over near-silence.",
+    )
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
     parser.add_argument("--max-word-gap", type=float, default=6.0)

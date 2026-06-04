@@ -305,7 +305,7 @@ def main() -> None:
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--fills-metadata", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--vad-threshold", type=float, default=0.35)
+    parser.add_argument("--vad-threshold", type=float, default=0.05)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
     parser.add_argument("--min-gap-seconds", type=float, default=10.0)

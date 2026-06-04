@@ -232,7 +232,17 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
     if existing_entries is None:
         existing_entries = parse_srt(args.input)
     if not existing_entries:
-        raise SystemExit(f"No SRT entries found: {args.input}")
+        # No transcribed speech (e.g. a silent or music-only sample clip). Gaps are
+        # defined between existing entries, so there is nothing to fill; write an empty
+        # output and return rather than crashing the pipeline.
+        stats = FillStats()
+        write_srt([], args.output)
+        if args.fills_output:
+            write_srt([], args.fills_output)
+        if args.fills_metadata_output:
+            write_fills_metadata([], args.fills_metadata_output)
+        print(f"Wrote {args.output} (no source entries; nothing to fill)")
+        return stats
 
     audio = decode_audio(str(args.audio), sampling_rate=16000)
     speech_intervals = speech_intervals_from_audio(
@@ -344,7 +354,7 @@ def main() -> None:
     parser.add_argument("--max-chars", type=int, default=42)
     parser.add_argument("--max-word-gap", type=float, default=6.0)
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
-    parser.add_argument("--vad-threshold", type=float, default=0.35)
+    parser.add_argument("--vad-threshold", type=float, default=0.05)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
     parser.add_argument("--min-gap-seconds", type=float, default=10.0)
