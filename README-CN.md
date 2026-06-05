@@ -199,6 +199,14 @@ Whisper 幻觉概率也会升高；对准确率要求高时，建议复查
 `--gap-local-asr-max-clip-seconds 45` 和 `--gap-local-asr-overlap-seconds 5` 分段。
 它可能找回更多语音，但会进一步拉长处理时间，也可能带来更多低置信度补漏候选。
 
+实验性的主识别滑窗 VAD 可用 `--main-local-vad` 开启。它会用 8 秒窗口、4 秒重叠、
+`--main-local-vad-threshold 0.50` 扫描整段 WAV，再把合并后的语音簇送入 ASR
+（`--main-local-asr-pad-seconds 0.3`、`--main-local-asr-max-clip-seconds 45`、
+`--main-local-asr-overlap-seconds 5`）。`--main-local-vad-dry-run` 可只打印选区覆盖率
+（语音簇、片段数、覆盖分钟、覆盖率%）而不跑 Whisper，便于快速扫参。开启该模式时，
+补漏阶段的同一套清洗（压缩比、噪声、相邻去重、重复幻觉过滤）会作用于主识别输出，
+使其能替代"主识别+补漏"。该功能不属于任何预设，更适合受控实验，不建议作为默认批处理方式。
+
 由于激进门槛会对接近静音的片段重新识别，补漏阶段同时会过滤 Whisper 幻觉。硬过滤清单只保留平台/字幕套话
 （`ご視聴…`、`チャンネル登録`、`それではまた` 等）以及明显字幕标签/语境错配短语
 （`笑い声`、`拍手`、`アーメン`）。问候、感谢、告别等普通对话不会只因为文本命中就被删除。
@@ -444,6 +452,10 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ### 字幕有漏识别
 
 一键流程默认会跑二阶段补漏。它不是只按空窗长度判断，而是先用 VAD 分析 WAV 音频，只对空窗内存在足够语音的片段重新识别。`fast` 和 `coverage` 用全片 VAD 做这个判断。长视频中如果全片 VAD 漏掉字幕空窗里的真实语音，可以用 `high-coverage` 或 `--gap-local-vad`，它会对每个达到长度门槛的空窗直接跑局部 VAD；想更激进时，可以降低空窗阈值或语音时长阈值。
+
+`--main-local-vad` 是另一条实验性的第一阶段识别路径：它先用滑窗局部 VAD 扫描整段
+WAV，再进入 Whisper 主识别。这个模式适合调参实验，但可能把接近整片的视频音频重新送入
+Whisper，导致比默认第一阶段更慢。
 
 ### 字幕有重复内容
 

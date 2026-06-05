@@ -241,11 +241,43 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.vad_min_silence_ms),
             "--vad-speech-pad-ms",
             str(args.vad_speech_pad_ms),
+            "--main-local-vad-threshold",
+            str(args.main_local_vad_threshold),
+            "--main-local-vad-window-seconds",
+            str(args.main_local_vad_window_seconds),
+            "--main-local-vad-window-overlap-seconds",
+            str(args.main_local_vad_window_overlap_seconds),
+            "--main-local-vad-max-cluster-gap",
+            str(args.main_local_vad_max_cluster_gap),
+            "--main-local-asr-pad-seconds",
+            str(args.main_local_asr_pad_seconds),
+            "--main-local-asr-max-clip-seconds",
+            str(args.main_local_asr_max_clip_seconds),
+            "--main-local-asr-overlap-seconds",
+            str(args.main_local_asr_overlap_seconds),
+            "--main-local-min-clip-seconds",
+            str(args.main_local_min_clip_seconds),
+            "--main-min-chars",
+            str(args.main_min_chars),
+            "--main-max-compression-ratio",
+            str(args.max_fill_compression_ratio),
+            "--main-duplicate-window-seconds",
+            str(args.main_duplicate_window_seconds),
+            "--hallucination-min-repeats",
+            str(args.hallucination_min_repeats),
+            "--hallucination-repeat-no-speech-prob",
+            str(args.hallucination_repeat_no_speech_prob),
+            "--hallucination-repeat-avg-logprob",
+            str(args.hallucination_repeat_avg_logprob),
+            "--hallucination-high-risk-max-repeats",
+            str(args.hallucination_high_risk_max_repeats),
             "--max-word-gap",
             str(args.max_word_gap),
             "--max-merge-gap",
             str(args.max_merge_gap),
         ]
+        if args.main_local_vad:
+            transcribe_command.append("--main-local-vad")
         if args.condition_on_previous_text:
             transcribe_command.append("--condition-on-previous-text")
         if args.no_vad:
@@ -289,6 +321,22 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.vad_min_silence_ms),
             "--vad-speech-pad-ms",
             str(args.vad_speech_pad_ms),
+            "--main-local-vad-threshold",
+            str(args.main_local_vad_threshold),
+            "--main-local-vad-window-seconds",
+            str(args.main_local_vad_window_seconds),
+            "--main-local-vad-window-overlap-seconds",
+            str(args.main_local_vad_window_overlap_seconds),
+            "--main-local-vad-max-cluster-gap",
+            str(args.main_local_vad_max_cluster_gap),
+            "--main-local-asr-pad-seconds",
+            str(args.main_local_asr_pad_seconds),
+            "--main-local-asr-max-clip-seconds",
+            str(args.main_local_asr_max_clip_seconds),
+            "--main-local-asr-overlap-seconds",
+            str(args.main_local_asr_overlap_seconds),
+            "--main-local-min-clip-seconds",
+            str(args.main_local_min_clip_seconds),
             "--min-gap-seconds",
             str(args.fill_min_gap_seconds),
             "--min-speech-seconds",
@@ -336,6 +384,8 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
         ]
         if args.gap_local_vad:
             fill_command.append("--gap-local-vad")
+        if args.main_local_vad:
+            fill_command.append("--main-local-vad")
         if args.condition_on_previous_text:
             fill_command.append("--condition-on-previous-text")
         if args.no_vad:
@@ -482,6 +532,15 @@ def main() -> None:
     )
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
+    parser.add_argument("--main-local-vad", action="store_true")
+    parser.add_argument("--main-local-vad-threshold", type=float, default=0.50)
+    parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
+    parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
+    parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=1.0)
+    parser.add_argument("--main-local-asr-pad-seconds", type=float, default=0.3)
+    parser.add_argument("--main-local-asr-max-clip-seconds", type=float, default=45.0)
+    parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
+    parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
     parser.add_argument("--max-word-gap", type=float, default=6.0)
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
     parser.add_argument("--fill-min-gap-seconds", type=float)
@@ -503,6 +562,8 @@ def main() -> None:
     parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=45.0)
     parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)
     parser.add_argument("--max-fill-compression-ratio", type=float, default=25.0)
+    parser.add_argument("--main-min-chars", type=int, default=1)
+    parser.add_argument("--main-duplicate-window-seconds", type=float, default=2.0)
     parser.add_argument("--hallucination-min-repeats", type=int, default=10)
     parser.add_argument("--hallucination-repeat-no-speech-prob", type=float, default=0.75)
     parser.add_argument("--hallucination-repeat-avg-logprob", type=float, default=-0.80)
@@ -521,6 +582,10 @@ def main() -> None:
         raise SystemExit("--lead-out-seconds must be >= 0")
     if args.min_display_seconds < 0:
         raise SystemExit("--min-display-seconds must be >= 0")
+    if args.main_local_vad_window_overlap_seconds >= args.main_local_vad_window_seconds:
+        raise SystemExit("--main-local-vad-window-overlap-seconds must be smaller than --main-local-vad-window-seconds")
+    if args.main_local_asr_overlap_seconds >= args.main_local_asr_max_clip_seconds:
+        raise SystemExit("--main-local-asr-overlap-seconds must be smaller than --main-local-asr-max-clip-seconds")
 
     if shutil.which("ffmpeg") is None:
         raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")

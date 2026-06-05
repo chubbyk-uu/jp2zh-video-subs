@@ -36,3 +36,4 @@ CLAUDE.md
 # Logs / temp
 *.log
 *.tmp
+docs/current-experiments.md

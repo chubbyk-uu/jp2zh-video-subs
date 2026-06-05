@@ -209,6 +209,17 @@ ASR context (`--gap-local-asr-pad-seconds 3`) and are split at
 This can recover more speech, but it further increases processing time and can
 surface more low-confidence fill candidates.
 
+Experimental main-pass sliding VAD is available with `--main-local-vad`. It
+uses 8-second windows with 4-second overlap at `--main-local-vad-threshold 0.50`,
+then builds ASR clips from merged speech clusters (`--main-local-asr-pad-seconds 0.3`,
+`--main-local-asr-max-clip-seconds 45`, `--main-local-asr-overlap-seconds 5`).
+`--main-local-vad-dry-run` prints the selection coverage (clusters, clips, covered
+minutes, coverage%) without running Whisper, for fast parameter sweeps. When this
+mode is on, the same cleaning the gap-fill stage applies (compression-ratio, noise,
+adjacent-duplicate, and repeat-hallucination filters) is run on the main-pass output
+so it can stand in for main+fill. This is not part of any preset; keep it for
+controlled experiments rather than default batch processing.
+
 Because the aggressive gates re-transcribe near-silent clips, gap fill also drops Whisper
 hallucinations. The hard list is limited to platform/subtitle boilerplate (`ご視聴…`,
 `チャンネル登録`, `それではまた`, …) plus clear subtitle labels/context-mismatched set
@@ -473,6 +484,11 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ### Some Speech Is Missed
 
 Gap fill is enabled by default. It does not judge gaps by duration alone; it checks the WAV audio with VAD and only re-transcribes gaps with enough speech. `fast` and `coverage` use full-audio VAD for this check. For long videos where full-audio VAD misses speech inside subtitle gaps, use `high-coverage` or `--gap-local-vad`, which runs VAD directly on each eligible gap; for more aggressive filling, lower the gap or speech threshold.
+
+`--main-local-vad` is a separate experimental first-pass mode. It scans the
+whole WAV with sliding local VAD before Whisper transcription. It is useful for
+experiments, but it can be slower than the default first pass because it may send
+near-full-video audio back into Whisper.
 
 ### Duplicate-Looking Lines
 

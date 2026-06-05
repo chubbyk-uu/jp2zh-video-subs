@@ -4,10 +4,19 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
+from faster_whisper.audio import decode_audio
 from faster_whisper import WhisperModel
 
-from hallucination_filters import is_high_risk_repeat_phrase, looks_like_hallucination
-from srt_utils import compact_text, srt_time
+from hallucination_filters import (
+    exceeds_compression_ratio,
+    is_duplicate_of_nearby,
+    is_high_risk_repeat_phrase,
+    looks_like_hallucination,
+    looks_like_noise,
+    normalize_phrase,
+    repeated_hallucination_texts,
+)
+from srt_utils import Interval, compact_text, merge_intervals, srt_time
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
@@ -316,6 +325,50 @@ def filter_hallucination_entries(entries: list[SubtitleEntry]) -> tuple[list[Sub
     return kept, filtered
 
 
+def filter_main_local_entries(
+    entries: list[SubtitleEntry],
+    args: argparse.Namespace,
+) -> tuple[list[SubtitleEntry], list[SubtitleEntry]]:
+    """Consolidated filter for the sliding main pass so it can replace main+gap-fill.
+
+    Layers the gap-fill cleaning onto the static-hallucination pass: degenerate
+    compression loops, moaning/repeat noise (length floor stays at 1 so short
+    responses like はい/うん survive while kana moans like ああああ are dropped),
+    adjacent duplicates from clip-split overlap, and the cross-video repeat
+    backstop that catches recurring platform sign-offs (おやすみなさい x N, ...).
+    """
+    kept, filtered = filter_hallucination_entries(entries)
+    survivors: list[SubtitleEntry] = []
+    for entry in sorted(kept, key=lambda item: (item.start, item.end)):
+        if exceeds_compression_ratio(entry, args.main_max_compression_ratio):
+            filtered.append(entry)
+            continue
+        if looks_like_noise(entry.text, args.main_min_chars):
+            filtered.append(entry)
+            continue
+        if is_duplicate_of_nearby(entry, survivors, args.main_duplicate_window_seconds):
+            filtered.append(entry)
+            continue
+        survivors.append(entry)
+
+    repeated = repeated_hallucination_texts(
+        survivors,
+        args.hallucination_min_repeats,
+        args.hallucination_repeat_no_speech_prob,
+        args.hallucination_repeat_avg_logprob,
+        args.hallucination_high_risk_max_repeats,
+    )
+    if repeated:
+        post: list[SubtitleEntry] = []
+        for entry in survivors:
+            if normalize_phrase(entry.text) in repeated:
+                filtered.append(entry)
+            else:
+                post.append(entry)
+        survivors = post
+    return survivors, filtered
+
+
 def resolve_overlaps(entries: list[SubtitleEntry]) -> list[SubtitleEntry]:
     """Sort entries and trim any overlap so each subtitle ends no later than the next starts.
 
@@ -348,7 +401,248 @@ def load_model(model_name_or_path: str) -> WhisperModel:
         return WhisperModel(model_name_or_path, device="cpu", compute_type="int8")
 
 
+def speech_intervals_from_audio_window(
+    audio,
+    window: Interval,
+    threshold: float,
+    min_silence_ms: int,
+    speech_pad_ms: int,
+    sampling_rate: int = 16000,
+) -> list[Interval]:
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+    start_sample = max(0, int(window.start * sampling_rate))
+    end_sample = min(len(audio), int(window.end * sampling_rate))
+    if end_sample <= start_sample:
+        return []
+    options = VadOptions(
+        threshold=threshold,
+        min_silence_duration_ms=min_silence_ms,
+        speech_pad_ms=speech_pad_ms,
+    )
+    timestamps = get_speech_timestamps(audio[start_sample:end_sample], options, sampling_rate=sampling_rate)
+    return [
+        Interval(window.start + item["start"] / sampling_rate, window.start + item["end"] / sampling_rate)
+        for item in timestamps
+    ]
+
+
+def sliding_windows(duration: float, window_seconds: float, overlap_seconds: float) -> list[Interval]:
+    if window_seconds <= 0:
+        raise ValueError("window_seconds must be positive")
+    if overlap_seconds < 0:
+        raise ValueError("overlap_seconds must be non-negative")
+    if overlap_seconds >= window_seconds:
+        raise ValueError("overlap_seconds must be smaller than window_seconds")
+    if duration <= 0:
+        return []
+
+    windows: list[Interval] = []
+    step = window_seconds - overlap_seconds
+    start = 0.0
+    while start < duration:
+        end = min(duration, start + window_seconds)
+        windows.append(Interval(start, end))
+        if end >= duration:
+            break
+        start += step
+    return windows
+
+
+def speech_intervals_from_sliding_audio(
+    audio,
+    duration: float,
+    threshold: float,
+    min_silence_ms: int,
+    speech_pad_ms: int,
+    window_seconds: float,
+    overlap_seconds: float,
+) -> list[Interval]:
+    speech_intervals: list[Interval] = []
+    for window in sliding_windows(duration, window_seconds, overlap_seconds):
+        speech_intervals.extend(
+            speech_intervals_from_audio_window(
+                audio,
+                window,
+                threshold,
+                min_silence_ms,
+                speech_pad_ms,
+            )
+        )
+    return merge_intervals(speech_intervals)
+
+
+def speech_clusters(
+    speech_intervals: list[Interval],
+    max_cluster_gap: float,
+    pad_seconds: float,
+    audio_duration: float,
+) -> list[Interval]:
+    if not speech_intervals:
+        return []
+    clusters = [Interval(speech_intervals[0].start, speech_intervals[0].end)]
+    for item in speech_intervals[1:]:
+        last = clusters[-1]
+        if item.start - last.end <= max_cluster_gap:
+            last.end = max(last.end, item.end)
+        else:
+            clusters.append(Interval(item.start, item.end))
+    padded = [
+        Interval(max(0.0, item.start - pad_seconds), min(audio_duration, item.end + pad_seconds))
+        for item in clusters
+    ]
+    # Padding can push adjacent clusters into each other; re-merge so the same
+    # audio is not transcribed twice.
+    return merge_intervals(padded)
+
+
+def split_clip_with_overlap(
+    clip: Interval,
+    max_clip_seconds: float,
+    overlap_seconds: float,
+) -> list[Interval]:
+    if max_clip_seconds <= 0:
+        raise ValueError("max_clip_seconds must be positive")
+    if overlap_seconds < 0:
+        raise ValueError("overlap_seconds must be non-negative")
+    if overlap_seconds >= max_clip_seconds:
+        raise ValueError("overlap_seconds must be smaller than max_clip_seconds")
+    if clip.end - clip.start <= max_clip_seconds:
+        return [clip]
+
+    clips: list[Interval] = []
+    start = clip.start
+    step = max_clip_seconds - overlap_seconds
+    while start < clip.end:
+        end = min(clip.end, start + max_clip_seconds)
+        clips.append(Interval(start, end))
+        if end >= clip.end:
+            break
+        start += step
+    return clips
+
+
+def transcribe_audio_clip(model, audio, clip: Interval, args: argparse.Namespace) -> list[SubtitleEntry]:
+    sample_rate = 16000
+    start_sample = max(0, int(clip.start * sample_rate))
+    end_sample = min(len(audio), int(clip.end * sample_rate))
+    if end_sample <= start_sample:
+        return []
+
+    segments, _ = model.transcribe(
+        audio[start_sample:end_sample],
+        language=args.language,
+        beam_size=5,
+        vad_filter=False,
+        word_timestamps=True,
+        condition_on_previous_text=False,
+    )
+    entries = collect_entries(
+        segments,
+        args.min_duration,
+        args.max_duration,
+        args.max_chars,
+        args.max_word_gap,
+        args.max_merge_gap,
+    )
+    for entry in entries:
+        entry.start += clip.start
+        entry.end += clip.start
+    return entries
+
+
+def build_main_local_clips(
+    audio,
+    audio_duration: float,
+    args: argparse.Namespace,
+) -> tuple[list[Interval], list[Interval], list[Interval]]:
+    """Run sliding VAD -> cluster -> pad -> split and return the selection stages."""
+    speech_intervals = speech_intervals_from_sliding_audio(
+        audio,
+        audio_duration,
+        args.main_local_vad_threshold,
+        args.vad_min_silence_ms,
+        args.vad_speech_pad_ms,
+        args.main_local_vad_window_seconds,
+        args.main_local_vad_window_overlap_seconds,
+    )
+    clusters = speech_clusters(
+        speech_intervals,
+        args.main_local_vad_max_cluster_gap,
+        args.main_local_asr_pad_seconds,
+        audio_duration,
+    )
+    clips: list[Interval] = []
+    for cluster in clusters:
+        if cluster.end - cluster.start < args.main_local_min_clip_seconds:
+            continue
+        clips.extend(
+            split_clip_with_overlap(
+                cluster,
+                args.main_local_asr_max_clip_seconds,
+                args.main_local_asr_overlap_seconds,
+            )
+        )
+    return speech_intervals, clusters, clips
+
+
+def _total_seconds(intervals: list[Interval]) -> float:
+    return sum(item.end - item.start for item in intervals)
+
+
+def report_main_local_vad_stats(
+    audio_duration: float,
+    speech_intervals: list[Interval],
+    clusters: list[Interval],
+    clips: list[Interval],
+) -> None:
+    speech_min = _total_seconds(speech_intervals) / 60.0
+    cluster_min = _total_seconds(clusters) / 60.0
+    clip_min = _total_seconds(clips) / 60.0
+    covered_min = _total_seconds(merge_intervals(clips)) / 60.0
+    coverage = (covered_min * 60.0 / audio_duration * 100.0) if audio_duration > 0 else 0.0
+    overlap_factor = (clip_min / covered_min) if covered_min > 0 else 1.0
+    print(
+        "Main local VAD: "
+        f"audio={audio_duration / 60.0:.1f}min "
+        f"speech_intervals={len(speech_intervals)} ({speech_min:.1f}min) "
+        f"clusters={len(clusters)} ({cluster_min:.1f}min) "
+        f"clips={len(clips)} ({clip_min:.1f}min) "
+        f"covered={covered_min:.1f}min coverage={coverage:.1f}% "
+        f"overlap_factor={overlap_factor:.2f}",
+        flush=True,
+    )
+
+
+def main_local_vad_dry_run(audio_path: Path, args: argparse.Namespace) -> None:
+    audio = decode_audio(str(audio_path), sampling_rate=16000)
+    audio_duration = len(audio) / 16000
+    speech_intervals, clusters, clips = build_main_local_clips(audio, audio_duration, args)
+    report_main_local_vad_stats(audio_duration, speech_intervals, clusters, clips)
+
+
+def transcribe_audio_with_sliding_vad(model, audio_path: Path, args: argparse.Namespace) -> list[SubtitleEntry]:
+    audio = decode_audio(str(audio_path), sampling_rate=16000)
+    audio_duration = len(audio) / 16000
+    speech_intervals, clusters, clips = build_main_local_clips(audio, audio_duration, args)
+    report_main_local_vad_stats(audio_duration, speech_intervals, clusters, clips)
+    entries: list[SubtitleEntry] = []
+    for index, clip in enumerate(clips, start=1):
+        print(f"[{index}/{len(clips)}] main {clip.start:.2f}-{clip.end:.2f}", flush=True)
+        entries.extend(transcribe_audio_clip(model, audio, clip, args))
+    return entries
+
+
 def transcribe_audio(model, audio_path: Path, args: argparse.Namespace) -> list[SubtitleEntry]:
+    if getattr(args, "main_local_vad", False):
+        entries = transcribe_audio_with_sliding_vad(model, audio_path, args)
+        if getattr(args, "filter_hallucinations", True):
+            entries, filtered = filter_main_local_entries(entries, args)
+            if filtered:
+                samples = ", ".join(entry.text[:24] for entry in filtered[:5])
+                print(f"Filtered main-ASR hallucinations/noise: {len(filtered)} ({samples})", flush=True)
+        return entries
+
     vad_parameters = None
     if not args.no_vad:
         vad_parameters = {
@@ -396,6 +690,28 @@ def main() -> None:
     parser.add_argument("--vad-threshold", type=float, default=0.05)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
+    parser.add_argument("--main-local-vad", action="store_true")
+    parser.add_argument(
+        "--main-local-vad-dry-run",
+        action="store_true",
+        help="Run sliding VAD selection only, print coverage stats, and exit (no Whisper)",
+    )
+    parser.add_argument("--main-local-vad-threshold", type=float, default=0.50)
+    parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
+    parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
+    parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=1.0)
+    parser.add_argument("--main-local-asr-pad-seconds", type=float, default=0.3)
+    parser.add_argument("--main-local-asr-max-clip-seconds", type=float, default=45.0)
+    parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
+    parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
+    # Consolidated main-pass cleaning (so the sliding pass can replace main+gap-fill).
+    parser.add_argument("--main-min-chars", type=int, default=1)
+    parser.add_argument("--main-max-compression-ratio", type=float, default=25.0)
+    parser.add_argument("--main-duplicate-window-seconds", type=float, default=2.0)
+    parser.add_argument("--hallucination-min-repeats", type=int, default=10)
+    parser.add_argument("--hallucination-repeat-no-speech-prob", type=float, default=0.75)
+    parser.add_argument("--hallucination-repeat-avg-logprob", type=float, default=-0.80)
+    parser.add_argument("--hallucination-high-risk-max-repeats", type=int, default=3)
     parser.add_argument("--max-word-gap", type=float, default=6.0)
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
     parser.add_argument(
@@ -406,6 +722,14 @@ def main() -> None:
     )
     parser.set_defaults(filter_hallucinations=True)
     args = parser.parse_args()
+    if args.main_local_vad_window_overlap_seconds >= args.main_local_vad_window_seconds:
+        raise SystemExit("--main-local-vad-window-overlap-seconds must be smaller than --main-local-vad-window-seconds")
+    if args.main_local_asr_overlap_seconds >= args.main_local_asr_max_clip_seconds:
+        raise SystemExit("--main-local-asr-overlap-seconds must be smaller than --main-local-asr-max-clip-seconds")
+
+    if args.main_local_vad_dry_run:
+        main_local_vad_dry_run(args.audio, args)
+        return
 
     model = load_model(args.model)
     entries = transcribe_audio(model, args.audio, args)

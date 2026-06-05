@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unicodedata
 from statistics import median
 
@@ -104,6 +105,49 @@ def normalize_phrase(text: str) -> str:
 
 def is_high_risk_repeat_phrase(text: str) -> bool:
     return any(phrase in text for phrase in HIGH_RISK_REPEAT_PHRASES)
+
+
+def repeated_character_ratio(text: str) -> float:
+    compact = compact_text(text)
+    if not compact:
+        return 1.0
+    return max(compact.count(char) for char in set(compact)) / len(compact)
+
+
+def looks_like_noise(text: str, min_text_chars: int) -> bool:
+    compact = compact_text(text)
+    if not compact:
+        return True
+    if len(compact) < min_text_chars:
+        return True
+    for size in (1, 2, 3):
+        if len(compact) >= size * 3 and len(compact) % size == 0:
+            token = compact[:size]
+            if token * (len(compact) // size) == compact:
+                return True
+    if len(compact) >= 5 and repeated_character_ratio(compact) >= 0.8:
+        return True
+    if re.fullmatch(r"[あぁアァうぅウゥんンはハぁー〜…・。、,.!?！？]+", compact) and len(compact) >= 4:
+        return True
+    return False
+
+
+def exceeds_compression_ratio(entry, max_ratio: float) -> bool:
+    return entry.compression_ratio is not None and entry.compression_ratio >= max_ratio
+
+
+def is_duplicate_of_nearby(entry, existing, window_seconds: float) -> bool:
+    text = compact_text(entry.text)
+    if not text:
+        return True
+    for item in existing:
+        if item.end < entry.start - window_seconds:
+            continue
+        if item.start > entry.end + window_seconds:
+            break
+        if compact_text(item.text) == text:
+            return True
+    return False
 
 
 def repeated_hallucination_texts(

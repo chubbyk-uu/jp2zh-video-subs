@@ -1,11 +1,63 @@
+import types
+
 from transcribe_ja_srt import (
     SubtitleEntry,
     estimate_display_duration,
     filter_hallucination_entries,
+    filter_main_local_entries,
     merge_orphan_prefix_entries,
     merge_short_entries,
     resolve_overlaps,
+    sliding_windows,
+    speech_clusters,
+    split_clip_with_overlap,
 )
+from srt_utils import Interval
+
+
+def _main_filter_args(**overrides):
+    base = dict(
+        main_min_chars=1,
+        main_max_compression_ratio=25.0,
+        main_duplicate_window_seconds=2.0,
+        hallucination_min_repeats=10,
+        hallucination_repeat_no_speech_prob=0.75,
+        hallucination_repeat_avg_logprob=-0.80,
+        hallucination_high_risk_max_repeats=3,
+    )
+    base.update(overrides)
+    return types.SimpleNamespace(**base)
+
+
+def test_filter_main_local_keeps_short_responses_drops_moaning():
+    entries = [
+        SubtitleEntry(1.0, 2.0, "はい"),
+        SubtitleEntry(3.0, 4.0, "うん"),
+        SubtitleEntry(5.0, 7.0, "ああああ"),
+        SubtitleEntry(8.0, 10.0, "今日はいい天気ですね"),
+    ]
+    kept, dropped = filter_main_local_entries(entries, _main_filter_args())
+    assert [e.text for e in kept] == ["はい", "うん", "今日はいい天気ですね"]
+    assert [e.text for e in dropped] == ["ああああ"]
+
+
+def test_filter_main_local_drops_adjacent_duplicate_from_clip_overlap():
+    entries = [
+        SubtitleEntry(10.0, 11.0, "こんにちは"),
+        SubtitleEntry(10.5, 11.5, "こんにちは"),
+        SubtitleEntry(30.0, 31.0, "こんにちは"),
+    ]
+    kept, dropped = filter_main_local_entries(entries, _main_filter_args())
+    # The overlap duplicate at 10.5 is removed; the far-apart one at 30s survives.
+    assert [(e.start, e.text) for e in kept] == [(10.0, "こんにちは"), (30.0, "こんにちは")]
+    assert len(dropped) == 1
+
+
+def test_filter_main_local_repeat_backstop_drops_high_risk_signoff():
+    entries = [SubtitleEntry(float(i * 30), float(i * 30 + 1), "おやすみなさい") for i in range(4)]
+    kept, dropped = filter_main_local_entries(entries, _main_filter_args())
+    assert kept == []
+    assert len(dropped) == 4
 
 
 def test_resolve_overlaps_trims_overlap():
@@ -97,3 +149,50 @@ def test_merge_orphan_prefix_entries_does_not_join_normal_short_lines():
     merged = merge_orphan_prefix_entries(entries, max_gap=10.0, max_duration=12.0, max_chars=42)
 
     assert [entry.text for entry in merged] == ["はい", "頑張って", "あ", "そうです"]
+
+
+def test_sliding_windows_uses_overlap_step():
+    windows = sliding_windows(20.0, window_seconds=8.0, overlap_seconds=4.0)
+
+    assert [(item.start, item.end) for item in windows] == [
+        (0.0, 8.0),
+        (4.0, 12.0),
+        (8.0, 16.0),
+        (12.0, 20.0),
+    ]
+
+
+def test_speech_clusters_pads_and_merges_nearby_intervals():
+    # (10,12)+(13.5,14) merge by the 2s cluster gap into (10,14); (20,21) stays
+    # separate. Padding by 3s makes the two padded clusters touch at 17.0, so the
+    # post-pad merge fuses them rather than transcribing the overlap twice.
+    clusters = speech_clusters(
+        [Interval(10.0, 12.0), Interval(13.5, 14.0), Interval(20.0, 21.0)],
+        max_cluster_gap=2.0,
+        pad_seconds=3.0,
+        audio_duration=30.0,
+    )
+
+    assert [(item.start, item.end) for item in clusters] == [(7.0, 24.0)]
+
+
+def test_speech_clusters_keeps_distant_clusters_separate():
+    # A real silence gap wider than 2*pad must survive the post-pad merge.
+    clusters = speech_clusters(
+        [Interval(10.0, 12.0), Interval(40.0, 41.0)],
+        max_cluster_gap=2.0,
+        pad_seconds=3.0,
+        audio_duration=60.0,
+    )
+
+    assert [(item.start, item.end) for item in clusters] == [(7.0, 15.0), (37.0, 44.0)]
+
+
+def test_split_clip_with_overlap_keeps_context_between_long_clips():
+    clips = split_clip_with_overlap(Interval(0.0, 100.0), max_clip_seconds=45.0, overlap_seconds=5.0)
+
+    assert [(item.start, item.end) for item in clips] == [
+        (0.0, 45.0),
+        (40.0, 85.0),
+        (80.0, 100.0),
+    ]

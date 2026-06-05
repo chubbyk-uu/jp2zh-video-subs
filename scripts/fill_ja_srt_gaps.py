@@ -9,9 +9,13 @@ from pathlib import Path
 from faster_whisper.audio import decode_audio
 
 from hallucination_filters import (
+    exceeds_compression_ratio,
+    is_duplicate_of_nearby,
     is_high_risk_repeat_phrase,
     looks_like_hallucination,
+    looks_like_noise,
     normalize_phrase,
+    repeated_character_ratio,
     repeated_hallucination_texts,
 )
 from quality_report import (
@@ -148,47 +152,6 @@ def split_clip_with_overlap(
     return clips
 
 
-def repeated_character_ratio(text: str) -> float:
-    compact = compact_text(text)
-    if not compact:
-        return 1.0
-    return max(compact.count(char) for char in set(compact)) / len(compact)
-
-
-def looks_like_noise(text: str, min_text_chars: int) -> bool:
-    compact = compact_text(text)
-    if not compact:
-        return True
-    if len(compact) < min_text_chars:
-        return True
-    for size in (1, 2, 3):
-        if len(compact) >= size * 3 and len(compact) % size == 0:
-            token = compact[:size]
-            if token * (len(compact) // size) == compact:
-                return True
-    if len(compact) >= 5 and repeated_character_ratio(compact) >= 0.8:
-        return True
-    if re.fullmatch(r"[あぁアァうぅウゥんンはハぁー〜…・。、,.!?！？]+", compact) and len(compact) >= 4:
-        return True
-    return False
-
-
-def is_duplicate_of_nearby(entry: SubtitleEntry, existing: list[Entry], window_seconds: float) -> bool:
-    text = compact_text(entry.text)
-    if not text:
-        return True
-    for item in existing:
-        if item.end < entry.start - window_seconds:
-            continue
-        if item.start > entry.end + window_seconds:
-            break
-        if compact_text(item.text) == text:
-            return True
-    return False
-
-
-def exceeds_compression_ratio(entry: SubtitleEntry, max_ratio: float) -> bool:
-    return entry.compression_ratio is not None and entry.compression_ratio >= max_ratio
 
 
 def transcribe_clip(
@@ -563,6 +526,15 @@ def main() -> None:
     parser.add_argument("--vad-threshold", type=float, default=0.05)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
+    parser.add_argument("--main-local-vad", action="store_true")
+    parser.add_argument("--main-local-vad-threshold", type=float, default=0.50)
+    parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
+    parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
+    parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=1.0)
+    parser.add_argument("--main-local-asr-pad-seconds", type=float, default=0.3)
+    parser.add_argument("--main-local-asr-max-clip-seconds", type=float, default=45.0)
+    parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
+    parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
     parser.add_argument(
         "--gap-local-vad",
         action="store_true",
@@ -628,6 +600,12 @@ def main() -> None:
         raise SystemExit("--gap-local-vad-window-overlap-seconds must be >= 0")
     if args.gap_local_vad_window_overlap_seconds >= args.gap_local_vad_window_seconds:
         raise SystemExit("--gap-local-vad-window-overlap-seconds must be smaller than --gap-local-vad-window-seconds")
+    if args.gap_local_asr_overlap_seconds >= args.gap_local_asr_max_clip_seconds:
+        raise SystemExit("--gap-local-asr-overlap-seconds must be smaller than --gap-local-asr-max-clip-seconds")
+    if args.main_local_vad_window_overlap_seconds >= args.main_local_vad_window_seconds:
+        raise SystemExit("--main-local-vad-window-overlap-seconds must be smaller than --main-local-vad-window-seconds")
+    if args.main_local_asr_overlap_seconds >= args.main_local_asr_max_clip_seconds:
+        raise SystemExit("--main-local-asr-overlap-seconds must be smaller than --main-local-asr-max-clip-seconds")
 
     if args.transcribe_output:
         model = load_model(str(args.model))
