@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -281,20 +280,6 @@ def convert_existing(entries: list[Entry]) -> list[SubtitleEntry]:
     return [SubtitleEntry(item.start, item.end, item.text) for item in entries]
 
 
-def gap_local_vad_threshold(
-    gap_seconds: float,
-    min_threshold: float,
-    max_threshold: float,
-    reference_seconds: float = 30.0,
-    slope_per_decade: float = 0.20,
-) -> float:
-    if min_threshold > max_threshold:
-        raise ValueError("min_threshold must be <= max_threshold")
-    effective_seconds = max(gap_seconds, reference_seconds)
-    threshold = max_threshold - slope_per_decade * math.log10(effective_seconds / reference_seconds)
-    return max(min_threshold, min(max_threshold, threshold))
-
-
 def speech_intervals_from_gap_audio(
     audio,
     gap: Interval,
@@ -319,6 +304,51 @@ def speech_intervals_from_gap_audio(
         Interval(gap.start + item["start"] / sampling_rate, gap.start + item["end"] / sampling_rate)
         for item in timestamps
     ]
+
+
+def gap_windows(gap: Interval, window_seconds: float, overlap_seconds: float) -> list[Interval]:
+    if window_seconds <= 0:
+        raise ValueError("window_seconds must be positive")
+    if overlap_seconds < 0:
+        raise ValueError("overlap_seconds must be non-negative")
+    if overlap_seconds >= window_seconds:
+        raise ValueError("overlap_seconds must be smaller than window_seconds")
+    if gap.end - gap.start <= window_seconds:
+        return [gap]
+
+    windows: list[Interval] = []
+    step = window_seconds - overlap_seconds
+    start = gap.start
+    while start < gap.end:
+        end = min(gap.end, start + window_seconds)
+        windows.append(Interval(start, end))
+        if end >= gap.end:
+            break
+        start += step
+    return windows
+
+
+def speech_intervals_from_sliding_gap_audio(
+    audio,
+    gap: Interval,
+    threshold: float,
+    min_silence_ms: int,
+    speech_pad_ms: int,
+    window_seconds: float,
+    overlap_seconds: float,
+) -> list[Interval]:
+    speech_intervals: list[Interval] = []
+    for window in gap_windows(gap, window_seconds, overlap_seconds):
+        speech_intervals.extend(
+            speech_intervals_from_gap_audio(
+                audio,
+                window,
+                threshold,
+                min_silence_ms,
+                speech_pad_ms,
+            )
+        )
+    return merge_intervals(speech_intervals)
 
 
 def padded_clip_for_gap(
@@ -368,23 +398,31 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
         if gap.end - gap.start < args.min_gap_seconds:
             continue
         if args.gap_local_vad:
-            threshold = gap_local_vad_threshold(
-                gap.end - gap.start,
-                args.gap_local_vad_min_threshold,
-                args.gap_local_vad_max_threshold,
-            )
-            gap_speech_intervals = speech_intervals_from_gap_audio(
-                audio,
-                gap,
-                threshold,
-                args.vad_min_silence_ms,
-                args.vad_speech_pad_ms,
-            )
+            gap_seconds = gap.end - gap.start
+            if gap_seconds >= args.gap_local_vad_window_min_gap_seconds:
+                gap_speech_intervals = speech_intervals_from_sliding_gap_audio(
+                    audio,
+                    gap,
+                    args.gap_local_vad_threshold,
+                    args.vad_min_silence_ms,
+                    args.vad_speech_pad_ms,
+                    args.gap_local_vad_window_seconds,
+                    args.gap_local_vad_window_overlap_seconds,
+                )
+                clip_source = "gap_local_vad_window"
+            else:
+                gap_speech_intervals = speech_intervals_from_gap_audio(
+                    audio,
+                    gap,
+                    args.gap_local_vad_threshold,
+                    args.vad_min_silence_ms,
+                    args.vad_speech_pad_ms,
+                )
+                clip_source = "gap_local_vad"
             speech_seconds = overlap_seconds(gap, gap_speech_intervals)
             clip_pad_seconds = args.gap_local_asr_pad_seconds
             max_clip_seconds = args.gap_local_asr_max_clip_seconds
             clip_overlap_seconds = args.gap_local_asr_overlap_seconds
-            clip_source = "gap_local_vad"
         else:
             gap_speech_intervals = speech_intervals
             speech_seconds = overlap_seconds(gap, gap_speech_intervals)
@@ -530,8 +568,10 @@ def main() -> None:
         action="store_true",
         help="Use per-gap local VAD for gap-fill candidates instead of full-audio VAD.",
     )
-    parser.add_argument("--gap-local-vad-min-threshold", type=float, default=0.10)
-    parser.add_argument("--gap-local-vad-max-threshold", type=float, default=0.40)
+    parser.add_argument("--gap-local-vad-threshold", type=float, default=0.60)
+    parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=10.0)
+    parser.add_argument("--gap-local-vad-window-seconds", type=float, default=5.0)
+    parser.add_argument("--gap-local-vad-window-overlap-seconds", type=float, default=3.0)
     parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=3.0)
     parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=45.0)
     parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)
@@ -580,6 +620,14 @@ def main() -> None:
         "greeting appears once and survives). Set 0 to disable.",
     )
     args = parser.parse_args()
+    if args.gap_local_vad_window_min_gap_seconds < 0:
+        raise SystemExit("--gap-local-vad-window-min-gap-seconds must be >= 0")
+    if args.gap_local_vad_window_seconds <= 0:
+        raise SystemExit("--gap-local-vad-window-seconds must be > 0")
+    if args.gap_local_vad_window_overlap_seconds < 0:
+        raise SystemExit("--gap-local-vad-window-overlap-seconds must be >= 0")
+    if args.gap_local_vad_window_overlap_seconds >= args.gap_local_vad_window_seconds:
+        raise SystemExit("--gap-local-vad-window-overlap-seconds must be smaller than --gap-local-vad-window-seconds")
 
     if args.transcribe_output:
         model = load_model(str(args.model))

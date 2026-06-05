@@ -178,7 +178,7 @@ Pipeline presets:
 | --- | --- | --- |
 | `fast` | You want a quicker, more conservative pass with fewer hallucinations and can accept more missed quiet speech. | `--vad-threshold 0.20`, `--fill-min-gap-seconds 6`, `--fill-min-speech-seconds 2`, `--fill-min-clip-seconds 1.0`, `--fill-clip-pad-seconds 0.6`, `--fill-existing-pad-seconds 0.3`, `--fill-max-existing-overlap-seconds 0.5` |
 | `coverage` | Default. You want higher subtitle coverage and are willing to review more low-confidence fill candidates. | `--vad-threshold 0.05`, `--fill-min-gap-seconds 2`, `--fill-min-speech-seconds 1`, `--fill-min-clip-seconds 0.6`, `--fill-clip-pad-seconds 0.4`, `--fill-existing-pad-seconds 0.1`, `--fill-max-existing-overlap-seconds 1.0` |
-| `high-coverage` | You need the highest coverage on long videos where full-audio VAD misses speech inside subtitle gaps. | Same as `coverage`, plus `--gap-local-vad`; gap fill uses per-gap local VAD instead of full-audio VAD |
+| `high-coverage` | You need the highest coverage on long videos where full-audio VAD misses speech inside subtitle gaps. | Same as `coverage`, plus `--gap-local-vad` and `--gap-local-vad-threshold 0.60`; gap fill uses per-gap local VAD instead of full-audio VAD |
 
 All presets use `--fill-max-clip-seconds 45`, `--fill-min-chars 3`,
 `--fill-max-cluster-gap 2.0`, `--fill-duplicate-window-seconds 8.0`, and
@@ -200,10 +200,11 @@ Optional gap-local VAD is available with `--gap-local-vad`. Enable it when you
 need higher coverage on long videos where full-audio VAD misses speech inside
 subtitle gaps. With this option, the gap-fill stage does not use full-audio VAD
 to decide candidate clips; it runs VAD directly on each eligible subtitle gap
-using a duration-scaled threshold
-clamped between `--gap-local-vad-min-threshold 0.10` and
-`--gap-local-vad-max-threshold 0.40`. Gap-local clips get extra ASR context
-(`--gap-local-asr-pad-seconds 3`) and are split at
+using `--gap-local-vad-threshold 0.60` by default. Gaps at least
+`--gap-local-vad-window-min-gap-seconds 10` are scanned with 5-second windows
+and 3-second overlap; the windows only discover speech positions, and the final
+ASR clips are still built from merged speech clusters. Gap-local clips get extra
+ASR context (`--gap-local-asr-pad-seconds 3`) and are split at
 `--gap-local-asr-max-clip-seconds 45` with `--gap-local-asr-overlap-seconds 5`.
 This can recover more speech, but it further increases processing time and can
 surface more low-confidence fill candidates.

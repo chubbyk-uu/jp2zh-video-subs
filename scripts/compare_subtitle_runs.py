@@ -8,7 +8,7 @@ from pathlib import Path
 
 from faster_whisper.audio import decode_audio
 
-from fill_ja_srt_gaps import gap_local_vad_threshold, speech_intervals_from_gap_audio, srt_gaps_with_boundaries
+from fill_ja_srt_gaps import speech_intervals_from_gap_audio, srt_gaps_with_boundaries
 from hallucination_filters import looks_like_hallucination
 from quality_report import Entry, parse_fills_metadata, parse_srt
 from srt_utils import Interval, compact_text, merge_intervals, overlap_seconds
@@ -143,8 +143,7 @@ def local_gap_vad_metrics(
     min_speech_seconds: float,
     vad_min_silence_ms: int,
     vad_speech_pad_ms: int,
-    vad_min_threshold: float,
-    vad_max_threshold: float,
+    vad_threshold: float,
     subtitle_pad_seconds: float,
 ) -> LocalGapVadMetrics:
     main_entries = parse_srt(run.work / stem / f"{stem}.ja.srt")
@@ -172,11 +171,10 @@ def local_gap_vad_metrics(
     speech_intervals: list[Interval] = []
     gap_rows: list[LocalGapRow] = []
     for gap in gaps:
-        threshold = gap_local_vad_threshold(gap.end - gap.start, vad_min_threshold, vad_max_threshold)
         gap_speech = speech_intervals_from_gap_audio(
             audio,
             gap,
-            threshold,
+            vad_threshold,
             vad_min_silence_ms,
             vad_speech_pad_ms,
         )
@@ -195,7 +193,7 @@ def local_gap_vad_metrics(
         gap_rows.append(
             LocalGapRow(
                 gap=gap,
-                threshold=threshold,
+                threshold=vad_threshold,
                 speech_s=speech_seconds,
                 raw_asr_s=raw_asr_covered,
                 kept_fill_s=kept_fill_covered,
@@ -388,8 +386,7 @@ def main() -> None:
     parser.add_argument("--min-speech-seconds", type=float, default=1.0)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    parser.add_argument("--gap-local-vad-min-threshold", type=float, default=0.10)
-    parser.add_argument("--gap-local-vad-max-threshold", type=float, default=0.40)
+    parser.add_argument("--gap-local-vad-threshold", type=float, default=0.30)
     parser.add_argument("--subtitle-pad-seconds", type=float, default=0.5)
     parser.add_argument("--max-samples", type=int, default=12)
     args = parser.parse_args()
@@ -438,8 +435,7 @@ def main() -> None:
                 args.min_speech_seconds,
                 args.vad_min_silence_ms,
                 args.vad_speech_pad_ms,
-                args.gap_local_vad_min_threshold,
-                args.gap_local_vad_max_threshold,
+                args.gap_local_vad_threshold,
                 args.subtitle_pad_seconds,
             )
             writer.writerow([

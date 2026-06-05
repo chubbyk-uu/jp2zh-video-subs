@@ -174,7 +174,7 @@ Whisper 幻觉概率也会升高；对准确率要求高时，建议复查
 | --- | --- | --- |
 | `fast` | 需要更快、更保守的初稿，愿意接受更多轻声漏识别，换取更低幻觉风险。 | `--vad-threshold 0.20`，`--fill-min-gap-seconds 6`，`--fill-min-speech-seconds 2`，`--fill-min-clip-seconds 1.0`，`--fill-clip-pad-seconds 0.6`，`--fill-existing-pad-seconds 0.3`，`--fill-max-existing-overlap-seconds 0.5` |
 | `coverage` | 默认。需要更高字幕覆盖率，并愿意复查更多低置信度补漏候选。 | `--vad-threshold 0.05`，`--fill-min-gap-seconds 2`，`--fill-min-speech-seconds 1`，`--fill-min-clip-seconds 0.6`，`--fill-clip-pad-seconds 0.4`，`--fill-existing-pad-seconds 0.1`，`--fill-max-existing-overlap-seconds 1.0` |
-| `high-coverage` | 长视频中 full-audio VAD 漏掉字幕空窗里的真实语音，需要最高覆盖率。 | 等同 `coverage`，并自动开启 `--gap-local-vad`；补漏候选改用逐空窗局部 VAD，不再用全片 VAD |
+| `high-coverage` | 长视频中 full-audio VAD 漏掉字幕空窗里的真实语音，需要最高覆盖率。 | 等同 `coverage`，并自动开启 `--gap-local-vad` 和 `--gap-local-vad-threshold 0.60`；补漏候选改用逐空窗局部 VAD，不再用全片 VAD |
 
 所有预设都使用 `--fill-max-clip-seconds 45`、`--fill-min-chars 3`、
 `--fill-max-cluster-gap 2.0`、`--fill-duplicate-window-seconds 8.0` 和
@@ -191,8 +191,10 @@ Whisper 幻觉概率也会升高；对准确率要求高时，建议复查
 
 可选的局部空窗 VAD 可用 `--gap-local-vad` 开启。长视频中如果需要更高覆盖率，
 尤其是全片 VAD 漏掉字幕空窗里的真实语音时，可以开启它。开启后，补漏阶段不再用全片 VAD
-决定候选片段，而是对每个达到长度门槛的字幕空窗直接跑局部 VAD，并按空窗时长动态计算阈值，范围限制在
-`--gap-local-vad-min-threshold 0.10` 到 `--gap-local-vad-max-threshold 0.40`。
+决定候选片段，而是对每个达到长度门槛的字幕空窗直接跑局部 VAD，默认使用
+`--gap-local-vad-threshold 0.60`。达到
+`--gap-local-vad-window-min-gap-seconds 10` 秒的空窗会用 5 秒窗口、3 秒重叠扫描；
+滑窗只用于发现语音位置，最终 ASR 片段仍由合并后的语音簇生成。
 局部空窗片段会给 ASR 额外上下文（`--gap-local-asr-pad-seconds 3`），并按
 `--gap-local-asr-max-clip-seconds 45` 和 `--gap-local-asr-overlap-seconds 5` 分段。
 它可能找回更多语音，但会进一步拉长处理时间，也可能带来更多低置信度补漏候选。

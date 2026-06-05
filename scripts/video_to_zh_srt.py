@@ -65,6 +65,7 @@ class PipelinePreset:
     fill_max_existing_overlap_seconds: float
     fill_max_cluster_gap: float
     fill_duplicate_window_seconds: float
+    gap_local_vad_threshold: float = 0.30
     gap_local_vad: bool = False
 
 
@@ -107,6 +108,7 @@ PIPELINE_PRESETS = {
         fill_max_existing_overlap_seconds=1.0,
         fill_max_cluster_gap=2.0,
         fill_duplicate_window_seconds=8.0,
+        gap_local_vad_threshold=0.60,
         gap_local_vad=True,
     ),
 }
@@ -315,10 +317,14 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.hallucination_repeat_avg_logprob),
             "--hallucination-high-risk-max-repeats",
             str(args.hallucination_high_risk_max_repeats),
-            "--gap-local-vad-min-threshold",
-            str(args.gap_local_vad_min_threshold),
-            "--gap-local-vad-max-threshold",
-            str(args.gap_local_vad_max_threshold),
+            "--gap-local-vad-threshold",
+            str(args.gap_local_vad_threshold),
+            "--gap-local-vad-window-min-gap-seconds",
+            str(args.gap_local_vad_window_min_gap_seconds),
+            "--gap-local-vad-window-seconds",
+            str(args.gap_local_vad_window_seconds),
+            "--gap-local-vad-window-overlap-seconds",
+            str(args.gap_local_vad_window_overlap_seconds),
             "--gap-local-asr-pad-seconds",
             str(args.gap_local_asr_pad_seconds),
             "--gap-local-asr-max-clip-seconds",
@@ -489,8 +495,10 @@ def main() -> None:
     parser.add_argument("--fill-max-cluster-gap", type=float)
     parser.add_argument("--fill-duplicate-window-seconds", type=float)
     parser.add_argument("--gap-local-vad", action="store_true")
-    parser.add_argument("--gap-local-vad-min-threshold", type=float, default=0.10)
-    parser.add_argument("--gap-local-vad-max-threshold", type=float, default=0.40)
+    parser.add_argument("--gap-local-vad-threshold", type=float, default=None)
+    parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=10.0)
+    parser.add_argument("--gap-local-vad-window-seconds", type=float, default=5.0)
+    parser.add_argument("--gap-local-vad-window-overlap-seconds", type=float, default=3.0)
     parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=3.0)
     parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=45.0)
     parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)

@@ -4,7 +4,7 @@ import fill_ja_srt_gaps as fill_module
 from fill_ja_srt_gaps import (
     exceeds_compression_ratio,
     fill_gaps,
-    gap_local_vad_threshold,
+    gap_windows,
     is_high_risk_repeat_phrase,
     looks_like_hallucination,
     looks_like_noise,
@@ -27,11 +27,16 @@ def test_repeated_character_ratio():
     assert repeated_character_ratio("abcd") == 0.25
 
 
-def test_gap_local_vad_threshold_scales_with_log_duration():
-    assert gap_local_vad_threshold(10, 0.10, 0.40) == 0.40
-    assert gap_local_vad_threshold(30, 0.10, 0.40) == 0.40
-    assert round(gap_local_vad_threshold(300, 0.10, 0.40), 2) == 0.20
-    assert gap_local_vad_threshold(3000, 0.10, 0.40) == 0.10
+def test_gap_windows_use_overlap_and_cover_trailing_gap():
+    windows = gap_windows(Interval(0, 12), window_seconds=5, overlap_seconds=3)
+
+    assert [(item.start, item.end) for item in windows] == [
+        (0, 5),
+        (2, 7),
+        (4, 9),
+        (6, 11),
+        (8, 12),
+    ]
 
 
 def test_looks_like_noise():
@@ -212,8 +217,10 @@ def test_gap_local_vad_skips_full_audio_vad(monkeypatch, tmp_path):
         min_gap_seconds=2.0,
         min_speech_seconds=1.0,
         gap_local_vad=True,
-        gap_local_vad_min_threshold=0.1,
-        gap_local_vad_max_threshold=0.5,
+        gap_local_vad_threshold=0.3,
+        gap_local_vad_window_min_gap_seconds=10.0,
+        gap_local_vad_window_seconds=5.0,
+        gap_local_vad_window_overlap_seconds=3.0,
         gap_local_asr_pad_seconds=3.0,
         gap_local_asr_max_clip_seconds=45.0,
         gap_local_asr_overlap_seconds=5.0,
