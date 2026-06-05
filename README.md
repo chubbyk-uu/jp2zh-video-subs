@@ -178,7 +178,7 @@ Pipeline presets:
 | --- | --- | --- |
 | `fast` | You want a quicker, more conservative pass with fewer hallucinations and can accept more missed quiet speech. | `--vad-threshold 0.20`, `--fill-min-gap-seconds 6`, `--fill-min-speech-seconds 2`, `--fill-min-clip-seconds 1.0`, `--fill-clip-pad-seconds 0.6`, `--fill-existing-pad-seconds 0.3`, `--fill-max-existing-overlap-seconds 0.5` |
 | `coverage` | Default. You want higher subtitle coverage and are willing to review more low-confidence fill candidates. | `--vad-threshold 0.05`, `--fill-min-gap-seconds 2`, `--fill-min-speech-seconds 1`, `--fill-min-clip-seconds 0.6`, `--fill-clip-pad-seconds 0.4`, `--fill-existing-pad-seconds 0.1`, `--fill-max-existing-overlap-seconds 1.0` |
-| `high-coverage` | You need the highest coverage on long videos where full-audio VAD misses speech inside subtitle gaps. | Same as `coverage`, plus `--gap-local-vad` |
+| `high-coverage` | You need the highest coverage on long videos where full-audio VAD misses speech inside subtitle gaps. | Same as `coverage`, plus `--gap-local-vad`; gap fill uses per-gap local VAD instead of full-audio VAD |
 
 All presets use `--fill-max-clip-seconds 45`, `--fill-min-chars 3`,
 `--fill-max-cluster-gap 2.0`, `--fill-duplicate-window-seconds 8.0`, and
@@ -198,9 +198,11 @@ Default `coverage` gap-fill parameters:
 
 Optional gap-local VAD is available with `--gap-local-vad`. Enable it when you
 need higher coverage on long videos where full-audio VAD misses speech inside
-subtitle gaps. It reruns VAD on those gaps using a duration-scaled threshold
-clamped between `--gap-local-vad-min-threshold 0.1` and
-`--gap-local-vad-max-threshold 0.5`. Gap-local clips get extra ASR context
+subtitle gaps. With this option, the gap-fill stage does not use full-audio VAD
+to decide candidate clips; it runs VAD directly on each eligible subtitle gap
+using a duration-scaled threshold
+clamped between `--gap-local-vad-min-threshold 0.10` and
+`--gap-local-vad-max-threshold 0.40`. Gap-local clips get extra ASR context
 (`--gap-local-asr-pad-seconds 3`) and are split at
 `--gap-local-asr-max-clip-seconds 45` with `--gap-local-asr-overlap-seconds 5`.
 This can recover more speech, but it further increases processing time and can
@@ -469,7 +471,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### Some Speech Is Missed
 
-Gap fill is enabled by default. It does not judge gaps by duration alone; it checks the WAV audio with VAD and only re-transcribes gaps with enough speech. For long videos where full-audio VAD misses speech inside subtitle gaps, try `--gap-local-vad`; for more aggressive filling, lower the gap or speech threshold.
+Gap fill is enabled by default. It does not judge gaps by duration alone; it checks the WAV audio with VAD and only re-transcribes gaps with enough speech. `fast` and `coverage` use full-audio VAD for this check. For long videos where full-audio VAD misses speech inside subtitle gaps, use `high-coverage` or `--gap-local-vad`, which runs VAD directly on each eligible gap; for more aggressive filling, lower the gap or speech threshold.
 
 ### Duplicate-Looking Lines
 

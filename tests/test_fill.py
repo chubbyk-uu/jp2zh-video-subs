@@ -1,5 +1,6 @@
 from argparse import Namespace
 
+import fill_ja_srt_gaps as fill_module
 from fill_ja_srt_gaps import (
     exceeds_compression_ratio,
     fill_gaps,
@@ -10,12 +11,14 @@ from fill_ja_srt_gaps import (
     normalize_phrase,
     repeated_character_ratio,
     repeated_hallucination_texts,
+    srt_gaps_with_boundaries,
     speech_clusters_for_gap,
     split_clip,
     split_clip_with_overlap,
 )
 from srt_utils import Interval
 from transcribe_ja_srt import SubtitleEntry
+from quality_report import Entry
 
 
 def test_repeated_character_ratio():
@@ -25,10 +28,10 @@ def test_repeated_character_ratio():
 
 
 def test_gap_local_vad_threshold_scales_with_log_duration():
-    assert gap_local_vad_threshold(10, 0.1, 0.5) == 0.5
-    assert gap_local_vad_threshold(30, 0.1, 0.5) == 0.5
-    assert round(gap_local_vad_threshold(300, 0.1, 0.5), 2) == 0.3
-    assert gap_local_vad_threshold(3000, 0.1, 0.5) == 0.1
+    assert gap_local_vad_threshold(10, 0.10, 0.40) == 0.40
+    assert gap_local_vad_threshold(30, 0.10, 0.40) == 0.40
+    assert round(gap_local_vad_threshold(300, 0.10, 0.40), 2) == 0.20
+    assert gap_local_vad_threshold(3000, 0.10, 0.40) == 0.10
 
 
 def test_looks_like_noise():
@@ -60,10 +63,18 @@ def test_looks_like_hallucination_flags_only_platform_boilerplate():
     # Platform boilerplate.
     assert looks_like_hallucination("ご視聴ありがとうございました") is True
     assert looks_like_hallucination("チャンネル登録お願いします") is True
+    assert looks_like_hallucination("最後まで見てくれてありがとう。また見てね!") is True
+    assert looks_like_hallucination("ぜひ購読してサブスクリプションをお願いします") is True
+    assert looks_like_hallucination("コメント欄と概要欄を見てください") is True
+    assert looks_like_hallucination("AlphaFamilyを使っています") is True
+    assert looks_like_hallucination("エルミックで画像を撮りました") is True
     assert looks_like_hallucination("それではまた") is True
     assert looks_like_hallucination("アーメン") is True
     assert looks_like_hallucination("笑い声") is True
     assert looks_like_hallucination("拍手") is True
+    assert looks_like_hallucination("🐬🐬🐬") is True
+    assert looks_like_hallucination("タンジェント") is True
+    assert looks_like_hallucination("コサインタンジェント") is True
     # Ordinary dialogue phrases are not filtered by text alone.
     assert looks_like_hallucination("おやすみなさい") is False
     assert looks_like_hallucination("ありがとうございました") is False
@@ -164,3 +175,63 @@ def test_speech_clusters_for_gap_merges_close_segments():
     speech = [Interval(1, 3), Interval(3.5, 5), Interval(15, 18)]
     clusters = speech_clusters_for_gap(gap, speech, max_cluster_gap=2.0, pad=0.0)
     assert [(round(c.start, 1), round(c.end, 1)) for c in clusters] == [(1, 5), (15, 18)]
+
+
+def test_srt_gaps_with_boundaries_includes_leading_and_trailing_gaps():
+    entries = [Entry(1, 10, 20, "a"), Entry(2, 30, 40, "b")]
+
+    gaps = srt_gaps_with_boundaries(entries, audio_duration=50)
+
+    assert [(gap.start, gap.end) for gap in gaps] == [(0.0, 10), (20, 30), (40, 50)]
+
+
+def test_gap_local_vad_skips_full_audio_vad(monkeypatch, tmp_path):
+    calls = {"local": 0}
+
+    def fail_full_vad(*args, **kwargs):
+        raise AssertionError("full-audio VAD should not run when gap_local_vad is enabled")
+
+    def local_vad(*args, **kwargs):
+        calls["local"] += 1
+        return []
+
+    monkeypatch.setattr(fill_module, "decode_audio", lambda *args, **kwargs: [0] * 160000)
+    monkeypatch.setattr(fill_module, "speech_intervals_from_audio", fail_full_vad)
+    monkeypatch.setattr(fill_module, "speech_intervals_from_gap_audio", local_vad)
+
+    args = Namespace(
+        input=None,
+        audio=tmp_path / "audio.wav",
+        output=tmp_path / "out.srt",
+        fills_output=tmp_path / "fills.srt",
+        fills_metadata_output=tmp_path / "fills.tsv",
+        vad_threshold=0.05,
+        vad_min_silence_ms=500,
+        vad_speech_pad_ms=400,
+        existing_pad_seconds=0.1,
+        min_gap_seconds=2.0,
+        min_speech_seconds=1.0,
+        gap_local_vad=True,
+        gap_local_vad_min_threshold=0.1,
+        gap_local_vad_max_threshold=0.5,
+        gap_local_asr_pad_seconds=3.0,
+        gap_local_asr_max_clip_seconds=45.0,
+        gap_local_asr_overlap_seconds=5.0,
+        clip_pad_seconds=0.4,
+        max_clip_seconds=45.0,
+        max_cluster_gap=2.0,
+        max_existing_overlap_seconds=1.0,
+        min_clip_seconds=0.6,
+        min_fill_chars=3,
+        duplicate_window_seconds=8.0,
+        max_fill_compression_ratio=25.0,
+        hallucination_min_repeats=10,
+        hallucination_repeat_no_speech_prob=0.75,
+        hallucination_repeat_avg_logprob=-0.8,
+        hallucination_high_risk_max_repeats=3,
+    )
+    existing = [Entry(1, 1.0, 2.0, "a")]
+
+    fill_gaps(args, model=object(), existing_entries=existing)
+
+    assert calls["local"] == 1

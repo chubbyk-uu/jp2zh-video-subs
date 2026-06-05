@@ -6,6 +6,7 @@ from pathlib import Path
 
 from faster_whisper import WhisperModel
 
+from hallucination_filters import is_high_risk_repeat_phrase, looks_like_hallucination
 from srt_utils import compact_text, srt_time
 
 
@@ -192,6 +193,87 @@ def merge_short_entries(entries: list[SubtitleEntry], max_merge_gap: float, max_
     return merged
 
 
+def is_sentence_ending(text: str) -> bool:
+    return compact_text(text).endswith(("。", "！", "？", "!", "?", "…"))
+
+
+def is_cjk_or_katakana(char: str) -> bool:
+    return bool(
+        "\u3400" <= char <= "\u9fff"
+        or "\u30a0" <= char <= "\u30ff"
+        or "\uff66" <= char <= "\uff9f"
+    )
+
+
+def starts_with_small_kana(text: str) -> bool:
+    compact = compact_text(text)
+    return bool(compact) and compact[0] in "ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ"
+
+
+def looks_like_orphan_prefix(text: str, next_text: str) -> bool:
+    compact = compact_text(text)
+    if len(compact) != 1 or is_sentence_ending(compact):
+        return False
+    return is_cjk_or_katakana(compact) or starts_with_small_kana(next_text)
+
+
+def merge_orphan_prefix_entries(
+    entries: list[SubtitleEntry],
+    max_gap: float,
+    max_duration: float,
+    max_chars: int,
+) -> list[SubtitleEntry]:
+    if not entries:
+        return []
+    merged: list[SubtitleEntry] = []
+    index = 0
+    while index < len(entries):
+        current = entries[index]
+        if index + 1 >= len(entries):
+            merged.append(current)
+            break
+        following = entries[index + 1]
+        combined_text = current.text + following.text
+        if (
+            looks_like_orphan_prefix(current.text, following.text)
+            and following.start - current.end <= max_gap
+            and following.end - current.start <= max_duration
+            and len(compact_text(combined_text)) <= max_chars
+        ):
+            merged_entry = SubtitleEntry(
+                current.start,
+                following.end,
+                combined_text,
+                current.avg_logprob,
+                current.no_speech_prob,
+                current.compression_ratio,
+            )
+            if following.avg_logprob is not None:
+                merged_entry.avg_logprob = (
+                    following.avg_logprob
+                    if merged_entry.avg_logprob is None
+                    else min(merged_entry.avg_logprob, following.avg_logprob)
+                )
+            if following.no_speech_prob is not None:
+                merged_entry.no_speech_prob = (
+                    following.no_speech_prob
+                    if merged_entry.no_speech_prob is None
+                    else max(merged_entry.no_speech_prob, following.no_speech_prob)
+                )
+            if following.compression_ratio is not None:
+                merged_entry.compression_ratio = (
+                    following.compression_ratio
+                    if merged_entry.compression_ratio is None
+                    else max(merged_entry.compression_ratio, following.compression_ratio)
+                )
+            merged.append(merged_entry)
+            index += 2
+            continue
+        merged.append(current)
+        index += 1
+    return merged
+
+
 def collect_entries(
     segments,
     min_duration: float,
@@ -203,7 +285,35 @@ def collect_entries(
     entries: list[SubtitleEntry] = []
     for segment in segments:
         entries.extend(segment_entries(segment, min_duration, max_duration, max_chars, max_word_gap))
-    return merge_short_entries(entries, max_merge_gap, max_chars)
+    entries = merge_short_entries(entries, max_merge_gap, max_chars)
+    return merge_orphan_prefix_entries(entries, max_gap=10.0, max_duration=12.0, max_chars=max_chars)
+
+
+def filter_hallucination_entries(entries: list[SubtitleEntry]) -> tuple[list[SubtitleEntry], list[SubtitleEntry]]:
+    kept: list[SubtitleEntry] = []
+    filtered: list[SubtitleEntry] = []
+    hard_hallucination_indexes = {
+        index for index, entry in enumerate(entries) if looks_like_hallucination(entry.text)
+    }
+    for index, entry in enumerate(entries):
+        adjacent_to_hallucination = False
+        for neighbor in (index - 1, index + 1):
+            if neighbor not in hard_hallucination_indexes:
+                continue
+            nearby = (
+                abs(entries[neighbor].start - entry.end) <= 5.0
+                or abs(entry.start - entries[neighbor].end) <= 5.0
+            )
+            if nearby:
+                adjacent_to_hallucination = True
+                break
+        if looks_like_hallucination(entry.text) or (
+            adjacent_to_hallucination and is_high_risk_repeat_phrase(entry.text)
+        ):
+            filtered.append(entry)
+        else:
+            kept.append(entry)
+    return kept, filtered
 
 
 def resolve_overlaps(entries: list[SubtitleEntry]) -> list[SubtitleEntry]:
@@ -256,7 +366,7 @@ def transcribe_audio(model, audio_path: Path, args: argparse.Namespace) -> list[
         condition_on_previous_text=args.condition_on_previous_text,
     )
     print(f"Detected language: {info.language} ({info.language_probability:.2f})")
-    return collect_entries(
+    entries = collect_entries(
         segments,
         args.min_duration,
         args.max_duration,
@@ -264,6 +374,12 @@ def transcribe_audio(model, audio_path: Path, args: argparse.Namespace) -> list[
         args.max_word_gap,
         args.max_merge_gap,
     )
+    if getattr(args, "filter_hallucinations", True):
+        entries, filtered = filter_hallucination_entries(entries)
+        if filtered:
+            samples = ", ".join(entry.text[:24] for entry in filtered[:5])
+            print(f"Filtered main-ASR hallucinations: {len(filtered)} ({samples})", flush=True)
+    return entries
 
 
 def main() -> None:
@@ -282,6 +398,13 @@ def main() -> None:
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
     parser.add_argument("--max-word-gap", type=float, default=6.0)
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
+    parser.add_argument(
+        "--no-hallucination-filter",
+        dest="filter_hallucinations",
+        action="store_false",
+        help="Disable first-pass ASR filtering for clear platform/symbol hallucinations.",
+    )
+    parser.set_defaults(filter_hallucinations=True)
     args = parser.parse_args()
 
     model = load_model(args.model)

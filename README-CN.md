@@ -174,7 +174,7 @@ Whisper 幻觉概率也会升高；对准确率要求高时，建议复查
 | --- | --- | --- |
 | `fast` | 需要更快、更保守的初稿，愿意接受更多轻声漏识别，换取更低幻觉风险。 | `--vad-threshold 0.20`，`--fill-min-gap-seconds 6`，`--fill-min-speech-seconds 2`，`--fill-min-clip-seconds 1.0`，`--fill-clip-pad-seconds 0.6`，`--fill-existing-pad-seconds 0.3`，`--fill-max-existing-overlap-seconds 0.5` |
 | `coverage` | 默认。需要更高字幕覆盖率，并愿意复查更多低置信度补漏候选。 | `--vad-threshold 0.05`，`--fill-min-gap-seconds 2`，`--fill-min-speech-seconds 1`，`--fill-min-clip-seconds 0.6`，`--fill-clip-pad-seconds 0.4`，`--fill-existing-pad-seconds 0.1`，`--fill-max-existing-overlap-seconds 1.0` |
-| `high-coverage` | 长视频中 full-audio VAD 漏掉字幕空窗里的真实语音，需要最高覆盖率。 | 等同 `coverage`，并自动开启 `--gap-local-vad` |
+| `high-coverage` | 长视频中 full-audio VAD 漏掉字幕空窗里的真实语音，需要最高覆盖率。 | 等同 `coverage`，并自动开启 `--gap-local-vad`；补漏候选改用逐空窗局部 VAD，不再用全片 VAD |
 
 所有预设都使用 `--fill-max-clip-seconds 45`、`--fill-min-chars 3`、
 `--fill-max-cluster-gap 2.0`、`--fill-duplicate-window-seconds 8.0` 和
@@ -190,9 +190,9 @@ Whisper 幻觉概率也会升高；对准确率要求高时，建议复查
 - `--max-fill-compression-ratio 25`：过滤极端重复的补漏输出；中等压缩比条目保留给报告和人工复查。
 
 可选的局部空窗 VAD 可用 `--gap-local-vad` 开启。长视频中如果需要更高覆盖率，
-尤其是全片 VAD 漏掉字幕空窗里的真实语音时，可以开启它。它会只在这些空窗音频上重新跑 VAD，
-并按空窗时长动态计算阈值，范围限制在
-`--gap-local-vad-min-threshold 0.1` 到 `--gap-local-vad-max-threshold 0.5`。
+尤其是全片 VAD 漏掉字幕空窗里的真实语音时，可以开启它。开启后，补漏阶段不再用全片 VAD
+决定候选片段，而是对每个达到长度门槛的字幕空窗直接跑局部 VAD，并按空窗时长动态计算阈值，范围限制在
+`--gap-local-vad-min-threshold 0.10` 到 `--gap-local-vad-max-threshold 0.40`。
 局部空窗片段会给 ASR 额外上下文（`--gap-local-asr-pad-seconds 3`），并按
 `--gap-local-asr-max-clip-seconds 45` 和 `--gap-local-asr-overlap-seconds 5` 分段。
 它可能找回更多语音，但会进一步拉长处理时间，也可能带来更多低置信度补漏候选。
@@ -441,7 +441,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### 字幕有漏识别
 
-一键流程默认会跑二阶段补漏。它不是只按空窗长度判断，而是先用 VAD 分析 WAV 音频，只对空窗内存在足够语音的片段重新识别。长视频中如果全片 VAD 漏掉字幕空窗里的真实语音，可以试 `--gap-local-vad`；想更激进时，可以降低空窗阈值或语音时长阈值。
+一键流程默认会跑二阶段补漏。它不是只按空窗长度判断，而是先用 VAD 分析 WAV 音频，只对空窗内存在足够语音的片段重新识别。`fast` 和 `coverage` 用全片 VAD 做这个判断。长视频中如果全片 VAD 漏掉字幕空窗里的真实语音，可以用 `high-coverage` 或 `--gap-local-vad`，它会对每个达到长度门槛的空窗直接跑局部 VAD；想更激进时，可以降低空窗阈值或语音时长阈值。
 
 ### 字幕有重复内容
 

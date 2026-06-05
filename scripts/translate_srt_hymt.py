@@ -35,6 +35,36 @@ class Entry:
     settings: str = ""
 
 
+@dataclass(frozen=True)
+class GlossaryTerm:
+    source: str
+    target: str
+    note: str
+    forbidden: tuple[str, ...] = ()
+
+
+DEFAULT_GLOSSARY = (
+    GlossaryTerm(
+        source="ご主人様",
+        target="主人",
+        note="女仆/主仆语境中的称呼；不要译为丈夫、老公或先生。",
+        forbidden=("丈夫", "老公", "先生"),
+    ),
+    GlossaryTerm(
+        source="ご主人さん",
+        target="主人",
+        note="女仆/主仆语境中的称呼；不要译为丈夫、老公或先生。",
+        forbidden=("丈夫", "老公", "先生"),
+    ),
+    GlossaryTerm(
+        source="主人様",
+        target="主人",
+        note="女仆/主仆语境中的称呼；不要译为丈夫、老公或先生。",
+        forbidden=("丈夫", "老公", "先生"),
+    ),
+)
+
+
 def parse_srt(path: Path) -> list[Entry]:
     blocks = re.split(r"\n\s*\n", path.read_text(encoding="utf-8").strip())
     entries: list[Entry] = []
@@ -83,6 +113,53 @@ def normalize_source(text: str) -> str:
     return text
 
 
+def glossary_instruction(glossary: tuple[GlossaryTerm, ...]) -> str:
+    if not glossary:
+        return ""
+    lines = ["术语规则，不要输出规则本身："]
+    for term in glossary:
+        lines.append(f"- {term.source}={term.target}")
+    return "\n" + "\n".join(lines) + "\n"
+
+
+def glossary_issues(source: str, translated: str, glossary: tuple[GlossaryTerm, ...]) -> list[GlossaryTerm]:
+    issues: list[GlossaryTerm] = []
+    matched_sources: list[str] = []
+    for term in sorted(glossary, key=lambda item: len(item.source), reverse=True):
+        if term.source not in source:
+            continue
+        if any(term.source in matched or matched in term.source for matched in matched_sources):
+            continue
+        matched_sources.append(term.source)
+        if any(item in translated for item in term.forbidden):
+            issues.append(term)
+    return issues
+
+
+def write_terms_report(
+    path: Path,
+    rows: list[tuple[Entry, str, list[GlossaryTerm]]],
+) -> None:
+    lines = ["Terminology review report", ""]
+    if not rows:
+        lines.append("No terminology issues detected.")
+    for entry, translated, issues in rows:
+        expected = ", ".join(f"{term.source}->{term.target}" for term in issues)
+        forbidden = ", ".join(sorted({item for term in issues for item in term.forbidden}))
+        lines.extend(
+            [
+                f"[{entry.index}] {entry.time}",
+                f"source: {entry.text}",
+                f"translation: {translated}",
+                f"expected: {expected}",
+                f"forbidden_seen: {forbidden}",
+                "",
+            ]
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
 def is_context_sensitive_short_text(text: str) -> bool:
     compact = re.sub(r"\s+", "", text)
     if len(compact) <= 2:
@@ -103,20 +180,20 @@ def is_context_sensitive_short_text(text: str) -> bool:
     return compact in filler_words
 
 
-def build_messages(text: str, history: list[tuple[str, str]], extra_instruction: str = "") -> list[dict]:
+def build_messages(
+    text: str,
+    history: list[tuple[str, str]],
+    extra_instruction: str = "",
+    glossary: tuple[GlossaryTerm, ...] = DEFAULT_GLOSSARY,
+) -> list[dict]:
     """Chat turns for one translation: prior (source -> translation) pairs as history,
     then the current source as its own user turn so only it gets translated."""
-    instruction = TRANSLATE_INSTRUCTION + extra_instruction + TRANSLATE_SUFFIX
-    messages: list[dict] = []
+    instruction = TRANSLATE_INSTRUCTION + glossary_instruction(glossary) + extra_instruction + TRANSLATE_SUFFIX
+    messages: list[dict] = [{"role": "system", "content": instruction}]
     for position, (prev_source, prev_translation) in enumerate(history):
-        # The instruction rides on the first user turn; later turns continue the pattern.
-        content = f"{instruction}\n{prev_source}" if position == 0 else prev_source
-        messages.append({"role": "user", "content": content})
+        messages.append({"role": "user", "content": prev_source})
         messages.append({"role": "assistant", "content": prev_translation})
-    if history:
-        messages.append({"role": "user", "content": text})
-    else:
-        messages.append({"role": "user", "content": f"{instruction}\n{text}"})
+    messages.append({"role": "user", "content": text})
     return messages
 
 
@@ -125,6 +202,7 @@ def translate_one(
     text: str,
     history: list[tuple[str, str]] | None = None,
     extra_instruction: str = "",
+    glossary: tuple[GlossaryTerm, ...] = DEFAULT_GLOSSARY,
 ) -> str:
     text = normalize_source(text)
     # Short, context-sensitive fillers translate better standalone than swayed by a prior
@@ -132,7 +210,7 @@ def translate_one(
     if history is None or is_context_sensitive_short_text(text):
         history = []
     result = llm.create_chat_completion(
-        messages=build_messages(text, history, extra_instruction),
+        messages=build_messages(text, history, extra_instruction, glossary),
         max_tokens=160,
         temperature=0.2,
         top_k=20,
@@ -142,12 +220,21 @@ def translate_one(
     return clean_translation(result["choices"][0]["message"]["content"])
 
 
-def translate_with_retry(llm: Llama, text: str, history: list[tuple[str, str]] | None = None) -> str:
-    translated = translate_one(llm, text, history)
+def translate_with_retry(
+    llm: Llama,
+    text: str,
+    history: list[tuple[str, str]] | None = None,
+    glossary: tuple[GlossaryTerm, ...] = DEFAULT_GLOSSARY,
+) -> str:
+    translated = translate_one(llm, text, history, glossary=glossary)
     # If Japanese kana leaked into the output, retry once standalone with a stronger note.
     if re.search(r"[ぁ-ゟ゠-ヿ]", translated):
         translated = translate_one(
-            llm, text, [], "译文中不能出现任何日文假名或片假名；人名请音译成中文。"
+            llm,
+            text,
+            [],
+            "译文中不能出现任何日文假名或片假名；人名请音译成中文。",
+            glossary,
         )
     return translated
 
@@ -188,6 +275,9 @@ def main() -> None:
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
     parser.add_argument("--lead-out-seconds", type=float, default=0.0)
     parser.add_argument("--min-display-seconds", type=float, default=0.0)
+    parser.add_argument("--terms-report", type=Path, help="Terminology review report path")
+    parser.add_argument("--no-glossary", action="store_true", help="Disable default glossary prompt and report")
+    parser.add_argument("--no-terms-report", action="store_true", help="Do not write a terminology review report")
     args = parser.parse_args()
     if args.context_size < 0:
         raise SystemExit("--context-size must be >= 0")
@@ -200,6 +290,9 @@ def main() -> None:
     if args.limit:
         entries = entries[: args.limit]
 
+    glossary = () if args.no_glossary else DEFAULT_GLOSSARY
+    terms_report_path = args.terms_report if args.terms_report else args.output.with_suffix(".terms.txt")
+
     llm = Llama(
         model_path=str(args.model_path),
         n_ctx=4096,
@@ -210,21 +303,28 @@ def main() -> None:
     with args.output.open("w", encoding="utf-8") as f:
         history: list[tuple[str, str]] = []  # (source, translation) pairs, oldest -> newest
         previous_end: float | None = None
+        term_issue_rows: list[tuple[Entry, str, list[GlossaryTerm]]] = []
         for index, entry in enumerate(entries):
             next_entry = entries[index + 1] if index + 1 < len(entries) else None
             # A long silence usually means a scene change; drop the stale history.
             if previous_end is not None and entry.start - previous_end > HISTORY_RESET_SECONDS:
                 history = []
             turns = history[-args.context_size :] if args.context_size > 0 else []
-            translated = translate_with_retry(llm, entry.text, turns)
+            translated = translate_with_retry(llm, entry.text, turns, glossary)
             if not translated:
                 translated = entry.text
+            issues = glossary_issues(entry.text, translated, glossary)
+            if issues:
+                term_issue_rows.append((entry, translated, issues))
             write_entry(f, entry, translated, next_entry, args.lead_out_seconds, args.min_display_seconds)
             history.append((normalize_source(entry.text), translated))
             previous_end = entry.end
             print(f"{entry.index}: {translated}", flush=True)
 
     print(f"Wrote {args.output}")
+    if not args.no_terms_report and glossary:
+        write_terms_report(terms_report_path, term_issue_rows)
+        print(f"Terminology report: {terms_report_path}")
 
 
 if __name__ == "__main__":

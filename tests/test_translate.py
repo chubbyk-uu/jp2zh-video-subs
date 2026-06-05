@@ -1,11 +1,15 @@
 from translate_srt_hymt import (
+    DEFAULT_GLOSSARY,
     Entry,
     build_messages,
     clean_translation,
+    glossary_issues,
+    glossary_instruction,
     is_context_sensitive_short_text,
     normalize_source,
     padded_time,
     parse_srt,
+    write_terms_report,
 )
 
 
@@ -30,22 +34,58 @@ def test_normalize_source_leaves_text_unchanged_without_replacements():
     assert normalize_source("今日はいい天気ですね") == "今日はいい天気ですね"
 
 
+def test_glossary_instruction_is_in_prompt():
+    instruction = glossary_instruction(DEFAULT_GLOSSARY)
+
+    assert "ご主人様=主人" in instruction
+    assert "不要输出规则本身" in instruction
+
+
+def test_build_messages_includes_default_glossary():
+    msgs = build_messages("ご主人様", [])
+
+    assert msgs[0]["role"] == "system"
+    assert "ご主人様=主人" in msgs[0]["content"]
+    assert msgs[1] == {"role": "user", "content": "ご主人様"}
+
+
+def test_glossary_issues_reports_forbidden_translation_without_fixing():
+    issues = glossary_issues("ご主人様", "先生/丈夫。", DEFAULT_GLOSSARY)
+
+    assert [issue.source for issue in issues] == ["ご主人様"]
+    assert glossary_issues("ご主人様", "主人。", DEFAULT_GLOSSARY) == []
+    assert glossary_issues("普通の夫です", "丈夫。", DEFAULT_GLOSSARY) == []
+
+
+def test_write_terms_report(tmp_path):
+    path = tmp_path / "terms.txt"
+    entry = Entry("1", "00:00:01,000 --> 00:00:02,000", "ご主人様", 1.0, 2.0)
+
+    write_terms_report(path, [(entry, "先生/丈夫。", [DEFAULT_GLOSSARY[0]])])
+
+    report = path.read_text(encoding="utf-8")
+    assert "Terminology review report" in report
+    assert "source: ご主人様" in report
+    assert "translation: 先生/丈夫。" in report
+
+
 def test_build_messages_without_history_is_single_instructed_turn():
     msgs = build_messages("こんにちは", [])
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "user"
+    assert len(msgs) == 2
+    assert msgs[0]["role"] == "system"
     assert "翻译" in msgs[0]["content"]
-    assert msgs[0]["content"].endswith("こんにちは")
+    assert msgs[1] == {"role": "user", "content": "こんにちは"}
 
 
 def test_build_messages_with_history_keeps_current_turn_source_only():
     # Prior pair becomes user/assistant turns; the current turn carries only the current
     # source, so the model has no previous-line text to fuse into the output.
     msgs = build_messages("今のセリフ", [("前のセリフ", "上一句译文")])
-    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
-    assert "前のセリフ" in msgs[0]["content"] and "翻译" in msgs[0]["content"]
-    assert msgs[1] == {"role": "assistant", "content": "上一句译文"}
-    assert msgs[2] == {"role": "user", "content": "今のセリフ"}
+    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "user"]
+    assert "翻译" in msgs[0]["content"]
+    assert msgs[1] == {"role": "user", "content": "前のセリフ"}
+    assert msgs[2] == {"role": "assistant", "content": "上一句译文"}
+    assert msgs[3] == {"role": "user", "content": "今のセリフ"}
 
 
 def test_padded_time_keeps_default_timing():

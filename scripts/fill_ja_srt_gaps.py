@@ -4,13 +4,17 @@ import argparse
 import csv
 import math
 import re
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import median
 
 from faster_whisper.audio import decode_audio
 
+from hallucination_filters import (
+    is_high_risk_repeat_phrase,
+    looks_like_hallucination,
+    normalize_phrase,
+    repeated_hallucination_texts,
+)
 from quality_report import (
     Entry,
     parse_srt,
@@ -62,6 +66,16 @@ def existing_intervals(entries: list[Entry], padding: float) -> list[Interval]:
     return merge_intervals(
         [Interval(max(0.0, entry.start - padding), entry.end + padding) for entry in entries]
     )
+
+
+def srt_gaps_with_boundaries(entries: list[Entry], audio_duration: float) -> list[Interval]:
+    gaps = srt_gaps(entries)
+    ordered = sorted(entries, key=lambda item: (item.start, item.end))
+    if ordered and ordered[0].start > 0.0:
+        gaps.insert(0, Interval(0.0, ordered[0].start))
+    if ordered and ordered[-1].end < audio_duration:
+        gaps.append(Interval(ordered[-1].end, audio_duration))
+    return gaps
 
 
 def speech_clusters_for_gap(
@@ -158,112 +172,6 @@ def looks_like_noise(text: str, min_text_chars: int) -> bool:
     if re.fullmatch(r"[あぁアァうぅウゥんンはハぁー〜…・。、,.!?！？]+", compact) and len(compact) >= 4:
         return True
     return False
-
-
-# Canonical Japanese Whisper hallucinations: video sign-off / subscribe / credits
-# boilerplate the model learned from YouTube-style training data. They surface when it
-# decodes a near-silent gap clip and, unlike real lines, are unrelated to the audio.
-# Curated from observed gap-fill output plus known Whisper patterns. Only platform
-# boilerplate is hard-listed; ordinary dialogue phrases are not filtered by text alone.
-HALLUCINATION_PHRASES = (
-    # Video-platform boilerplate (subscribe / sign-off / credits).
-    "ご視聴",
-    "ご清聴",
-    "ご覧いただき",
-    "チャンネル登録",
-    "高評価",
-    "グッドボタン",
-    "次の動画",
-    "次回の動画",
-    "また次回",
-    "また次の動画",
-    "お会いしましょう",
-    "また会いましょう",
-    "それではまた",
-    "それでは",
-    "最後までご視聴",
-    # Subtitle labels or context-mismatched set phrases that repeatedly appear as
-    # gap-fill hallucinations in this corpus, not natural spoken lines here.
-    "笑い声",
-    "拍手",
-    "アーメン",
-)
-
-
-HIGH_RISK_REPEAT_PHRASES = (
-    "おやすみなさい",
-    "おやすみ",
-    "ありがとうございました",
-    "ありがとうございます",
-    "どうもありがとう",
-    "お疲れ様でした",
-    "おつかれさまでした",
-    "バイバイ",
-    "またね",
-    "さよなら",
-    "さようなら",
-    "おはようございます",
-    "おはよう",
-    "ごちそうさまでした",
-    "ごちそうさま",
-)
-
-
-def looks_like_hallucination(text: str) -> bool:
-    compact = compact_text(text)
-    return any(phrase in compact for phrase in HALLUCINATION_PHRASES)
-
-
-def normalize_phrase(text: str) -> str:
-    # Frequency key: drop trailing punctuation/spacing so "ありがとうございました。" and
-    # "ありがとうございました" collapse to one phrase instead of evading the count.
-    return compact_text(text).strip("。、．，！？!?…・ー～~ 　")
-
-
-def is_high_risk_repeat_phrase(text: str) -> bool:
-    return any(phrase in text for phrase in HIGH_RISK_REPEAT_PHRASES)
-
-
-def repeated_hallucination_texts(
-    entries: list[SubtitleEntry],
-    min_repeats: int,
-    no_speech_prob_at_least: float,
-    avg_logprob_at_most: float,
-    high_risk_max_repeats: int,
-) -> set[str]:
-    # Frequency is counted across all gap fills for one video. Repeated ordinary
-    # dialogue is auto-dropped when the repeated group is low-confidence; high-risk
-    # fixed greetings/thanks also have an absolute repeat cap because extreme counts
-    # are implausible even when the clip contains some VAD speech.
-    groups: dict[str, list[SubtitleEntry]] = defaultdict(list)
-    for entry in entries:
-        key = normalize_phrase(entry.text)
-        if key:
-            groups[key].append(entry)
-
-    repeated: set[str] = set()
-    for key, group in groups.items():
-        if (
-            high_risk_max_repeats > 0
-            and is_high_risk_repeat_phrase(key)
-            and len(group) >= high_risk_max_repeats
-        ):
-            repeated.add(key)
-            continue
-        if len(group) < min_repeats:
-            continue
-        no_speech_probs = [
-            entry.no_speech_prob for entry in group if entry.no_speech_prob is not None
-        ]
-        avg_logprobs = [
-            entry.avg_logprob for entry in group if entry.avg_logprob is not None
-        ]
-        if no_speech_probs and median(no_speech_probs) >= no_speech_prob_at_least:
-            repeated.add(key)
-            continue
-        if avg_logprobs and median(avg_logprobs) <= avg_logprob_at_most:
-            repeated.add(key)
-    return repeated
 
 
 def is_duplicate_of_nearby(entry: SubtitleEntry, existing: list[Entry], window_seconds: float) -> bool:
@@ -441,28 +349,25 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
         return stats
 
     audio = decode_audio(str(args.audio), sampling_rate=16000)
-    speech_intervals = speech_intervals_from_audio(
-        args.audio,
-        args.vad_threshold,
-        args.vad_min_silence_ms,
-        args.vad_speech_pad_ms,
-        audio=audio,
-    )
+    audio_duration = len(audio) / 16000
+    speech_intervals = []
+    if not args.gap_local_vad:
+        speech_intervals = speech_intervals_from_audio(
+            args.audio,
+            args.vad_threshold,
+            args.vad_min_silence_ms,
+            args.vad_speech_pad_ms,
+            audio=audio,
+        )
     covered = existing_intervals(existing_entries, args.existing_pad_seconds)
-    gaps = srt_gaps(existing_entries)
+    gaps = srt_gaps_with_boundaries(existing_entries, audio_duration)
 
     candidate_clips: list[CandidateClip] = []
     stats = FillStats()
     for gap in gaps:
         if gap.end - gap.start < args.min_gap_seconds:
             continue
-        gap_speech_intervals = speech_intervals
-        speech_seconds = overlap_seconds(gap, gap_speech_intervals)
-        clip_pad_seconds = args.clip_pad_seconds
-        max_clip_seconds = args.max_clip_seconds
-        clip_overlap_seconds = 0.0
-        clip_source = "full_vad"
-        if speech_seconds < args.min_speech_seconds and args.gap_local_vad:
+        if args.gap_local_vad:
             threshold = gap_local_vad_threshold(
                 gap.end - gap.start,
                 args.gap_local_vad_min_threshold,
@@ -476,11 +381,17 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
                 args.vad_speech_pad_ms,
             )
             speech_seconds = overlap_seconds(gap, gap_speech_intervals)
-            if speech_seconds >= args.min_speech_seconds:
-                clip_pad_seconds = args.gap_local_asr_pad_seconds
-                max_clip_seconds = args.gap_local_asr_max_clip_seconds
-                clip_overlap_seconds = args.gap_local_asr_overlap_seconds
-                clip_source = "gap_local_vad"
+            clip_pad_seconds = args.gap_local_asr_pad_seconds
+            max_clip_seconds = args.gap_local_asr_max_clip_seconds
+            clip_overlap_seconds = args.gap_local_asr_overlap_seconds
+            clip_source = "gap_local_vad"
+        else:
+            gap_speech_intervals = speech_intervals
+            speech_seconds = overlap_seconds(gap, gap_speech_intervals)
+            clip_pad_seconds = args.clip_pad_seconds
+            max_clip_seconds = args.max_clip_seconds
+            clip_overlap_seconds = 0.0
+            clip_source = "full_vad"
         if speech_seconds < args.min_speech_seconds:
             continue
         stats.candidate_gaps += 1
@@ -617,10 +528,10 @@ def main() -> None:
     parser.add_argument(
         "--gap-local-vad",
         action="store_true",
-        help="When full-audio VAD finds too little speech in a subtitle gap, rerun VAD on that gap only.",
+        help="Use per-gap local VAD for gap-fill candidates instead of full-audio VAD.",
     )
-    parser.add_argument("--gap-local-vad-min-threshold", type=float, default=0.1)
-    parser.add_argument("--gap-local-vad-max-threshold", type=float, default=0.5)
+    parser.add_argument("--gap-local-vad-min-threshold", type=float, default=0.10)
+    parser.add_argument("--gap-local-vad-max-threshold", type=float, default=0.40)
     parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=3.0)
     parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=45.0)
     parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)
