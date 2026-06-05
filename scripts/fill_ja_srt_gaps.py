@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -49,6 +50,12 @@ class FillMetadata:
     clip: Interval
     status: str
     reason: str
+
+
+@dataclass
+class CandidateClip:
+    interval: Interval
+    source: str
 
 
 def existing_intervals(entries: list[Entry], padding: float) -> list[Interval]:
@@ -99,6 +106,32 @@ def split_clip(clip: Interval, max_clip_seconds: float) -> list[Interval]:
         end = min(clip.end, start + max_clip_seconds)
         clips.append(Interval(start, end))
         start = end
+    return clips
+
+
+def split_clip_with_overlap(
+    clip: Interval,
+    max_clip_seconds: float,
+    overlap_seconds: float,
+) -> list[Interval]:
+    if max_clip_seconds <= 0:
+        raise ValueError("max_clip_seconds must be positive")
+    if overlap_seconds < 0:
+        raise ValueError("overlap_seconds must be non-negative")
+    if overlap_seconds >= max_clip_seconds:
+        raise ValueError("overlap_seconds must be smaller than max_clip_seconds")
+    if clip.end - clip.start <= max_clip_seconds:
+        return [clip]
+
+    clips: list[Interval] = []
+    start = clip.start
+    step = max_clip_seconds - overlap_seconds
+    while start < clip.end:
+        end = min(clip.end, start + max_clip_seconds)
+        clips.append(Interval(start, end))
+        if end >= clip.end:
+            break
+        start += step
     return clips
 
 
@@ -247,6 +280,10 @@ def is_duplicate_of_nearby(entry: SubtitleEntry, existing: list[Entry], window_s
     return False
 
 
+def exceeds_compression_ratio(entry: SubtitleEntry, max_ratio: float) -> bool:
+    return entry.compression_ratio is not None and entry.compression_ratio >= max_ratio
+
+
 def transcribe_clip(
     model,
     audio,
@@ -336,6 +373,57 @@ def convert_existing(entries: list[Entry]) -> list[SubtitleEntry]:
     return [SubtitleEntry(item.start, item.end, item.text) for item in entries]
 
 
+def gap_local_vad_threshold(
+    gap_seconds: float,
+    min_threshold: float,
+    max_threshold: float,
+    reference_seconds: float = 30.0,
+    slope_per_decade: float = 0.20,
+) -> float:
+    if min_threshold > max_threshold:
+        raise ValueError("min_threshold must be <= max_threshold")
+    effective_seconds = max(gap_seconds, reference_seconds)
+    threshold = max_threshold - slope_per_decade * math.log10(effective_seconds / reference_seconds)
+    return max(min_threshold, min(max_threshold, threshold))
+
+
+def speech_intervals_from_gap_audio(
+    audio,
+    gap: Interval,
+    threshold: float,
+    min_silence_ms: int,
+    speech_pad_ms: int,
+    sampling_rate: int = 16000,
+) -> list[Interval]:
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+    start_sample = max(0, int(gap.start * sampling_rate))
+    end_sample = min(len(audio), int(gap.end * sampling_rate))
+    if end_sample <= start_sample:
+        return []
+    options = VadOptions(
+        threshold=threshold,
+        min_silence_duration_ms=min_silence_ms,
+        speech_pad_ms=speech_pad_ms,
+    )
+    timestamps = get_speech_timestamps(audio[start_sample:end_sample], options, sampling_rate=sampling_rate)
+    return [
+        Interval(gap.start + item["start"] / sampling_rate, gap.start + item["end"] / sampling_rate)
+        for item in timestamps
+    ]
+
+
+def padded_clip_for_gap(
+    cluster: Interval,
+    gap: Interval,
+    pad_seconds: float,
+) -> Interval:
+    return Interval(
+        max(gap.start, cluster.start - pad_seconds),
+        min(gap.end, cluster.end + pad_seconds),
+    )
+
+
 def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> FillStats:
     if existing_entries is None:
         existing_entries = parse_srt(args.input)
@@ -363,21 +451,47 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
     covered = existing_intervals(existing_entries, args.existing_pad_seconds)
     gaps = srt_gaps(existing_entries)
 
-    candidate_clips: list[Interval] = []
+    candidate_clips: list[CandidateClip] = []
     stats = FillStats()
     for gap in gaps:
         if gap.end - gap.start < args.min_gap_seconds:
             continue
-        speech_seconds = overlap_seconds(gap, speech_intervals)
+        gap_speech_intervals = speech_intervals
+        speech_seconds = overlap_seconds(gap, gap_speech_intervals)
+        clip_pad_seconds = args.clip_pad_seconds
+        max_clip_seconds = args.max_clip_seconds
+        clip_overlap_seconds = 0.0
+        clip_source = "full_vad"
+        if speech_seconds < args.min_speech_seconds and args.gap_local_vad:
+            threshold = gap_local_vad_threshold(
+                gap.end - gap.start,
+                args.gap_local_vad_min_threshold,
+                args.gap_local_vad_max_threshold,
+            )
+            gap_speech_intervals = speech_intervals_from_gap_audio(
+                audio,
+                gap,
+                threshold,
+                args.vad_min_silence_ms,
+                args.vad_speech_pad_ms,
+            )
+            speech_seconds = overlap_seconds(gap, gap_speech_intervals)
+            if speech_seconds >= args.min_speech_seconds:
+                clip_pad_seconds = args.gap_local_asr_pad_seconds
+                max_clip_seconds = args.gap_local_asr_max_clip_seconds
+                clip_overlap_seconds = args.gap_local_asr_overlap_seconds
+                clip_source = "gap_local_vad"
         if speech_seconds < args.min_speech_seconds:
             continue
         stats.candidate_gaps += 1
-        for cluster in speech_clusters_for_gap(gap, speech_intervals, args.max_cluster_gap, args.clip_pad_seconds):
+        for cluster in speech_clusters_for_gap(gap, gap_speech_intervals, args.max_cluster_gap, 0.0):
+            cluster = padded_clip_for_gap(cluster, gap, clip_pad_seconds)
             if overlap_seconds(cluster, covered) > args.max_existing_overlap_seconds:
                 continue
             if cluster.end - cluster.start < args.min_clip_seconds:
                 continue
-            candidate_clips.extend(split_clip(cluster, args.max_clip_seconds))
+            for clip in split_clip_with_overlap(cluster, max_clip_seconds, clip_overlap_seconds):
+                candidate_clips.append(CandidateClip(clip, clip_source))
 
     stats.candidate_clips = len(candidate_clips)
     if model is None:
@@ -385,11 +499,20 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
 
     filled_entries: list[SubtitleEntry] = []
     metadata: list[FillMetadata] = []
-    for index, clip in enumerate(candidate_clips, start=1):
-        print(f"[{index}/{len(candidate_clips)}] fill {clip.start:.2f}-{clip.end:.2f}", flush=True)
+    for index, candidate in enumerate(candidate_clips, start=1):
+        clip = candidate.interval
+        print(
+            f"[{index}/{len(candidate_clips)}] fill {clip.start:.2f}-{clip.end:.2f} "
+            f"{candidate.source}",
+            flush=True,
+        )
         raw_entries = transcribe_clip(model, audio, clip, args)
         stats.raw_entries += len(raw_entries)
         for entry in raw_entries:
+            if exceeds_compression_ratio(entry, args.max_fill_compression_ratio):
+                stats.filtered_entries += 1
+                metadata.append(FillMetadata(entry, clip, "filtered", "compression_ratio"))
+                continue
             if looks_like_noise(entry.text, args.min_fill_chars):
                 stats.filtered_entries += 1
                 metadata.append(FillMetadata(entry, clip, "filtered", "noise"))
@@ -491,6 +614,16 @@ def main() -> None:
     parser.add_argument("--vad-threshold", type=float, default=0.05)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
+    parser.add_argument(
+        "--gap-local-vad",
+        action="store_true",
+        help="When full-audio VAD finds too little speech in a subtitle gap, rerun VAD on that gap only.",
+    )
+    parser.add_argument("--gap-local-vad-min-threshold", type=float, default=0.1)
+    parser.add_argument("--gap-local-vad-max-threshold", type=float, default=0.5)
+    parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=3.0)
+    parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=45.0)
+    parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)
     # Gap-fill gates default to an aggressive setting validated on local sample runs,
     # so the stage actually recovers the short, low-energy reactions VAD@0.05 still
     # misses; the hallucination filters below keep the extra reach clean.
@@ -498,6 +631,7 @@ def main() -> None:
     parser.add_argument("--min-speech-seconds", type=float, default=1.0)
     parser.add_argument("--min-clip-seconds", type=float, default=0.6)
     parser.add_argument("--min-fill-chars", type=int, default=3)
+    parser.add_argument("--max-fill-compression-ratio", type=float, default=25.0)
     parser.add_argument("--max-clip-seconds", type=float, default=45.0)
     parser.add_argument("--max-cluster-gap", type=float, default=2.0)
     parser.add_argument("--clip-pad-seconds", type=float, default=0.4)

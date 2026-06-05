@@ -162,16 +162,49 @@ The one-command pipeline uses:
 - Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
 - VAD: enabled with a sensitive default configuration
 - Gap fill: enabled by default
+- Pipeline preset: `--preset coverage`
 - Quality report: enabled by default
 - Extracted WAV audio: kept by default
 
-Default gap-fill parameters:
+The default `coverage` ASR and gap-fill settings intentionally favor subtitle coverage.
+They are sensitive and aggressive so quiet or short speech is less likely to be
+missed. The tradeoff is slower processing and a higher chance of Whisper
+hallucinations, so review `work/input/input.quality.txt` and `work/input/input.fills.tsv`
+when accuracy matters.
+
+Pipeline presets:
+
+| Preset | Use When | Main Settings |
+| --- | --- | --- |
+| `fast` | You want a quicker, more conservative pass with fewer hallucinations and can accept more missed quiet speech. | `--vad-threshold 0.20`, `--fill-min-gap-seconds 6`, `--fill-min-speech-seconds 2`, `--fill-min-clip-seconds 1.0`, `--fill-clip-pad-seconds 0.6`, `--fill-existing-pad-seconds 0.3`, `--fill-max-existing-overlap-seconds 0.5` |
+| `coverage` | Default. You want higher subtitle coverage and are willing to review more low-confidence fill candidates. | `--vad-threshold 0.05`, `--fill-min-gap-seconds 2`, `--fill-min-speech-seconds 1`, `--fill-min-clip-seconds 0.6`, `--fill-clip-pad-seconds 0.4`, `--fill-existing-pad-seconds 0.1`, `--fill-max-existing-overlap-seconds 1.0` |
+| `high-coverage` | You need the highest coverage on long videos where full-audio VAD misses speech inside subtitle gaps. | Same as `coverage`, plus `--gap-local-vad` |
+
+All presets use `--fill-max-clip-seconds 45`, `--fill-min-chars 3`,
+`--fill-max-cluster-gap 2.0`, `--fill-duplicate-window-seconds 8.0`, and
+`--max-fill-compression-ratio 25`. You can override any preset value by passing
+the specific option after choosing the preset, for example
+`--preset fast --vad-threshold 0.25`.
+
+Default `coverage` gap-fill parameters:
 
 - `--fill-min-gap-seconds 2`: inspect subtitle gaps longer than 2 seconds (aggressive, to
   catch the short low-energy reactions the main pass misses).
 - `--fill-min-speech-seconds 1`: fill when the gap contains at least 1 second of VAD speech.
 - `--fill-max-clip-seconds 45`: cap one fill clip at 45 seconds.
 - `--fill-min-chars 3`: ignore very short fill results.
+- `--max-fill-compression-ratio 25`: drop extreme repetitive fill outputs, while keeping
+  moderate compression-ratio entries for review/reporting.
+
+Optional gap-local VAD is available with `--gap-local-vad`. Enable it when you
+need higher coverage on long videos where full-audio VAD misses speech inside
+subtitle gaps. It reruns VAD on those gaps using a duration-scaled threshold
+clamped between `--gap-local-vad-min-threshold 0.1` and
+`--gap-local-vad-max-threshold 0.5`. Gap-local clips get extra ASR context
+(`--gap-local-asr-pad-seconds 3`) and are split at
+`--gap-local-asr-max-clip-seconds 45` with `--gap-local-asr-overlap-seconds 5`.
+This can recover more speech, but it further increases processing time and can
+surface more low-confidence fill candidates.
 
 Because the aggressive gates re-transcribe near-silent clips, gap fill also drops Whisper
 hallucinations. The hard list is limited to platform/subtitle boilerplate (`ご視聴…`,
@@ -180,8 +213,8 @@ phrases (`笑い声`, `拍手`, `アーメン`). Ordinary dialogue such as greet
 farewells is not filtered by text alone. A confidence-aware frequency backstop considers
 phrases repeated at least 10 times across one video's fills, but only removes the phrase when
 the repeated group is also likely near-silence (`--hallucination-repeat-no-speech-prob 0.75`)
-or low-confidence (`--hallucination-repeat-avg-logprob -0.80`). High-risk fixed greetings
-and thanks also have an absolute repeat cap (`--hallucination-high-risk-max-repeats 3`).
+or low-confidence (`--hallucination-repeat-avg-logprob -0.80`). A small high-risk repeat
+phrase set also has an absolute repeat cap (`--hallucination-high-risk-max-repeats 3`).
 Filter reasons (`hallucination`, `hallucination_repeat`, `noise`, …) are recorded per row in
 `input.fills.tsv`.
 
@@ -296,15 +329,20 @@ Reduce translation context if translated lines include previous subtitles:
 python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
-Use a more aggressive gap-fill setting:
+Use the faster conservative preset:
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 \
-  --fill-min-gap-seconds 6 \
-  --fill-min-speech-seconds 2
+python scripts/video_to_zh_srt.py path/to/input.mp4 --preset fast
 ```
 
-This may recover more quiet speech, but can also introduce less stable short lines.
+Use the highest-coverage preset:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --preset high-coverage
+```
+
+`high-coverage` may recover more quiet speech, but it is slower and can
+introduce less stable short lines.
 
 Continue batch processing after one video fails:
 
@@ -431,7 +469,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### Some Speech Is Missed
 
-Gap fill is enabled by default. It does not judge gaps by duration alone; it checks the WAV audio with VAD and only re-transcribes gaps with enough speech. For more aggressive filling, lower the gap or speech threshold.
+Gap fill is enabled by default. It does not judge gaps by duration alone; it checks the WAV audio with VAD and only re-transcribes gaps with enough speech. For long videos where full-audio VAD misses speech inside subtitle gaps, try `--gap-local-vad`; for more aggressive filling, lower the gap or speech threshold.
 
 ### Duplicate-Looking Lines
 
@@ -449,7 +487,7 @@ summarises it under `[Gap Fill Metadata]`, including `low_confidence_kept_entrie
 - `no_speech_prob`: probability the clip is not speech; **higher means more likely a hallucination on near-silence** (flagged above `--warn-no-speech-prob-above`, default `0.50`).
 - `compression_ratio`: text repetitiveness; **higher means more repetitive/garbled** (flagged above `--warn-compression-ratio-above`, default `2.20`).
 
-Use the sample lists to spot-check those timestamps in the Japanese SRT, and tighten or loosen the thresholds to taste. `repeated_kept_fill_phrases` is report-only by default at 3 kept repeats; it does not delete subtitles. This only covers the second-pass gap fills, not the first-pass transcription.
+Use the sample lists to spot-check those timestamps in the Japanese SRT, and tighten or loosen the thresholds to taste. `repeated_kept_fill_phrases` is report-only by default at 3 kept repeats; it does not delete subtitles. Extreme fill `compression_ratio` values are filtered by `--max-fill-compression-ratio` before translation. This only covers the second-pass gap fills, not the first-pass transcription.
 
 ## Git Policy
 

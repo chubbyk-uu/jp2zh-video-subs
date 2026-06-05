@@ -159,22 +159,50 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
 - VAD：默认开启，并使用较敏感配置
 - 二阶段补漏：默认开启
+- 流程预设：`--preset coverage`
 - 质量报告：默认开启
 - 抽取音频：默认保留 WAV，方便复查和调参
 
-当前二阶段补漏默认参数：
+当前默认 `coverage` 识别和补漏参数有意偏向较高字幕覆盖率，整体比较敏感、激进，
+目的是尽量捞回轻声、短句和低能量对白。代价是处理速度会下降，
+Whisper 幻觉概率也会升高；对准确率要求高时，建议复查
+`work/input/input.quality.txt` 和 `work/input/input.fills.tsv`。
+
+流程预设：
+
+| 预设 | 适用场景 | 主要参数 |
+| --- | --- | --- |
+| `fast` | 需要更快、更保守的初稿，愿意接受更多轻声漏识别，换取更低幻觉风险。 | `--vad-threshold 0.20`，`--fill-min-gap-seconds 6`，`--fill-min-speech-seconds 2`，`--fill-min-clip-seconds 1.0`，`--fill-clip-pad-seconds 0.6`，`--fill-existing-pad-seconds 0.3`，`--fill-max-existing-overlap-seconds 0.5` |
+| `coverage` | 默认。需要更高字幕覆盖率，并愿意复查更多低置信度补漏候选。 | `--vad-threshold 0.05`，`--fill-min-gap-seconds 2`，`--fill-min-speech-seconds 1`，`--fill-min-clip-seconds 0.6`，`--fill-clip-pad-seconds 0.4`，`--fill-existing-pad-seconds 0.1`，`--fill-max-existing-overlap-seconds 1.0` |
+| `high-coverage` | 长视频中 full-audio VAD 漏掉字幕空窗里的真实语音，需要最高覆盖率。 | 等同 `coverage`，并自动开启 `--gap-local-vad` |
+
+所有预设都使用 `--fill-max-clip-seconds 45`、`--fill-min-chars 3`、
+`--fill-max-cluster-gap 2.0`、`--fill-duplicate-window-seconds 8.0` 和
+`--max-fill-compression-ratio 25`。选择预设后仍可用单项参数覆盖，
+例如 `--preset fast --vad-threshold 0.25`。
+
+当前 `coverage` 二阶段补漏默认参数：
 
 - `--fill-min-gap-seconds 2`：检查 2 秒以上字幕空窗（激进策略，用于捞回主识别漏掉的轻声短反应）。
 - `--fill-min-speech-seconds 1`：空窗内至少有 1 秒 VAD 语音才补识别。
 - `--fill-max-clip-seconds 45`：单个补识别音频片段最长 45 秒。
 - `--fill-min-chars 3`：过短补漏结果不写入。
+- `--max-fill-compression-ratio 25`：过滤极端重复的补漏输出；中等压缩比条目保留给报告和人工复查。
+
+可选的局部空窗 VAD 可用 `--gap-local-vad` 开启。长视频中如果需要更高覆盖率，
+尤其是全片 VAD 漏掉字幕空窗里的真实语音时，可以开启它。它会只在这些空窗音频上重新跑 VAD，
+并按空窗时长动态计算阈值，范围限制在
+`--gap-local-vad-min-threshold 0.1` 到 `--gap-local-vad-max-threshold 0.5`。
+局部空窗片段会给 ASR 额外上下文（`--gap-local-asr-pad-seconds 3`），并按
+`--gap-local-asr-max-clip-seconds 45` 和 `--gap-local-asr-overlap-seconds 5` 分段。
+它可能找回更多语音，但会进一步拉长处理时间，也可能带来更多低置信度补漏候选。
 
 由于激进门槛会对接近静音的片段重新识别，补漏阶段同时会过滤 Whisper 幻觉。硬过滤清单只保留平台/字幕套话
 （`ご視聴…`、`チャンネル登録`、`それではまた` 等）以及明显字幕标签/语境错配短语
 （`笑い声`、`拍手`、`アーメン`）。问候、感谢、告别等普通对话不会只因为文本命中就被删除。
 频次兜底会检查同一视频补漏中重复至少 10 次的短语，但只有该重复组同时像近静音幻觉
 （`--hallucination-repeat-no-speech-prob 0.75`）或低置信度
-（`--hallucination-repeat-avg-logprob -0.80`）时才自动删除。高风险固定寒暄/感谢短句另有绝对重复上限
+（`--hallucination-repeat-avg-logprob -0.80`）时才自动删除。少量高风险重复短语另有绝对重复上限
 （`--hallucination-high-risk-max-repeats 3`）。每条的过滤原因
 （`hallucination`、`hallucination_repeat`、`noise` 等）会记录在 `input.fills.tsv` 中。
 
@@ -274,15 +302,19 @@ python scripts/retime_existing_subtitles.py path/to/videos/ \
 python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
-更激进地补漏：
+使用更快、更保守的预设：
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 \
-  --fill-min-gap-seconds 6 \
-  --fill-min-speech-seconds 2
+python scripts/video_to_zh_srt.py path/to/input.mp4 --preset fast
 ```
 
-这样可能补出更多低声对白，也可能引入更多不稳定短句。
+使用最高覆盖率预设：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --preset high-coverage
+```
+
+`high-coverage` 可能补出更多低声对白，但会更慢，也可能引入更多不稳定短句。
 
 批量处理时，如果某个视频失败后继续处理后面的视频：
 
@@ -409,7 +441,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### 字幕有漏识别
 
-一键流程默认会跑二阶段补漏。它不是只按空窗长度判断，而是先用 VAD 分析 WAV 音频，只对空窗内存在足够语音的片段重新识别。想更激进时，可以降低空窗阈值或语音时长阈值。
+一键流程默认会跑二阶段补漏。它不是只按空窗长度判断，而是先用 VAD 分析 WAV 音频，只对空窗内存在足够语音的片段重新识别。长视频中如果全片 VAD 漏掉字幕空窗里的真实语音，可以试 `--gap-local-vad`；想更激进时，可以降低空窗阈值或语音时长阈值。
 
 ### 字幕有重复内容
 
@@ -423,7 +455,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 - `no_speech_prob`：该片段不是语音的概率，**越高越可能是在近乎静音处的幻觉**（高于 `--warn-no-speech-prob-above`，默认 `0.50` 时标记）。
 - `compression_ratio`：文本重复度，**越高越像重复/乱码**（高于 `--warn-compression-ratio-above`，默认 `2.20` 时标记）。
 
-按样例列表里的时间戳去日语 SRT 里抽查，再按需收紧或放宽阈值。`repeated_kept_fill_phrases` 默认在保留补漏中重复 3 次时只提示复查，不自动删除。注意：它只覆盖二阶段补漏，不含第一阶段主转写。
+按样例列表里的时间戳去日语 SRT 里抽查，再按需收紧或放宽阈值。`repeated_kept_fill_phrases` 默认在保留补漏中重复 3 次时只提示复查，不自动删除。极端补漏 `compression_ratio` 会在翻译前由 `--max-fill-compression-ratio` 过滤。注意：它只覆盖二阶段补漏，不含第一阶段主转写。
 
 ## Git 提交建议
 

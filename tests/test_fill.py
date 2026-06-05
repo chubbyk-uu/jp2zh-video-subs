@@ -1,7 +1,9 @@
 from argparse import Namespace
 
 from fill_ja_srt_gaps import (
+    exceeds_compression_ratio,
     fill_gaps,
+    gap_local_vad_threshold,
     is_high_risk_repeat_phrase,
     looks_like_hallucination,
     looks_like_noise,
@@ -10,6 +12,7 @@ from fill_ja_srt_gaps import (
     repeated_hallucination_texts,
     speech_clusters_for_gap,
     split_clip,
+    split_clip_with_overlap,
 )
 from srt_utils import Interval
 from transcribe_ja_srt import SubtitleEntry
@@ -19,6 +22,13 @@ def test_repeated_character_ratio():
     assert repeated_character_ratio("aaaa") == 1.0
     assert repeated_character_ratio("") == 1.0
     assert repeated_character_ratio("abcd") == 0.25
+
+
+def test_gap_local_vad_threshold_scales_with_log_duration():
+    assert gap_local_vad_threshold(10, 0.1, 0.5) == 0.5
+    assert gap_local_vad_threshold(30, 0.1, 0.5) == 0.5
+    assert round(gap_local_vad_threshold(300, 0.1, 0.5), 2) == 0.3
+    assert gap_local_vad_threshold(3000, 0.1, 0.5) == 0.1
 
 
 def test_looks_like_noise():
@@ -32,6 +42,18 @@ def test_split_clip():
     clips = split_clip(Interval(0, 10), 4)
     assert [(c.start, c.end) for c in clips] == [(0, 4), (4, 8), (8, 10)]
     assert len(split_clip(Interval(0, 3), 4)) == 1
+
+
+def test_split_clip_with_overlap_only_splits_long_clips():
+    assert [(c.start, c.end) for c in split_clip_with_overlap(Interval(0, 3), 4, 1)] == [(0, 3)]
+    clips = split_clip_with_overlap(Interval(0, 10), 4, 1)
+    assert [(c.start, c.end) for c in clips] == [(0, 4), (3, 7), (6, 10)]
+
+
+def test_extreme_compression_ratio_filter_is_for_repetition_outliers():
+    assert exceeds_compression_ratio(SubtitleEntry(0.0, 1.0, "普通の台詞", compression_ratio=3.0), 25.0) is False
+    assert exceeds_compression_ratio(SubtitleEntry(0.0, 1.0, "いいからしゃべれ", compression_ratio=10.45), 25.0) is False
+    assert exceeds_compression_ratio(SubtitleEntry(0.0, 1.0, "あっはっはっはっは", compression_ratio=29.2), 25.0) is True
 
 
 def test_looks_like_hallucination_flags_only_platform_boilerplate():
