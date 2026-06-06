@@ -218,7 +218,7 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
     ja_srt = job_dir / f"{video.stem}.ja.srt"
     translate_input_srt = ja_srt
 
-    if args.skip_gap_fill:
+    if not args.gap_fill:
         transcribe_command = [
             sys.executable,
             str(TRANSCRIBE_SCRIPT),
@@ -456,7 +456,7 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             "--vad-speech-pad-ms",
             str(args.vad_speech_pad_ms),
         ]
-        if not args.skip_gap_fill:
+        if args.gap_fill:
             quality_command.extend(["--fills-metadata", str(job_dir / f"{video.stem}.fills.tsv")])
         run(quality_command)
         print(f"Quality report: {report_path}")
@@ -495,7 +495,11 @@ def main() -> None:
     parser.add_argument("--keep-audio", action="store_true", help="Deprecated: audio is kept by default")
     parser.add_argument("--delete-audio", action="store_true", help="Delete extracted WAV audio after processing")
     parser.add_argument("--skip-quality-report", action="store_true", help="Do not write a quality report")
-    parser.add_argument("--skip-gap-fill", action="store_true", help="Do not run the audio-aware gap fill stage")
+    parser.add_argument(
+        "--gap-fill",
+        action="store_true",
+        help="Run the legacy audio-aware gap fill stage after transcription (off by default)",
+    )
     parser.add_argument(
         "--preset",
         choices=sorted(PIPELINE_PRESETS),
@@ -536,16 +540,21 @@ def main() -> None:
     )
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    parser.add_argument("--main-local-vad", action="store_true")
-    parser.add_argument("--main-local-vad-threshold", type=float, default=0.4)
+    parser.add_argument(
+        "--main-local-vad",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Sliding-window main-pass VAD (default); use --no-main-local-vad for the legacy whole-file VAD pass",
+    )
+    parser.add_argument("--main-local-vad-threshold", type=float, default=0.5)
     parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
     parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
-    parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=1.0)
+    parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=2.0)
     parser.add_argument("--main-local-asr-pad-seconds", type=float, default=0.3)
     parser.add_argument("--main-local-asr-max-clip-seconds", type=float, default=30.0)
     parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
     parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
-    parser.add_argument("--main-local-batch-size", type=int, default=20)
+    parser.add_argument("--main-local-batch-size", type=int, default=24)
     parser.add_argument("--max-word-gap", type=float, default=6.0)
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
     parser.add_argument("--fill-min-gap-seconds", type=float)

@@ -209,19 +209,20 @@ ASR context (`--gap-local-asr-pad-seconds 3`) and are split at
 This can recover more speech, but it further increases processing time and can
 surface more low-confidence fill candidates.
 
-Experimental main-pass sliding VAD is available with `--main-local-vad`. It
-uses 8-second windows with 4-second overlap at `--main-local-vad-threshold 0.40`,
-then builds ASR clips from merged speech clusters (`--main-local-asr-pad-seconds 0.3`,
-`--main-local-vad-max-cluster-gap 1.0`, `--main-local-asr-max-clip-seconds 30`). Clips
+The default main pass is sliding-window VAD (`--main-local-vad`, on by default;
+use `--no-main-local-vad` for the legacy whole-file VAD pass). It uses 8-second
+windows with 4-second overlap at `--main-local-vad-threshold 0.5`, then builds ASR
+clips from merged speech clusters (`--main-local-asr-pad-seconds 0.3`,
+`--main-local-vad-max-cluster-gap 2.0`, `--main-local-asr-max-clip-seconds 30`). Clips
 are transcribed in one batched pass (`BatchedInferencePipeline`,
-`--main-local-batch-size 20`); clips are capped at the 30s Whisper window so none are
+`--main-local-batch-size 24`); clips are capped at the 30s Whisper window so none are
 truncated. `--main-local-vad-dry-run` prints the selection coverage (clusters, clips,
-covered minutes, coverage%) without running Whisper, for fast parameter sweeps. When
-this mode is on, the same cleaning the gap-fill stage applies (compression-ratio,
-noise/looping-repetition, adjacent-duplicate, and repeat-hallucination filters, plus a
-`--min-cue-seconds 0.3` floor that drops overlap-squeezed flash cues) is run on the
-main-pass output so it can stand in for main+fill. This is not part of any preset; keep
-it for controlled experiments rather than default batch processing.
+covered minutes, coverage%) without running Whisper, for fast parameter sweeps. The
+same cleaning gap fill used (compression-ratio, noise/looping-repetition,
+adjacent-near-duplicate, and repeat-hallucination filters, plus a `--min-cue-seconds 0.3`
+floor that drops overlap-squeezed flash cues) runs on the main-pass output, so it
+replaces the separate gap-fill stage. Gap fill is off by default; opt in with
+`--gap-fill` (usually together with `--no-main-local-vad`).
 
 Because the aggressive gates re-transcribe near-silent clips, gap fill also drops Whisper
 hallucinations. The hard list is limited to platform/subtitle boilerplate (`ご視聴…`,
@@ -271,10 +272,11 @@ Set output directory for batch processing:
 python scripts/video_to_zh_srt.py path/to/videos/ --output-dir outputs
 ```
 
-Disable gap filling:
+The default pipeline is the batched sliding-window main pass with no gap fill.
+To run the legacy whole-file VAD pass plus the audio-aware gap fill instead:
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --skip-gap-fill
+python scripts/video_to_zh_srt.py path/to/input.mp4 --no-main-local-vad --gap-fill
 ```
 
 Disable quality report generation:
@@ -486,12 +488,17 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### Some Speech Is Missed
 
-Gap fill is enabled by default. It does not judge gaps by duration alone; it checks the WAV audio with VAD and only re-transcribes gaps with enough speech. `fast` and `coverage` use full-audio VAD for this check. For long videos where full-audio VAD misses speech inside subtitle gaps, use `high-coverage` or `--gap-local-vad`, which runs VAD directly on each eligible gap; for more aggressive filling, lower the gap or speech threshold.
+The default sliding-window main pass already scans the whole WAV with local VAD,
+so it covers speech the legacy whole-file VAD would miss without a separate fill
+stage. If you prefer more recall, lower `--main-local-vad-threshold` (default
+0.5) or raise `--main-local-vad-max-cluster-gap` (default 2.0); both select more
+audio at the cost of more clips and more hallucinations to filter.
 
-`--main-local-vad` is a separate experimental first-pass mode. It scans the
-whole WAV with sliding local VAD before Whisper transcription. It is useful for
-experiments, but it can be slower than the default first pass because it may send
-near-full-video audio back into Whisper.
+To fall back to the legacy two-pass behavior, run `--no-main-local-vad --gap-fill`.
+Gap fill then does not judge gaps by duration alone; it checks the WAV audio with
+VAD and only re-transcribes gaps with enough speech. `fast` and `coverage` use
+full-audio VAD for this check; `high-coverage` or `--gap-local-vad` runs VAD
+directly on each eligible gap.
 
 ### Duplicate-Looking Lines
 

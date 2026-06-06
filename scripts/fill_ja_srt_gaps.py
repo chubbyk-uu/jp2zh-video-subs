@@ -527,15 +527,15 @@ def main() -> None:
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
     parser.add_argument("--main-local-vad", action="store_true")
-    parser.add_argument("--main-local-vad-threshold", type=float, default=0.4)
+    parser.add_argument("--main-local-vad-threshold", type=float, default=0.5)
     parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
     parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
-    parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=1.0)
+    parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=2.0)
     parser.add_argument("--main-local-asr-pad-seconds", type=float, default=0.3)
     parser.add_argument("--main-local-asr-max-clip-seconds", type=float, default=30.0)
     parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
     parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
-    parser.add_argument("--main-local-batch-size", type=int, default=20)
+    parser.add_argument("--main-local-batch-size", type=int, default=24)
     parser.add_argument(
         "--gap-local-vad",
         action="store_true",
