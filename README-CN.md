@@ -169,7 +169,8 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 可选的二阶段补漏（`--gap-fill`）会重新检查字幕空窗，捞回偏精度的主识别漏掉的语音。
 它对每个达到门槛的空窗跑逐空窗局部 VAD（`--gap-local-vad-threshold 0.60`）；达到
 `--gap-local-vad-window-min-gap-seconds 6` 秒的空窗用 5 秒窗口、3 秒重叠扫描，更短的
-空窗用单次扫描。候选片段和主识别走同一个批处理。补漏门槛默认激进
+空窗用单次扫描。候选片段带 `--gap-local-asr-pad-seconds 1.0` 的上下文，
+并和主识别走同一个批处理。补漏门槛默认激进
 （`--fill-min-gap-seconds 2`、`--fill-min-speech-seconds 1`、`--fill-min-chars 1`、
 `--max-fill-compression-ratio 25`），并复用同一套清洗过滤；但额外召回本身比主识别更不稳定。
 它会拉长处理时间，也可能带来更多低置信度、幻觉或听错的候选，对准确率要求高时复查
@@ -194,7 +195,7 @@ Whisper 窗口内以免被截断。`--main-local-vad-dry-run` 可只打印选区
 （`--hallucination-repeat-no-speech-prob 0.75`）或低置信度
 （`--hallucination-repeat-avg-logprob -0.80`）时才自动删除。少量高风险重复短语另有绝对重复上限
 （`--hallucination-high-risk-max-repeats 3`）。每条的过滤原因
-（`hallucination`、`hallucination_repeat`、`noise` 等）会记录在 `input.fills.tsv` 中。
+（`hallucination`、`hallucination_repeat`、`noise`、`context_duplicate` 等）会记录在 `input.fills.tsv` 中。
 补漏还会过滤“较长、低置信度、局部 VAD 支持弱”的条目，原因记为
 `low_confidence_low_vad_support`；相关默认值包括 `--fill-support-min-chars 8`、
 `--fill-support-avg-logprob -0.95`、`--fill-support-no-speech-prob 0.45`、

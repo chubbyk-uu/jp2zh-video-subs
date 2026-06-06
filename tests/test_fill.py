@@ -3,6 +3,7 @@ from argparse import Namespace
 import fill_ja_srt_gaps as fill_module
 from fill_ja_srt_gaps import (
     exceeds_compression_ratio,
+    context_duplicate_fill_entries,
     fill_gaps,
     gap_windows,
     is_high_risk_repeat_phrase,
@@ -237,7 +238,7 @@ def test_fill_uses_gap_local_vad_for_each_gap(monkeypatch, tmp_path):
         gap_local_vad_window_min_gap_seconds=6.0,
         gap_local_vad_window_seconds=5.0,
         gap_local_vad_window_overlap_seconds=3.0,
-        gap_local_asr_pad_seconds=3.0,
+        gap_local_asr_pad_seconds=1.0,
         gap_local_asr_max_clip_seconds=30.0,
         gap_local_asr_overlap_seconds=5.0,
         main_local_batch_size=24,
@@ -281,6 +282,36 @@ def test_low_confidence_low_vad_support_filter_targets_long_weak_entries(monkeyp
 
     monkeypatch.setattr(fill_module, "fill_vad_support_seconds", lambda *args, **kwargs: 1.5)
     assert looks_like_low_confidence_low_vad_support([], supported_long, args) is False
+
+
+def test_context_duplicate_fill_entries_drop_existing_fragment():
+    existing = [Entry(1, 10.0, 12.0, "今日はいい天気ですね")]
+    fills = [SubtitleEntry(12.1, 13.0, "いい天気ですね", avg_logprob=-0.2, no_speech_prob=0.1)]
+
+    dropped = context_duplicate_fill_entries(fills, existing)
+
+    assert dropped == {id(fills[0])}
+
+
+def test_context_duplicate_fill_entries_drop_weaker_fill_fragment():
+    existing = []
+    fills = [
+        SubtitleEntry(20.0, 21.8, "明日は早く出発します", avg_logprob=-0.2, no_speech_prob=0.1),
+        SubtitleEntry(21.8, 22.8, "早く出発します", avg_logprob=-0.8, no_speech_prob=0.6),
+    ]
+
+    dropped = context_duplicate_fill_entries(fills, existing)
+
+    assert dropped == {id(fills[1])}
+
+
+def test_context_duplicate_fill_entries_keeps_far_similar_text():
+    existing = [Entry(1, 10.0, 11.0, "また行きます")]
+    fills = [SubtitleEntry(20.0, 21.0, "また", avg_logprob=-0.2, no_speech_prob=0.1)]
+
+    dropped = context_duplicate_fill_entries(fills, existing)
+
+    assert dropped == set()
 
 
 def test_looks_like_looping_repetition_catches_in_segment_loops():

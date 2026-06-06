@@ -175,7 +175,8 @@ precision-tuned main pass missed. It runs per-gap local VAD on each eligible gap
 (`--gap-local-vad-threshold 0.60`); gaps of at least
 `--gap-local-vad-window-min-gap-seconds 6` use 5-second windows with 3-second
 overlap, shorter gaps use a single per-gap scan. Candidate clips are transcribed
-in the same batched pass as the main stage. Gap-fill gates default aggressive
+with `--gap-local-asr-pad-seconds 1.0` in the same batched pass as the main stage.
+Gap-fill gates default aggressive
 (`--fill-min-gap-seconds 2`, `--fill-min-speech-seconds 1`, `--fill-min-chars 1`,
 `--max-fill-compression-ratio 25`) and the same cleaning filters are reused, but
 the extra recall is inherently less stable than the main pass. It increases
@@ -208,7 +209,7 @@ phrases repeated at least 10 times across one video's fills, but only removes th
 the repeated group is also likely near-silence (`--hallucination-repeat-no-speech-prob 0.75`)
 or low-confidence (`--hallucination-repeat-avg-logprob -0.80`). A small high-risk repeat
 phrase set also has an absolute repeat cap (`--hallucination-high-risk-max-repeats 3`).
-Filter reasons (`hallucination`, `hallucination_repeat`, `noise`, …) are recorded per row in
+Filter reasons (`hallucination`, `hallucination_repeat`, `noise`, `context_duplicate`, …) are recorded per row in
 `input.fills.tsv`. Gap fill also drops longer low-confidence entries with weak
 local VAD support (`low_confidence_low_vad_support`) using
 `--fill-support-min-chars 8`, `--fill-support-avg-logprob -0.95`,

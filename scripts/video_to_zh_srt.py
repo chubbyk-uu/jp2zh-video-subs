@@ -485,7 +485,7 @@ def main() -> None:
     parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=6.0)
     parser.add_argument("--gap-local-vad-window-seconds", type=float, default=5.0)
     parser.add_argument("--gap-local-vad-window-overlap-seconds", type=float, default=3.0)
-    parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=3.0)
+    parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=1.0)
     parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=30.0)
     parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)
     parser.add_argument("--max-fill-compression-ratio", type=float, default=25.0)

@@ -4,6 +4,7 @@ import argparse
 import csv
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from faster_whisper.audio import decode_audio
@@ -65,6 +66,12 @@ class FillMetadata:
 class CandidateClip:
     interval: Interval
     source: str
+
+
+CONTEXT_DUPLICATE_MAX_GAP_SECONDS = 0.5
+CONTEXT_DUPLICATE_SIMILARITY = 0.72
+CONTEXT_FRAGMENT_MIN_CHARS = 2
+CONTEXT_PUNCTUATION_RE = re.compile(r"[、。．，！？!?…・ー～~「」『』（）()\\[\\]\"'`\\s　]+")
 
 
 def existing_intervals(entries: list[Entry], padding: float) -> list[Interval]:
@@ -205,6 +212,65 @@ def write_srt(entries: list[SubtitleEntry], path: Path) -> None:
 
 def convert_existing(entries: list[Entry]) -> list[SubtitleEntry]:
     return [SubtitleEntry(item.start, item.end, item.text) for item in entries]
+
+
+def context_key(text: str) -> str:
+    return CONTEXT_PUNCTUATION_RE.sub("", compact_text(text))
+
+
+def nearby_context_gap(left, right) -> float:
+    if left.end <= right.start:
+        return right.start - left.end
+    if right.end <= left.start:
+        return left.start - right.end
+    return 0.0
+
+
+def context_duplicate_or_fragment(left_text: str, right_text: str) -> bool:
+    left = context_key(left_text)
+    right = context_key(right_text)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    shorter, longer = sorted((left, right), key=len)
+    if len(shorter) >= CONTEXT_FRAGMENT_MIN_CHARS and shorter in longer:
+        return True
+    return SequenceMatcher(None, left, right).ratio() >= CONTEXT_DUPLICATE_SIMILARITY
+
+
+def fill_rank(entry: SubtitleEntry) -> tuple[int, float, float]:
+    text_len = len(context_key(entry.text))
+    avg_logprob = entry.avg_logprob if entry.avg_logprob is not None else -99.0
+    no_speech_prob = entry.no_speech_prob if entry.no_speech_prob is not None else 1.0
+    return (text_len, avg_logprob, -no_speech_prob)
+
+
+def context_duplicate_fill_entries(
+    filled_entries: list[SubtitleEntry],
+    existing_entries: list[Entry],
+    max_gap_seconds: float = CONTEXT_DUPLICATE_MAX_GAP_SECONDS,
+) -> set[int]:
+    fill_ids = {id(entry) for entry in filled_entries}
+    ordered = sorted(
+        list(existing_entries) + list(filled_entries),
+        key=lambda item: (item.start, item.end),
+    )
+    dropped: set[int] = set()
+    for left, right in zip(ordered, ordered[1:]):
+        if nearby_context_gap(left, right) > max_gap_seconds:
+            continue
+        if not context_duplicate_or_fragment(left.text, right.text):
+            continue
+        left_is_fill = id(left) in fill_ids
+        right_is_fill = id(right) in fill_ids
+        if left_is_fill and right_is_fill:
+            dropped.add(id(left if fill_rank(left) <= fill_rank(right) else right))
+        elif left_is_fill:
+            dropped.add(id(left))
+        elif right_is_fill:
+            dropped.add(id(right))
+    return dropped
 
 
 def speech_intervals_from_gap_audio(
@@ -484,6 +550,23 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
                 item.status, item.reason = "filtered", "hallucination_repeat"
                 break
 
+    context_filtered_ids = context_duplicate_fill_entries(filled_entries, existing_entries)
+    if context_filtered_ids:
+        filtered_entries = []
+        kept_entries = []
+        for entry in filled_entries:
+            if id(entry) in context_filtered_ids:
+                filtered_entries.append(entry)
+            else:
+                kept_entries.append(entry)
+        filled_entries = kept_entries
+        for entry in filtered_entries:
+            stats.filtered_entries += 1
+            for item in metadata:
+                if item.entry is entry and item.status == "kept":
+                    item.status, item.reason = "filtered", "context_duplicate"
+                    break
+
     stats.kept_entries = len(filled_entries)
     merged = resolve_overlaps(convert_existing(existing_entries) + filled_entries)
     write_srt(merged, args.output)
@@ -554,7 +637,7 @@ def main() -> None:
     parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=6.0)
     parser.add_argument("--gap-local-vad-window-seconds", type=float, default=5.0)
     parser.add_argument("--gap-local-vad-window-overlap-seconds", type=float, default=3.0)
-    parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=3.0)
+    parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=1.0)
     parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=30.0)
     parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)
     # Gap-fill gates default to an aggressive setting validated on local sample runs,
