@@ -10,11 +10,11 @@ The one-command pipeline performs these steps:
 
 1. Extract a 16 kHz mono WAV file from the input video with `ffmpeg`.
 2. Transcribe Japanese audio into a Japanese SRT with local `faster-whisper-large-v3`.
-3. Run an audio-aware second pass to fill likely missed speech in subtitle gaps.
-4. Translate the filled Japanese SRT into Simplified Chinese with local `HY-MT1.5-7B-GGUF`.
+3. Optionally run an audio-aware second pass (`--gap-fill`) to fill likely missed speech in subtitle gaps.
+4. Translate the Japanese SRT into Simplified Chinese with local `HY-MT1.5-7B-GGUF`.
 5. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles.
 
-When gap filling is enabled (the default), steps 2 and 3 run in a single process that loads the Whisper model once, instead of loading it twice. The translation step stays in its own process so the Whisper and translation models never share VRAM. All generated SRTs are sorted and de-overlapped so cues never overlap or go out of order.
+The default main recognition pass already produces useful coverage for many videos. Add `--gap-fill` when you want to recover more quiet or missed speech; it increases processing time and can also introduce more hallucinated or misheard subtitles, so review the quality report and gap-fill metadata for important outputs. When gap filling is enabled, steps 2 and 3 run in a single process that loads the Whisper model once, instead of loading it twice. The translation step stays in its own process so the Whisper and translation models never share VRAM. All generated SRTs are sorted and de-overlapped so cues never overlap or go out of order.
 
 In batch mode, videos are processed smallest first, and each video's audio (step 1) is extracted one step ahead in a background thread. Audio extraction is CPU/IO bound while recognition and translation are GPU bound, so extracting the next video while the current one is on the GPU hides extraction behind the GPU work instead of blocking on it. Extraction stays a single serial read stream to reduce random IO pressure on HDDs; avoid running multiple pipeline instances against the same mechanical disk.
 
@@ -160,69 +160,44 @@ The one-command pipeline uses:
 - Max subtitle display duration: 10 seconds
 - Translation context: previous 1 dialogue turn as chat history (previous source/translation pair; the current turn carries only the current line). 0 translates each line standalone
 - Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
-- VAD: enabled with a sensitive default configuration
-- Gap fill: enabled by default
-- Pipeline preset: `--preset coverage`
+- VAD: batched sliding-window local VAD over the whole WAV (the only main pass)
+- Gap fill: off by default (opt in with `--gap-fill`)
 - Quality report: enabled by default
 - Extracted WAV audio: kept by default
 
-The default `coverage` ASR and gap-fill settings intentionally favor subtitle coverage.
-They are sensitive and aggressive so quiet or short speech is less likely to be
-missed. The tradeoff is slower processing and a higher chance of Whisper
-hallucinations, so review `work/input/input.quality.txt` and `work/input/input.fills.tsv`
-when accuracy matters.
+There are no pipeline presets; the single batched sliding-window pass is the
+default. Tune recall vs. cleanliness with `--main-local-vad-threshold` (default
+0.5; lower keeps more quiet speech but adds hallucinations to filter) and
+`--main-local-vad-max-cluster-gap` (default 2.0).
 
-Pipeline presets:
+Optional gap fill (`--gap-fill`) re-examines subtitle gaps to recover speech the
+precision-tuned main pass missed. It runs per-gap local VAD on each eligible gap
+(`--gap-local-vad-threshold 0.60`); gaps of at least
+`--gap-local-vad-window-min-gap-seconds 6` use 5-second windows with 3-second
+overlap, shorter gaps use a single per-gap scan. Candidate clips are transcribed
+in the same batched pass as the main stage. Gap-fill gates default aggressive
+(`--fill-min-gap-seconds 2`, `--fill-min-speech-seconds 1`, `--fill-min-chars 1`,
+`--max-fill-compression-ratio 25`) and the same cleaning filters are reused, but
+the extra recall is inherently less stable than the main pass. It increases
+processing time and can surface more low-confidence, hallucinated, or misheard
+candidates, so review `input.quality.txt` and `input.fills.tsv` when accuracy matters.
 
-| Preset | Use When | Main Settings |
-| --- | --- | --- |
-| `fast` | You want a quicker, more conservative pass with fewer hallucinations and can accept more missed quiet speech. | `--vad-threshold 0.20`, `--fill-min-gap-seconds 6`, `--fill-min-speech-seconds 2`, `--fill-min-clip-seconds 1.0`, `--fill-clip-pad-seconds 0.6`, `--fill-existing-pad-seconds 0.3`, `--fill-max-existing-overlap-seconds 0.5` |
-| `coverage` | Default. You want higher subtitle coverage and are willing to review more low-confidence fill candidates. | `--vad-threshold 0.05`, `--fill-min-gap-seconds 2`, `--fill-min-speech-seconds 1`, `--fill-min-clip-seconds 0.6`, `--fill-clip-pad-seconds 0.4`, `--fill-existing-pad-seconds 0.1`, `--fill-max-existing-overlap-seconds 1.0` |
-| `high-coverage` | You need the highest coverage on long videos where full-audio VAD misses speech inside subtitle gaps. | Same as `coverage`, plus `--gap-local-vad` and `--gap-local-vad-threshold 0.60`; gap fill uses per-gap local VAD instead of full-audio VAD |
+The main pass uses 8-second windows with 4-second overlap at
+`--main-local-vad-threshold 0.5`, then builds ASR clips from merged speech
+clusters (`--main-local-asr-pad-seconds 0.3`, `--main-local-vad-max-cluster-gap 2.0`,
+`--main-local-asr-max-clip-seconds 30`). Clips are transcribed in one batched pass
+(`BatchedInferencePipeline`, `--main-local-batch-size 24`); clips are capped at the
+30s Whisper window so none are truncated. `--main-local-vad-dry-run` prints the
+selection coverage (clusters, clips, covered minutes, coverage%) without running
+Whisper, for fast parameter sweeps. Cleaning filters (compression-ratio,
+noise/looping-repetition, adjacent-near-duplicate, and repeat-hallucination filters,
+plus a `--min-cue-seconds 0.3` floor that drops overlap-squeezed flash cues) run on
+the main-pass output. The same batched transcription and cleaning are reused by the
+optional `--gap-fill` stage.
 
-All presets use `--fill-max-clip-seconds 45`, `--fill-min-chars 3`,
-`--fill-max-cluster-gap 2.0`, `--fill-duplicate-window-seconds 8.0`, and
-`--max-fill-compression-ratio 25`. You can override any preset value by passing
-the specific option after choosing the preset, for example
-`--preset fast --vad-threshold 0.25`.
-
-Default `coverage` gap-fill parameters:
-
-- `--fill-min-gap-seconds 2`: inspect subtitle gaps longer than 2 seconds (aggressive, to
-  catch the short low-energy reactions the main pass misses).
-- `--fill-min-speech-seconds 1`: fill when the gap contains at least 1 second of VAD speech.
-- `--fill-max-clip-seconds 45`: cap one fill clip at 45 seconds.
-- `--fill-min-chars 3`: ignore very short fill results.
-- `--max-fill-compression-ratio 25`: drop extreme repetitive fill outputs, while keeping
-  moderate compression-ratio entries for review/reporting.
-
-Optional gap-local VAD is available with `--gap-local-vad`. Enable it when you
-need higher coverage on long videos where full-audio VAD misses speech inside
-subtitle gaps. With this option, the gap-fill stage does not use full-audio VAD
-to decide candidate clips; it runs VAD directly on each eligible subtitle gap
-using `--gap-local-vad-threshold 0.60` by default. Gaps at least
-`--gap-local-vad-window-min-gap-seconds 10` are scanned with 5-second windows
-and 3-second overlap; the windows only discover speech positions, and the final
-ASR clips are still built from merged speech clusters. Gap-local clips get extra
-ASR context (`--gap-local-asr-pad-seconds 3`) and are split at
-`--gap-local-asr-max-clip-seconds 45` with `--gap-local-asr-overlap-seconds 5`.
-This can recover more speech, but it further increases processing time and can
-surface more low-confidence fill candidates.
-
-The default main pass is sliding-window VAD (`--main-local-vad`, on by default;
-use `--no-main-local-vad` for the legacy whole-file VAD pass). It uses 8-second
-windows with 4-second overlap at `--main-local-vad-threshold 0.5`, then builds ASR
-clips from merged speech clusters (`--main-local-asr-pad-seconds 0.3`,
-`--main-local-vad-max-cluster-gap 2.0`, `--main-local-asr-max-clip-seconds 30`). Clips
-are transcribed in one batched pass (`BatchedInferencePipeline`,
-`--main-local-batch-size 24`); clips are capped at the 30s Whisper window so none are
-truncated. `--main-local-vad-dry-run` prints the selection coverage (clusters, clips,
-covered minutes, coverage%) without running Whisper, for fast parameter sweeps. The
-same cleaning gap fill used (compression-ratio, noise/looping-repetition,
-adjacent-near-duplicate, and repeat-hallucination filters, plus a `--min-cue-seconds 0.3`
-floor that drops overlap-squeezed flash cues) runs on the main-pass output, so it
-replaces the separate gap-fill stage. Gap fill is off by default; opt in with
-`--gap-fill` (usually together with `--no-main-local-vad`).
+The default ASR batch size (`--main-local-batch-size 24`) is throughput-oriented
+and can use substantial GPU memory. If CUDA runs out of memory or the GPU has
+less VRAM, lower it first, for example to `12`, `8`, or `4`.
 
 Because the aggressive gates re-transcribe near-silent clips, gap fill also drops Whisper
 hallucinations. The hard list is limited to platform/subtitle boilerplate (`ご視聴…`,
@@ -234,22 +209,29 @@ the repeated group is also likely near-silence (`--hallucination-repeat-no-speec
 or low-confidence (`--hallucination-repeat-avg-logprob -0.80`). A small high-risk repeat
 phrase set also has an absolute repeat cap (`--hallucination-high-risk-max-repeats 3`).
 Filter reasons (`hallucination`, `hallucination_repeat`, `noise`, …) are recorded per row in
-`input.fills.tsv`.
+`input.fills.tsv`. Gap fill also drops longer low-confidence entries with weak
+local VAD support (`low_confidence_low_vad_support`) using
+`--fill-support-min-chars 8`, `--fill-support-avg-logprob -0.95`,
+`--fill-support-no-speech-prob 0.45`, `--fill-support-vad-threshold 0.5`,
+and `--fill-support-max-ratio 0.45`.
 
 ## Outputs
 
 For `path/to/input.mp4`, the default outputs are:
 
 - `work/input/input.wav`: extracted 16 kHz mono WAV audio.
-- `work/input/input.ja.srt`: first-pass Japanese subtitles.
-- `work/input/input.filled.ja.srt`: gap-filled Japanese subtitles used for translation.
-- `work/input/input.fills.ja.srt`: only the second-pass added Japanese lines.
-- `work/input/input.fills.tsv`: gap-fill confidence metadata and filter reasons.
+- `work/input/input.ja.srt`: main-pass Japanese subtitles used for translation by default.
 - `work/input/input.quality.txt`: quality report.
 - `outputs/input.zh.srt`: final Chinese SRT.
 - `path/to/input.zh.srt`: final Chinese SRT copied next to the input video. With
   `--bilingual`, the bilingual `input.zh.ass` is copied next to the video instead
   of the SRT (the SRT still stays in `outputs/`).
+
+With `--gap-fill`, the pipeline also writes:
+
+- `work/input/input.filled.ja.srt`: gap-filled Japanese subtitles used for translation.
+- `work/input/input.fills.ja.srt`: only the second-pass added Japanese lines.
+- `work/input/input.fills.tsv`: gap-fill confidence metadata and filter reasons.
 
 Japanese SRT files keep the recognized speech timing and are used for gap
 analysis, VAD coverage, and quality reports. The Chinese SRT is the display
@@ -273,10 +255,10 @@ python scripts/video_to_zh_srt.py path/to/videos/ --output-dir outputs
 ```
 
 The default pipeline is the batched sliding-window main pass with no gap fill.
-To run the legacy whole-file VAD pass plus the audio-aware gap fill instead:
+To also run the audio-aware gap fill stage for more recall:
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --no-main-local-vad --gap-fill
+python scripts/video_to_zh_srt.py path/to/input.mp4 --gap-fill
 ```
 
 Disable quality report generation:
@@ -310,8 +292,9 @@ line differently, so the bilingual output is ASS: the Chinese line is larger and
 coloured, the Japanese line is smaller and gray. Defaults can be changed with
 `--bilingual-zh-font-size`,
 `--bilingual-ja-font-size`, `--bilingual-zh-colour`, and `--bilingual-ja-colour`
-(colours use the ASS `&HAABBGGRR` format). The Japanese line is the gap-filled
-SRT used for translation, so the two lines stay aligned cue by cue.
+(colours use the ASS `&HAABBGGRR` format). The Japanese line comes from the
+Japanese SRT used for translation (`.ja.srt` by default, `.filled.ja.srt` with
+`--gap-fill`), so the two lines stay aligned cue by cue.
 
 Adjust display timing padding for the final Chinese SRT and bilingual ASS:
 
@@ -348,20 +331,20 @@ Reduce translation context if translated lines include previous subtitles:
 python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
-Use the faster conservative preset:
+Recover more quiet speech with the optional gap-fill stage:
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --preset fast
+python scripts/video_to_zh_srt.py path/to/input.mp4 --gap-fill
 ```
 
-Use the highest-coverage preset:
+Gap fill re-examines subtitle gaps and may recover more quiet speech, but it is
+slower and can introduce less stable short lines.
+
+Reduce ASR batch size if your GPU runs out of VRAM:
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --preset high-coverage
+python scripts/video_to_zh_srt.py path/to/input.mp4 --main-local-batch-size 8
 ```
-
-`high-coverage` may recover more quiet speech, but it is slower and can
-introduce less stable short lines.
 
 Continue batch processing after one video fails:
 
@@ -393,7 +376,7 @@ python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
 Translate Japanese SRT to Chinese SRT:
 
 ```bash
-python scripts/translate_srt_hymt.py work/input/input.filled.ja.srt \
+python scripts/translate_srt_hymt.py work/input/input.ja.srt \
   --output outputs/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
   --context-size 1 \
@@ -406,7 +389,7 @@ Build a bilingual ASS from the aligned Japanese and Chinese SRTs:
 ```bash
 python scripts/make_bilingual_ass.py \
   --zh-srt outputs/input.zh.srt \
-  --ja-srt work/input/input.filled.ja.srt \
+  --ja-srt work/input/input.ja.srt \
   --output outputs/input.zh.ass
 ```
 
@@ -414,12 +397,15 @@ Generate a quality report:
 
 ```bash
 python scripts/quality_report.py \
-  --ja-srt work/input/input.filled.ja.srt \
+  --ja-srt work/input/input.ja.srt \
   --zh-srt outputs/input.zh.srt \
   --audio work/input/input.wav \
-  --fills-metadata work/input/input.fills.tsv \
   --output work/input/input.quality.txt
 ```
+
+If you ran `fill_ja_srt_gaps.py`, use `work/input/input.filled.ja.srt` for
+translation, ASS, and quality reporting, and pass
+`--fills-metadata work/input/input.fills.tsv` to the quality report.
 
 Translate only the first N entries for debugging:
 
@@ -469,6 +455,9 @@ Download the models again and keep the default directory and file names.
 
 Usually `llama-cpp-python` is running on CPU or the GPU does not have enough VRAM. Run the CUDA check above. CPU translation still works, but long videos will take much longer.
 
+If ASR fails with CUDA out-of-memory, lower `--main-local-batch-size`; the default
+`24` is intended for throughput and may be too high for smaller GPUs.
+
 ### `ffmpeg` Not Found
 
 Install FFmpeg and confirm it is on `PATH`:
@@ -488,17 +477,15 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### Some Speech Is Missed
 
-The default sliding-window main pass already scans the whole WAV with local VAD,
-so it covers speech the legacy whole-file VAD would miss without a separate fill
-stage. If you prefer more recall, lower `--main-local-vad-threshold` (default
-0.5) or raise `--main-local-vad-max-cluster-gap` (default 2.0); both select more
-audio at the cost of more clips and more hallucinations to filter.
+The sliding-window main pass already scans the whole WAV with local VAD. If you
+prefer more recall, lower `--main-local-vad-threshold` (default 0.5) or raise
+`--main-local-vad-max-cluster-gap` (default 2.0); both select more audio at the
+cost of more clips and more hallucinations to filter.
 
-To fall back to the legacy two-pass behavior, run `--no-main-local-vad --gap-fill`.
-Gap fill then does not judge gaps by duration alone; it checks the WAV audio with
-VAD and only re-transcribes gaps with enough speech. `fast` and `coverage` use
-full-audio VAD for this check; `high-coverage` or `--gap-local-vad` runs VAD
-directly on each eligible gap.
+For even more recall, add `--gap-fill`. It does not judge gaps by duration alone;
+it runs per-gap local VAD on each eligible subtitle gap and only re-transcribes
+gaps with enough speech, then cleans the results with the same filters as the main
+pass.
 
 ### Duplicate-Looking Lines
 
@@ -538,5 +525,4 @@ Do not commit:
 ## Future Work
 
 - Add configurable ASR initial prompts for names, terms, products, and scene-specific vocabulary.
-- Add a configurable glossary for recurring names and terms.
 - Continue improving ASR post-processing for isolated symbols, meaningless short subtitles, OCR-like noise, and end-credit noise.

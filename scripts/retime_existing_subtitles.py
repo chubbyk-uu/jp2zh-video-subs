@@ -180,7 +180,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Retiming-only refresh for existing zh.srt + bilingual ASS outputs."
     )
-    parser.add_argument("input", help="Video file or video directory. Windows paths like H:\\dir are accepted in WSL.")
+    parser.add_argument("input", help="Video file or video directory. Windows drive paths are accepted in WSL.")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     parser.add_argument("--work-dir", type=Path, default=Path("work"))
     parser.add_argument("--recursive", action="store_true")

@@ -326,48 +326,98 @@ def filter_hallucination_entries(entries: list[SubtitleEntry]) -> tuple[list[Sub
     return kept, filtered
 
 
-def filter_main_local_entries(
+def filter_asr_text_entries(
     entries: list[SubtitleEntry],
-    args: argparse.Namespace,
+    *,
+    min_chars: int,
+    max_compression_ratio: float,
+    duplicate_window_seconds: float | None,
+    hallucination_min_repeats: int,
+    hallucination_repeat_no_speech_prob: float,
+    hallucination_repeat_avg_logprob: float,
+    hallucination_high_risk_max_repeats: int,
+    apply_repeated_filter: bool = True,
 ) -> tuple[list[SubtitleEntry], list[SubtitleEntry]]:
-    """Consolidated filter for the sliding main pass so it can replace main+gap-fill.
+    """Shared ASR text cleanup for raw Whisper outputs.
 
-    Layers the gap-fill cleaning onto the static-hallucination pass: degenerate
-    compression loops, moaning/repeat noise (length floor stays at 1 so short
-    responses like はい/うん survive while kana moans like ああああ are dropped),
-    adjacent duplicates from clip-split overlap, and the cross-video repeat
-    backstop that catches recurring platform sign-offs (おやすみなさい x N, ...).
+    This is intentionally independent of whether the entry came from the main pass
+    or gap fill. Stage-specific checks such as overlap with existing subtitles are
+    layered on by the caller.
     """
     kept, filtered = filter_hallucination_entries(entries)
     survivors: list[SubtitleEntry] = []
     for entry in sorted(kept, key=lambda item: (item.start, item.end)):
-        if exceeds_compression_ratio(entry, args.main_max_compression_ratio):
+        if exceeds_compression_ratio(entry, max_compression_ratio):
             filtered.append(entry)
             continue
-        if looks_like_noise(entry.text, args.main_min_chars):
+        if looks_like_noise(entry.text, min_chars):
             filtered.append(entry)
             continue
-        if is_duplicate_of_nearby(entry, survivors, args.main_duplicate_window_seconds):
+        if duplicate_window_seconds is not None and duplicate_window_seconds >= 0 and is_duplicate_of_nearby(
+            entry,
+            survivors,
+            duplicate_window_seconds,
+        ):
             filtered.append(entry)
             continue
         survivors.append(entry)
 
+    if apply_repeated_filter:
+        survivors, repeated_filtered = filter_repeated_hallucination_entries(
+            survivors,
+            hallucination_min_repeats=hallucination_min_repeats,
+            hallucination_repeat_no_speech_prob=hallucination_repeat_no_speech_prob,
+            hallucination_repeat_avg_logprob=hallucination_repeat_avg_logprob,
+            hallucination_high_risk_max_repeats=hallucination_high_risk_max_repeats,
+        )
+        filtered.extend(repeated_filtered)
+    return survivors, filtered
+
+
+def filter_repeated_hallucination_entries(
+    entries: list[SubtitleEntry],
+    *,
+    hallucination_min_repeats: int,
+    hallucination_repeat_no_speech_prob: float,
+    hallucination_repeat_avg_logprob: float,
+    hallucination_high_risk_max_repeats: int,
+) -> tuple[list[SubtitleEntry], list[SubtitleEntry]]:
+    """Drop repeated ASR phrases that are statistically likely hallucinations."""
     repeated = repeated_hallucination_texts(
-        survivors,
-        args.hallucination_min_repeats,
-        args.hallucination_repeat_no_speech_prob,
-        args.hallucination_repeat_avg_logprob,
-        args.hallucination_high_risk_max_repeats,
+        entries,
+        hallucination_min_repeats,
+        hallucination_repeat_no_speech_prob,
+        hallucination_repeat_avg_logprob,
+        hallucination_high_risk_max_repeats,
     )
+    filtered: list[SubtitleEntry] = []
     if repeated:
-        post: list[SubtitleEntry] = []
-        for entry in survivors:
+        kept: list[SubtitleEntry] = []
+        for entry in entries:
             if normalize_phrase(entry.text) in repeated:
                 filtered.append(entry)
             else:
-                post.append(entry)
-        survivors = post
-    return survivors, filtered
+                kept.append(entry)
+        return kept, filtered
+    return entries, filtered
+
+
+def filter_main_local_entries(
+    entries: list[SubtitleEntry],
+    args: argparse.Namespace,
+) -> tuple[list[SubtitleEntry], list[SubtitleEntry]]:
+    """Consolidated text filter for the sliding main pass."""
+    return filter_asr_text_entries(
+        entries,
+        min_chars=args.main_min_chars,
+        max_compression_ratio=args.main_max_compression_ratio,
+        duplicate_window_seconds=args.main_duplicate_window_seconds,
+        hallucination_min_repeats=args.hallucination_min_repeats,
+        hallucination_repeat_no_speech_prob=args.hallucination_repeat_no_speech_prob,
+        hallucination_repeat_avg_logprob=args.hallucination_repeat_avg_logprob,
+        hallucination_high_risk_max_repeats=args.hallucination_high_risk_max_repeats,
+        apply_repeated_filter=True,
+    )
 
 
 def drop_adjacent_near_duplicates(
@@ -414,6 +464,30 @@ def resolve_overlaps(entries: list[SubtitleEntry]) -> list[SubtitleEntry]:
         if previous.end > current.start and current.start > previous.start:
             previous.end = current.start
     return ordered
+
+
+def finalize_main_entries(entries: list[SubtitleEntry], args: argparse.Namespace) -> list[SubtitleEntry]:
+    """Apply main-pass time-axis cleanup consistently across entry points."""
+    entries = resolve_overlaps(entries)
+    if args.near_dup_similarity > 0:
+        before = len(entries)
+        entries = drop_adjacent_near_duplicates(
+            entries,
+            args.near_dup_max_gap,
+            args.near_dup_similarity,
+            args.near_dup_squeeze_seconds,
+        )
+        if before != len(entries):
+            print(f"Dropped {before - len(entries)} adjacent near-duplicate cues", flush=True)
+    if args.min_cue_seconds > 0:
+        # Overlapping clip-boundary cues get trimmed to near-zero by resolve_overlaps
+        # and then flash by (long text, ~0.02s on screen) because the next cue leaves
+        # no room for min-display to lengthen them. Drop those squeezed-out artifacts.
+        before = len(entries)
+        entries = [entry for entry in entries if entry.end - entry.start >= args.min_cue_seconds]
+        if before != len(entries):
+            print(f"Dropped {before - len(entries)} sub-{args.min_cue_seconds}s cues", flush=True)
+    return entries
 
 
 def write_entries(entries: list[SubtitleEntry], output_path: Path) -> None:
@@ -736,8 +810,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.main_local_vad_window_overlap_seconds >= args.main_local_vad_window_seconds:
         raise SystemExit("--main-local-vad-window-overlap-seconds must be smaller than --main-local-vad-window-seconds")
-    if args.main_local_asr_overlap_seconds >= args.main_local_asr_max_clip_seconds:
-        raise SystemExit("--main-local-asr-overlap-seconds must be smaller than --main-local-asr-max-clip-seconds")
+    if args.main_local_asr_overlap_seconds >= min(args.main_local_asr_max_clip_seconds, 30.0):
+        raise SystemExit("--main-local-asr-overlap-seconds must be smaller than the effective main ASR clip length")
 
     if args.main_local_vad_dry_run:
         main_local_vad_dry_run(args.audio, args)
@@ -745,22 +819,7 @@ def main() -> None:
 
     model = load_model(args.model)
     entries = transcribe_audio(model, args.audio, args)
-    entries = resolve_overlaps(entries)
-    if args.near_dup_similarity > 0:
-        before = len(entries)
-        entries = drop_adjacent_near_duplicates(
-            entries, args.near_dup_max_gap, args.near_dup_similarity, args.near_dup_squeeze_seconds
-        )
-        if before != len(entries):
-            print(f"Dropped {before - len(entries)} adjacent near-duplicate cues", flush=True)
-    if args.min_cue_seconds > 0:
-        # Overlapping clip-boundary cues get trimmed to near-zero by resolve_overlaps
-        # and then flash by (long text, ~0.02s on screen) because the next cue leaves
-        # no room for min-display to lengthen them. Drop those squeezed-out artifacts.
-        before = len(entries)
-        entries = [entry for entry in entries if entry.end - entry.start >= args.min_cue_seconds]
-        if before != len(entries):
-            print(f"Dropped {before - len(entries)} sub-{args.min_cue_seconds}s cues", flush=True)
+    entries = finalize_main_entries(entries, args)
     write_entries(entries, args.output)
     print(f"Wrote {args.output}")
 

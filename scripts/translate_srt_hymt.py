@@ -47,20 +47,20 @@ DEFAULT_GLOSSARY = (
     GlossaryTerm(
         source="ご主人様",
         target="主人",
-        note="女仆/主仆语境中的称呼；不要译为丈夫、老公或先生。",
-        forbidden=("丈夫", "老公", "先生"),
+        note="称呼语境中的专有称呼；不要译为配偶称呼或普通敬称。",
+        forbidden=("丈夫", "先生"),
     ),
     GlossaryTerm(
         source="ご主人さん",
         target="主人",
-        note="女仆/主仆语境中的称呼；不要译为丈夫、老公或先生。",
-        forbidden=("丈夫", "老公", "先生"),
+        note="称呼语境中的专有称呼；不要译为配偶称呼或普通敬称。",
+        forbidden=("丈夫", "先生"),
     ),
     GlossaryTerm(
         source="主人様",
         target="主人",
-        note="女仆/主仆语境中的称呼；不要译为丈夫、老公或先生。",
-        forbidden=("丈夫", "老公", "先生"),
+        note="称呼语境中的专有称呼；不要译为配偶称呼或普通敬称。",
+        forbidden=("丈夫", "先生"),
     ),
 )
 

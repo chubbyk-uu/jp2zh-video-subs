@@ -33,7 +33,9 @@ from srt_utils import (
 from transcribe_ja_srt import (
     DEFAULT_MODEL,
     SubtitleEntry,
-    collect_entries,
+    filter_asr_text_entries,
+    filter_repeated_hallucination_entries,
+    finalize_main_entries,
     load_model,
     resolve_overlaps,
     transcribe_audio,
@@ -287,6 +289,57 @@ def padded_clip_for_gap(
     )
 
 
+def fill_vad_support_seconds(
+    audio,
+    entry: SubtitleEntry,
+    threshold: float,
+    pad_seconds: float,
+    min_silence_ms: int,
+    speech_pad_ms: int,
+    sampling_rate: int = 16000,
+) -> float:
+    window = Interval(
+        max(0.0, entry.start - pad_seconds),
+        min(len(audio) / sampling_rate, entry.end + pad_seconds),
+    )
+    intervals = speech_intervals_from_gap_audio(
+        audio,
+        window,
+        threshold,
+        min_silence_ms,
+        speech_pad_ms,
+        sampling_rate=sampling_rate,
+    )
+    return overlap_seconds(Interval(entry.start, entry.end), intervals)
+
+
+def looks_like_low_confidence_low_vad_support(
+    audio,
+    entry: SubtitleEntry,
+    args: argparse.Namespace,
+) -> bool:
+    if args.fill_support_min_chars <= 0:
+        return False
+    if len(compact_text(entry.text)) < args.fill_support_min_chars:
+        return False
+    if entry.avg_logprob is None or entry.avg_logprob > args.fill_support_avg_logprob:
+        return False
+    if entry.no_speech_prob is None or entry.no_speech_prob < args.fill_support_no_speech_prob:
+        return False
+    duration = max(0.0, entry.end - entry.start)
+    if duration <= 0:
+        return True
+    support = fill_vad_support_seconds(
+        audio,
+        entry,
+        args.fill_support_vad_threshold,
+        args.fill_support_pad_seconds,
+        args.vad_min_silence_ms,
+        args.vad_speech_pad_ms,
+    )
+    return support / duration <= args.fill_support_max_ratio
+
+
 def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> FillStats:
     if existing_entries is None:
         existing_entries = parse_srt(args.input)
@@ -336,7 +389,7 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
             clip_source = "gap_local_vad"
         speech_seconds = overlap_seconds(gap, gap_speech_intervals)
         clip_pad_seconds = args.gap_local_asr_pad_seconds
-        max_clip_seconds = args.gap_local_asr_max_clip_seconds
+        max_clip_seconds = min(args.gap_local_asr_max_clip_seconds, 30.0)
         clip_overlap_seconds = args.gap_local_asr_overlap_seconds
         if speech_seconds < args.min_speech_seconds:
             continue
@@ -372,20 +425,32 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
                 return candidate.interval
         return Interval(entry.start, entry.end)
 
-    for entry in raw_entries:
+    text_kept, text_filtered = filter_asr_text_entries(
+        raw_entries,
+        min_chars=args.min_fill_chars,
+        max_compression_ratio=args.max_fill_compression_ratio,
+        duplicate_window_seconds=None,
+        apply_repeated_filter=False,
+        hallucination_min_repeats=args.hallucination_min_repeats,
+        hallucination_repeat_no_speech_prob=args.hallucination_repeat_no_speech_prob,
+        hallucination_repeat_avg_logprob=args.hallucination_repeat_avg_logprob,
+        hallucination_high_risk_max_repeats=args.hallucination_high_risk_max_repeats,
+    )
+    for entry in text_filtered:
         clip = source_clip(entry)
+        stats.filtered_entries += 1
         if exceeds_compression_ratio(entry, args.max_fill_compression_ratio):
-            stats.filtered_entries += 1
-            metadata.append(FillMetadata(entry, clip, "filtered", "compression_ratio"))
-            continue
-        if looks_like_noise(entry.text, args.min_fill_chars):
-            stats.filtered_entries += 1
-            metadata.append(FillMetadata(entry, clip, "filtered", "noise"))
-            continue
-        if looks_like_hallucination(entry.text):
-            stats.filtered_entries += 1
-            metadata.append(FillMetadata(entry, clip, "filtered", "hallucination"))
-            continue
+            reason = "compression_ratio"
+        elif looks_like_noise(entry.text, args.min_fill_chars):
+            reason = "noise"
+        elif looks_like_hallucination(entry.text):
+            reason = "hallucination"
+        else:
+            reason = "hallucination_repeat"
+        metadata.append(FillMetadata(entry, clip, "filtered", reason))
+
+    for entry in text_kept:
+        clip = source_clip(entry)
         if is_duplicate_of_nearby(entry, existing_entries, args.duplicate_window_seconds):
             stats.filtered_entries += 1
             metadata.append(FillMetadata(entry, clip, "filtered", "duplicate_existing"))
@@ -398,30 +463,26 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
             stats.filtered_entries += 1
             metadata.append(FillMetadata(entry, clip, "filtered", "overlap_existing"))
             continue
+        if looks_like_low_confidence_low_vad_support(audio, entry, args):
+            stats.filtered_entries += 1
+            metadata.append(FillMetadata(entry, clip, "filtered", "low_confidence_low_vad_support"))
+            continue
         filled_entries.append(entry)
         metadata.append(FillMetadata(entry, clip, "kept", ""))
 
-    # Frequency backstop: repeated ordinary dialogue is only auto-dropped when the
-    # repeated group is also low-confidence or likely near-silence hallucination.
-    repeated = repeated_hallucination_texts(
+    filled_entries, repeated_filtered = filter_repeated_hallucination_entries(
         filled_entries,
-        args.hallucination_min_repeats,
-        args.hallucination_repeat_no_speech_prob,
-        args.hallucination_repeat_avg_logprob,
-        args.hallucination_high_risk_max_repeats,
+        hallucination_min_repeats=args.hallucination_min_repeats,
+        hallucination_repeat_no_speech_prob=args.hallucination_repeat_no_speech_prob,
+        hallucination_repeat_avg_logprob=args.hallucination_repeat_avg_logprob,
+        hallucination_high_risk_max_repeats=args.hallucination_high_risk_max_repeats,
     )
-    if repeated:
-        kept_after: list[SubtitleEntry] = []
-        for entry in filled_entries:
-            if normalize_phrase(entry.text) in repeated:
-                stats.filtered_entries += 1
-                for item in metadata:
-                    if item.entry is entry and item.status == "kept":
-                        item.status, item.reason = "filtered", "hallucination_repeat"
-                        break
-            else:
-                kept_after.append(entry)
-        filled_entries = kept_after
+    for entry in repeated_filtered:
+        stats.filtered_entries += 1
+        for item in metadata:
+            if item.entry is entry and item.status == "kept":
+                item.status, item.reason = "filtered", "hallucination_repeat"
+                break
 
     stats.kept_entries = len(filled_entries)
     merged = resolve_overlaps(convert_existing(existing_entries) + filled_entries)
@@ -482,12 +543,19 @@ def main() -> None:
     parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
     parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
     parser.add_argument("--main-local-batch-size", type=int, default=24)
+    parser.add_argument("--main-min-chars", type=int, default=1)
+    parser.add_argument("--main-max-compression-ratio", type=float, default=25.0)
+    parser.add_argument("--main-duplicate-window-seconds", type=float, default=2.0)
+    parser.add_argument("--min-cue-seconds", type=float, default=0.3)
+    parser.add_argument("--near-dup-max-gap", type=float, default=0.5)
+    parser.add_argument("--near-dup-similarity", type=float, default=0.6)
+    parser.add_argument("--near-dup-squeeze-seconds", type=float, default=0.8)
     parser.add_argument("--gap-local-vad-threshold", type=float, default=0.60)
-    parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=10.0)
+    parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=6.0)
     parser.add_argument("--gap-local-vad-window-seconds", type=float, default=5.0)
     parser.add_argument("--gap-local-vad-window-overlap-seconds", type=float, default=3.0)
     parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=3.0)
-    parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=45.0)
+    parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=30.0)
     parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)
     # Gap-fill gates default to an aggressive setting validated on local sample runs,
     # so the stage actually recovers the short, low-energy reactions VAD@0.05 still
@@ -495,12 +563,18 @@ def main() -> None:
     parser.add_argument("--min-gap-seconds", type=float, default=2.0)
     parser.add_argument("--min-speech-seconds", type=float, default=1.0)
     parser.add_argument("--min-clip-seconds", type=float, default=0.6)
-    parser.add_argument("--min-fill-chars", type=int, default=3)
+    parser.add_argument("--min-fill-chars", type=int, default=1)
     parser.add_argument("--max-fill-compression-ratio", type=float, default=25.0)
     parser.add_argument("--max-cluster-gap", type=float, default=2.0)
     parser.add_argument("--existing-pad-seconds", type=float, default=0.1)
     parser.add_argument("--max-existing-overlap-seconds", type=float, default=1.0)
     parser.add_argument("--duplicate-window-seconds", type=float, default=8.0)
+    parser.add_argument("--fill-support-min-chars", type=int, default=8)
+    parser.add_argument("--fill-support-avg-logprob", type=float, default=-0.95)
+    parser.add_argument("--fill-support-no-speech-prob", type=float, default=0.45)
+    parser.add_argument("--fill-support-vad-threshold", type=float, default=0.5)
+    parser.add_argument("--fill-support-pad-seconds", type=float, default=0.2)
+    parser.add_argument("--fill-support-max-ratio", type=float, default=0.45)
     parser.add_argument(
         "--hallucination-min-repeats",
         type=int,
@@ -540,18 +614,18 @@ def main() -> None:
         raise SystemExit("--gap-local-vad-window-overlap-seconds must be >= 0")
     if args.gap_local_vad_window_overlap_seconds >= args.gap_local_vad_window_seconds:
         raise SystemExit("--gap-local-vad-window-overlap-seconds must be smaller than --gap-local-vad-window-seconds")
-    if args.gap_local_asr_overlap_seconds >= args.gap_local_asr_max_clip_seconds:
-        raise SystemExit("--gap-local-asr-overlap-seconds must be smaller than --gap-local-asr-max-clip-seconds")
+    if args.gap_local_asr_overlap_seconds >= min(args.gap_local_asr_max_clip_seconds, 30.0):
+        raise SystemExit("--gap-local-asr-overlap-seconds must be smaller than the effective gap-fill ASR clip length")
     if args.main_local_vad_window_overlap_seconds >= args.main_local_vad_window_seconds:
         raise SystemExit("--main-local-vad-window-overlap-seconds must be smaller than --main-local-vad-window-seconds")
-    if args.main_local_asr_overlap_seconds >= args.main_local_asr_max_clip_seconds:
-        raise SystemExit("--main-local-asr-overlap-seconds must be smaller than --main-local-asr-max-clip-seconds")
+    if args.main_local_asr_overlap_seconds >= min(args.main_local_asr_max_clip_seconds, 30.0):
+        raise SystemExit("--main-local-asr-overlap-seconds must be smaller than the effective main ASR clip length")
 
     if args.transcribe_output:
         model = load_model(str(args.model))
         # Resolve overlaps so the intermediate SRT matches standalone transcribe
         # output, and feed the resolved entries into gap filling.
-        entries = resolve_overlaps(transcribe_audio(model, args.audio, args))
+        entries = finalize_main_entries(transcribe_audio(model, args.audio, args), args)
         write_entries(entries, args.transcribe_output)
         print(f"Wrote {args.transcribe_output}")
         fill_gaps(args, model=model, existing_entries=entries)

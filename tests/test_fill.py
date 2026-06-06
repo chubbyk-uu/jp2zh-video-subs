@@ -6,6 +6,7 @@ from fill_ja_srt_gaps import (
     fill_gaps,
     gap_windows,
     is_high_risk_repeat_phrase,
+    looks_like_low_confidence_low_vad_support,
     looks_like_hallucination,
     looks_like_noise,
     normalize_phrase,
@@ -232,18 +233,18 @@ def test_fill_uses_gap_local_vad_for_each_gap(monkeypatch, tmp_path):
         existing_pad_seconds=0.1,
         min_gap_seconds=2.0,
         min_speech_seconds=1.0,
-        gap_local_vad_threshold=0.3,
-        gap_local_vad_window_min_gap_seconds=10.0,
+        gap_local_vad_threshold=0.60,
+        gap_local_vad_window_min_gap_seconds=6.0,
         gap_local_vad_window_seconds=5.0,
         gap_local_vad_window_overlap_seconds=3.0,
         gap_local_asr_pad_seconds=3.0,
-        gap_local_asr_max_clip_seconds=45.0,
+        gap_local_asr_max_clip_seconds=30.0,
         gap_local_asr_overlap_seconds=5.0,
         main_local_batch_size=24,
         max_cluster_gap=2.0,
         max_existing_overlap_seconds=1.0,
         min_clip_seconds=0.6,
-        min_fill_chars=3,
+        min_fill_chars=1,
         duplicate_window_seconds=8.0,
         max_fill_compression_ratio=25.0,
         hallucination_min_repeats=10,
@@ -255,7 +256,31 @@ def test_fill_uses_gap_local_vad_for_each_gap(monkeypatch, tmp_path):
 
     fill_gaps(args, model=object(), existing_entries=existing)
 
-    assert calls["local"] == 1
+    assert calls["local"] == 3
+
+
+def test_low_confidence_low_vad_support_filter_targets_long_weak_entries(monkeypatch):
+    args = Namespace(
+        fill_support_min_chars=8,
+        fill_support_avg_logprob=-0.95,
+        fill_support_no_speech_prob=0.45,
+        fill_support_vad_threshold=0.5,
+        fill_support_pad_seconds=0.2,
+        fill_support_max_ratio=0.45,
+        vad_min_silence_ms=500,
+        vad_speech_pad_ms=400,
+    )
+
+    weak_long = SubtitleEntry(10.0, 14.0, "明日は早く出発します。", avg_logprob=-1.2, no_speech_prob=0.5)
+    short_reaction = SubtitleEntry(20.0, 21.0, "はい", avg_logprob=-1.2, no_speech_prob=0.9)
+    supported_long = SubtitleEntry(30.0, 32.0, "今日はいい天気ですね。", avg_logprob=-1.2, no_speech_prob=0.5)
+
+    monkeypatch.setattr(fill_module, "fill_vad_support_seconds", lambda *args, **kwargs: 0.5)
+    assert looks_like_low_confidence_low_vad_support([], weak_long, args) is True
+    assert looks_like_low_confidence_low_vad_support([], short_reaction, args) is False
+
+    monkeypatch.setattr(fill_module, "fill_vad_support_seconds", lambda *args, **kwargs: 1.5)
+    assert looks_like_low_confidence_low_vad_support([], supported_long, args) is False
 
 
 def test_looks_like_looping_repetition_catches_in_segment_loops():

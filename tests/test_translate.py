@@ -1,6 +1,6 @@
 from translate_srt_hymt import (
-    DEFAULT_GLOSSARY,
     Entry,
+    GlossaryTerm,
     build_messages,
     clean_translation,
     glossary_issues,
@@ -10,6 +10,16 @@ from translate_srt_hymt import (
     padded_time,
     parse_srt,
     write_terms_report,
+)
+
+
+TEST_GLOSSARY = (
+    GlossaryTerm(
+        source="中央公園",
+        target="中央公园",
+        note="地名术语；不要译为车站名。",
+        forbidden=("中央公园站",),
+    ),
 )
 
 
@@ -35,38 +45,38 @@ def test_normalize_source_leaves_text_unchanged_without_replacements():
 
 
 def test_glossary_instruction_is_in_prompt():
-    instruction = glossary_instruction(DEFAULT_GLOSSARY)
+    instruction = glossary_instruction(TEST_GLOSSARY)
 
-    assert "ご主人様=主人" in instruction
+    assert "中央公園=中央公园" in instruction
     assert "不要输出规则本身" in instruction
 
 
 def test_build_messages_includes_default_glossary():
-    msgs = build_messages("ご主人様", [])
+    msgs = build_messages("中央公園", [], glossary=TEST_GLOSSARY)
 
     assert msgs[0]["role"] == "system"
-    assert "ご主人様=主人" in msgs[0]["content"]
-    assert msgs[1] == {"role": "user", "content": "ご主人様"}
+    assert "中央公園=中央公园" in msgs[0]["content"]
+    assert msgs[1] == {"role": "user", "content": "中央公園"}
 
 
 def test_glossary_issues_reports_forbidden_translation_without_fixing():
-    issues = glossary_issues("ご主人様", "先生/丈夫。", DEFAULT_GLOSSARY)
+    issues = glossary_issues("中央公園", "中央公园站。", TEST_GLOSSARY)
 
-    assert [issue.source for issue in issues] == ["ご主人様"]
-    assert glossary_issues("ご主人様", "主人。", DEFAULT_GLOSSARY) == []
-    assert glossary_issues("普通の夫です", "丈夫。", DEFAULT_GLOSSARY) == []
+    assert [issue.source for issue in issues] == ["中央公園"]
+    assert glossary_issues("中央公園", "中央公园。", TEST_GLOSSARY) == []
+    assert glossary_issues("駅に行きます", "去车站。", TEST_GLOSSARY) == []
 
 
 def test_write_terms_report(tmp_path):
     path = tmp_path / "terms.txt"
-    entry = Entry("1", "00:00:01,000 --> 00:00:02,000", "ご主人様", 1.0, 2.0)
+    entry = Entry("1", "00:00:01,000 --> 00:00:02,000", "中央公園", 1.0, 2.0)
 
-    write_terms_report(path, [(entry, "先生/丈夫。", [DEFAULT_GLOSSARY[0]])])
+    write_terms_report(path, [(entry, "中央公园站。", [TEST_GLOSSARY[0]])])
 
     report = path.read_text(encoding="utf-8")
     assert "Terminology review report" in report
-    assert "source: ご主人様" in report
-    assert "translation: 先生/丈夫。" in report
+    assert "source: 中央公園" in report
+    assert "translation: 中央公园站。" in report
 
 
 def test_build_messages_without_history_is_single_instructed_turn():

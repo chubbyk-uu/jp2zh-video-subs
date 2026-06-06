@@ -191,6 +191,14 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.max_fill_compression_ratio),
             "--main-duplicate-window-seconds",
             str(args.main_duplicate_window_seconds),
+            "--min-cue-seconds",
+            str(args.min_cue_seconds),
+            "--near-dup-max-gap",
+            str(args.near_dup_max_gap),
+            "--near-dup-similarity",
+            str(args.near_dup_similarity),
+            "--near-dup-squeeze-seconds",
+            str(args.near_dup_squeeze_seconds),
             "--hallucination-min-repeats",
             str(args.hallucination_min_repeats),
             "--hallucination-repeat-no-speech-prob",
@@ -259,6 +267,20 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.main_local_min_clip_seconds),
             "--main-local-batch-size",
             str(args.main_local_batch_size),
+            "--main-min-chars",
+            str(args.main_min_chars),
+            "--main-max-compression-ratio",
+            str(args.max_fill_compression_ratio),
+            "--main-duplicate-window-seconds",
+            str(args.main_duplicate_window_seconds),
+            "--min-cue-seconds",
+            str(args.min_cue_seconds),
+            "--near-dup-max-gap",
+            str(args.near_dup_max_gap),
+            "--near-dup-similarity",
+            str(args.near_dup_similarity),
+            "--near-dup-squeeze-seconds",
+            str(args.near_dup_squeeze_seconds),
             "--min-gap-seconds",
             str(args.fill_min_gap_seconds),
             "--min-speech-seconds",
@@ -299,6 +321,18 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.gap_local_asr_overlap_seconds),
             "--max-fill-compression-ratio",
             str(args.max_fill_compression_ratio),
+            "--fill-support-min-chars",
+            str(args.fill_support_min_chars),
+            "--fill-support-avg-logprob",
+            str(args.fill_support_avg_logprob),
+            "--fill-support-no-speech-prob",
+            str(args.fill_support_no_speech_prob),
+            "--fill-support-vad-threshold",
+            str(args.fill_support_vad_threshold),
+            "--fill-support-pad-seconds",
+            str(args.fill_support_pad_seconds),
+            "--fill-support-max-ratio",
+            str(args.fill_support_max_ratio),
         ]
         run(fill_command)
         translate_input_srt = filled_ja_srt
@@ -441,22 +475,32 @@ def main() -> None:
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
     parser.add_argument("--fill-min-gap-seconds", type=float, default=2.0)
     parser.add_argument("--fill-min-speech-seconds", type=float, default=1.0)
-    parser.add_argument("--fill-min-chars", type=int, default=3)
+    parser.add_argument("--fill-min-chars", type=int, default=1)
     parser.add_argument("--fill-min-clip-seconds", type=float, default=0.6)
     parser.add_argument("--fill-existing-pad-seconds", type=float, default=0.1)
     parser.add_argument("--fill-max-existing-overlap-seconds", type=float, default=1.0)
     parser.add_argument("--fill-max-cluster-gap", type=float, default=2.0)
     parser.add_argument("--fill-duplicate-window-seconds", type=float, default=8.0)
     parser.add_argument("--gap-local-vad-threshold", type=float, default=0.60)
-    parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=10.0)
+    parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=6.0)
     parser.add_argument("--gap-local-vad-window-seconds", type=float, default=5.0)
     parser.add_argument("--gap-local-vad-window-overlap-seconds", type=float, default=3.0)
     parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=3.0)
-    parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=45.0)
+    parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=30.0)
     parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)
     parser.add_argument("--max-fill-compression-ratio", type=float, default=25.0)
+    parser.add_argument("--fill-support-min-chars", type=int, default=8)
+    parser.add_argument("--fill-support-avg-logprob", type=float, default=-0.95)
+    parser.add_argument("--fill-support-no-speech-prob", type=float, default=0.45)
+    parser.add_argument("--fill-support-vad-threshold", type=float, default=0.5)
+    parser.add_argument("--fill-support-pad-seconds", type=float, default=0.2)
+    parser.add_argument("--fill-support-max-ratio", type=float, default=0.45)
     parser.add_argument("--main-min-chars", type=int, default=1)
     parser.add_argument("--main-duplicate-window-seconds", type=float, default=2.0)
+    parser.add_argument("--min-cue-seconds", type=float, default=0.3)
+    parser.add_argument("--near-dup-max-gap", type=float, default=0.5)
+    parser.add_argument("--near-dup-similarity", type=float, default=0.6)
+    parser.add_argument("--near-dup-squeeze-seconds", type=float, default=0.8)
     parser.add_argument("--hallucination-min-repeats", type=int, default=10)
     parser.add_argument("--hallucination-repeat-no-speech-prob", type=float, default=0.75)
     parser.add_argument("--hallucination-repeat-avg-logprob", type=float, default=-0.80)
@@ -476,8 +520,10 @@ def main() -> None:
         raise SystemExit("--min-display-seconds must be >= 0")
     if args.main_local_vad_window_overlap_seconds >= args.main_local_vad_window_seconds:
         raise SystemExit("--main-local-vad-window-overlap-seconds must be smaller than --main-local-vad-window-seconds")
-    if args.main_local_asr_overlap_seconds >= args.main_local_asr_max_clip_seconds:
-        raise SystemExit("--main-local-asr-overlap-seconds must be smaller than --main-local-asr-max-clip-seconds")
+    if args.main_local_asr_overlap_seconds >= min(args.main_local_asr_max_clip_seconds, 30.0):
+        raise SystemExit("--main-local-asr-overlap-seconds must be smaller than the effective main ASR clip length")
+    if args.gap_local_asr_overlap_seconds >= min(args.gap_local_asr_max_clip_seconds, 30.0):
+        raise SystemExit("--gap-local-asr-overlap-seconds must be smaller than the effective gap-fill ASR clip length")
 
     if shutil.which("ffmpeg") is None:
         raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")

@@ -10,11 +10,11 @@
 
 1. 用 `ffmpeg` 从视频抽取 16 kHz 单声道 WAV 音频。
 2. 用本地 `faster-whisper-large-v3` 识别日语并生成日语 SRT。
-3. 结合 WAV 音频和已有日语字幕，自动补识别字幕空窗里的有效语音。
-4. 用本地 `HY-MT1.5-7B-GGUF` 把补漏后的日语 SRT 翻译成简体中文字幕 SRT。
+3. 可选运行二阶段补漏（`--gap-fill`），结合 WAV 音频和已有日语字幕补识别字幕空窗里的有效语音。
+4. 用本地 `HY-MT1.5-7B-GGUF` 把日语 SRT 翻译成简体中文字幕 SRT。
 5. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
 
-开启二阶段补漏时（默认开启），第 2、3 步会在同一个进程里完成，Whisper 模型只加载一次，而不是加载两次。翻译阶段仍是独立进程，这样 Whisper 和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
+默认只跑主识别，很多视频已经能得到覆盖率不错的字幕。需要覆盖更多轻声或漏识别语音时，可以加 `--gap-fill` 跑二阶段补漏；代价是处理更慢，也更可能引入幻觉或听错的字幕，重要输出建议复查质量报告和补漏元数据。开启二阶段补漏时，第 2、3 步会在同一个进程里完成，Whisper 模型只加载一次，而不是加载两次。翻译阶段仍是独立进程，这样 Whisper 和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
 
 批量处理时，视频按文件大小从小到大处理，并且每个视频的音频（第 1 步）会由后台线程提前一个抽取。抽音频是 CPU/IO 密集、识别和翻译是 GPU 密集，所以"当前视频在 GPU 上跑的同时，提前抽下一个视频的音频"能把提取藏进 GPU 时间里，而不是卡在它前面。提取始终保持单路串行读取，以降低机械盘随机 IO 压力；同一块机械盘上不建议同时跑多个流水线。
 
@@ -157,57 +157,35 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - 单条字幕最大显示时长：默认 10 秒
 - 翻译上下文：默认带前 1 轮对话历史（上一句原文/译文作为对话上文，当前轮只翻当前句）；设为 0 则逐句独立翻译
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
-- VAD：默认开启，并使用较敏感配置
-- 二阶段补漏：默认开启
-- 流程预设：`--preset coverage`
+- VAD：整片批处理滑窗局部 VAD（唯一的主识别）
+- 二阶段补漏：默认关闭（用 `--gap-fill` 开启）
 - 质量报告：默认开启
 - 抽取音频：默认保留 WAV，方便复查和调参
 
-当前默认 `coverage` 识别和补漏参数有意偏向较高字幕覆盖率，整体比较敏感、激进，
-目的是尽量捞回轻声、短句和低能量对白。代价是处理速度会下降，
-Whisper 幻觉概率也会升高；对准确率要求高时，建议复查
-`work/input/input.quality.txt` 和 `work/input/input.fills.tsv`。
+没有流程预设了，唯一的批处理滑窗主识别就是默认。用 `--main-local-vad-threshold`
+（默认 0.5，调低能捞回更多轻声但幻觉变多）和 `--main-local-vad-max-cluster-gap`
+（默认 2.0）在召回和干净度之间权衡。
 
-流程预设：
+可选的二阶段补漏（`--gap-fill`）会重新检查字幕空窗，捞回偏精度的主识别漏掉的语音。
+它对每个达到门槛的空窗跑逐空窗局部 VAD（`--gap-local-vad-threshold 0.60`）；达到
+`--gap-local-vad-window-min-gap-seconds 6` 秒的空窗用 5 秒窗口、3 秒重叠扫描，更短的
+空窗用单次扫描。候选片段和主识别走同一个批处理。补漏门槛默认激进
+（`--fill-min-gap-seconds 2`、`--fill-min-speech-seconds 1`、`--fill-min-chars 1`、
+`--max-fill-compression-ratio 25`），并复用同一套清洗过滤；但额外召回本身比主识别更不稳定。
+它会拉长处理时间，也可能带来更多低置信度、幻觉或听错的候选，对准确率要求高时复查
+`input.quality.txt` 和 `input.fills.tsv`。
 
-| 预设 | 适用场景 | 主要参数 |
-| --- | --- | --- |
-| `fast` | 需要更快、更保守的初稿，愿意接受更多轻声漏识别，换取更低幻觉风险。 | `--vad-threshold 0.20`，`--fill-min-gap-seconds 6`，`--fill-min-speech-seconds 2`，`--fill-min-clip-seconds 1.0`，`--fill-clip-pad-seconds 0.6`，`--fill-existing-pad-seconds 0.3`，`--fill-max-existing-overlap-seconds 0.5` |
-| `coverage` | 默认。需要更高字幕覆盖率，并愿意复查更多低置信度补漏候选。 | `--vad-threshold 0.05`，`--fill-min-gap-seconds 2`，`--fill-min-speech-seconds 1`，`--fill-min-clip-seconds 0.6`，`--fill-clip-pad-seconds 0.4`，`--fill-existing-pad-seconds 0.1`，`--fill-max-existing-overlap-seconds 1.0` |
-| `high-coverage` | 长视频中 full-audio VAD 漏掉字幕空窗里的真实语音，需要最高覆盖率。 | 等同 `coverage`，并自动开启 `--gap-local-vad` 和 `--gap-local-vad-threshold 0.60`；补漏候选改用逐空窗局部 VAD，不再用全片 VAD |
-
-所有预设都使用 `--fill-max-clip-seconds 45`、`--fill-min-chars 3`、
-`--fill-max-cluster-gap 2.0`、`--fill-duplicate-window-seconds 8.0` 和
-`--max-fill-compression-ratio 25`。选择预设后仍可用单项参数覆盖，
-例如 `--preset fast --vad-threshold 0.25`。
-
-当前 `coverage` 二阶段补漏默认参数：
-
-- `--fill-min-gap-seconds 2`：检查 2 秒以上字幕空窗（激进策略，用于捞回主识别漏掉的轻声短反应）。
-- `--fill-min-speech-seconds 1`：空窗内至少有 1 秒 VAD 语音才补识别。
-- `--fill-max-clip-seconds 45`：单个补识别音频片段最长 45 秒。
-- `--fill-min-chars 3`：过短补漏结果不写入。
-- `--max-fill-compression-ratio 25`：过滤极端重复的补漏输出；中等压缩比条目保留给报告和人工复查。
-
-可选的局部空窗 VAD 可用 `--gap-local-vad` 开启。长视频中如果需要更高覆盖率，
-尤其是全片 VAD 漏掉字幕空窗里的真实语音时，可以开启它。开启后，补漏阶段不再用全片 VAD
-决定候选片段，而是对每个达到长度门槛的字幕空窗直接跑局部 VAD，默认使用
-`--gap-local-vad-threshold 0.60`。达到
-`--gap-local-vad-window-min-gap-seconds 10` 秒的空窗会用 5 秒窗口、3 秒重叠扫描；
-滑窗只用于发现语音位置，最终 ASR 片段仍由合并后的语音簇生成。
-局部空窗片段会给 ASR 额外上下文（`--gap-local-asr-pad-seconds 3`），并按
-`--gap-local-asr-max-clip-seconds 45` 和 `--gap-local-asr-overlap-seconds 5` 分段。
-它可能找回更多语音，但会进一步拉长处理时间，也可能带来更多低置信度补漏候选。
-
-默认主识别即滑窗 VAD（`--main-local-vad`，默认开启；用 `--no-main-local-vad` 改回旧的
-整片 VAD 主识别）。它用 8 秒窗口、4 秒重叠、`--main-local-vad-threshold 0.5` 扫描整段 WAV，
+主识别用 8 秒窗口、4 秒重叠、`--main-local-vad-threshold 0.5` 扫描整段 WAV，
 再把合并后的语音簇送入 ASR（`--main-local-asr-pad-seconds 0.3`、
 `--main-local-vad-max-cluster-gap 2.0`、`--main-local-asr-max-clip-seconds 30`）。所有片段用
 `BatchedInferencePipeline` 一次批量转写（`--main-local-batch-size 24`），并限制在 30 秒
 Whisper 窗口内以免被截断。`--main-local-vad-dry-run` 可只打印选区覆盖率而不跑 Whisper，便于扫参。
-补漏阶段用过的同一套清洗（压缩比、噪声/循环重复、相邻近似去重、重复幻觉过滤，外加
-`--min-cue-seconds 0.3` 丢弃 overlap 挤压出的一闪而过 cue）会作用于主识别输出，因此**替代了独立的
-补漏阶段**。补漏默认关闭，用 `--gap-fill` 显式开启（通常配合 `--no-main-local-vad`）。
+清洗过滤（压缩比、噪声/循环重复、相邻近似去重、重复幻觉过滤，外加
+`--min-cue-seconds 0.3` 丢弃 overlap 挤压出的一闪而过 cue）会作用于主识别输出。
+同一套批处理转写和清洗也被可选的 `--gap-fill` 阶段复用。
+
+默认 ASR 批大小（`--main-local-batch-size 24`）偏向吞吐量，会占用较多显存。
+如果 CUDA 显存不够或显卡较小，优先把它调低，例如 `12`、`8` 或 `4`。
 
 由于激进门槛会对接近静音的片段重新识别，补漏阶段同时会过滤 Whisper 幻觉。硬过滤清单只保留平台/字幕套话
 （`ご視聴…`、`チャンネル登録`、`それではまた` 等）以及明显字幕标签/语境错配短语
@@ -217,19 +195,26 @@ Whisper 窗口内以免被截断。`--main-local-vad-dry-run` 可只打印选区
 （`--hallucination-repeat-avg-logprob -0.80`）时才自动删除。少量高风险重复短语另有绝对重复上限
 （`--hallucination-high-risk-max-repeats 3`）。每条的过滤原因
 （`hallucination`、`hallucination_repeat`、`noise` 等）会记录在 `input.fills.tsv` 中。
+补漏还会过滤“较长、低置信度、局部 VAD 支持弱”的条目，原因记为
+`low_confidence_low_vad_support`；相关默认值包括 `--fill-support-min-chars 8`、
+`--fill-support-avg-logprob -0.95`、`--fill-support-no-speech-prob 0.45`、
+`--fill-support-vad-threshold 0.5` 和 `--fill-support-max-ratio 0.45`。
 
 ## 输出文件
 
 以 `path/to/input.mp4` 为例，默认输出：
 
 - `work/input/input.wav`：抽取出来的 16 kHz 单声道音频。
-- `work/input/input.ja.srt`：第一阶段日语字幕。
-- `work/input/input.filled.ja.srt`：补漏后的日语字幕，也是默认翻译输入。
-- `work/input/input.fills.ja.srt`：二阶段新增的日语字幕片段。
-- `work/input/input.fills.tsv`：补漏置信度元数据和过滤原因。
+- `work/input/input.ja.srt`：主识别日语字幕，默认也是翻译输入。
 - `work/input/input.quality.txt`：质量报告。
 - `outputs/input.zh.srt`：最终中文字幕。
 - `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。加 `--bilingual` 时，放到视频同目录的是双语 `input.zh.ass`，而**不是** SRT（SRT 仍保留在 `outputs/`）。
+
+加 `--gap-fill` 时，还会额外输出：
+
+- `work/input/input.filled.ja.srt`：补漏后的日语字幕，也是补漏模式下的翻译输入。
+- `work/input/input.fills.ja.srt`：二阶段新增的日语字幕片段。
+- `work/input/input.fills.tsv`：补漏置信度元数据和过滤原因。
 
 日语 SRT 保持识别到的真实语音时间，用于补漏、VAD 覆盖率和质量报告。
 中文字幕 SRT 是最终显示字幕：一键流程会轻微延长每条字幕的结束时间，
@@ -250,10 +235,10 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --output outputs/input.zh.sr
 python scripts/video_to_zh_srt.py path/to/videos/ --output-dir outputs
 ```
 
-默认流程是批处理滑窗主识别、不补漏。若要改回旧的整片 VAD 主识别 + 二阶段补漏：
+默认流程是批处理滑窗主识别、不补漏。若要额外跑二阶段补漏提升召回：
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --no-main-local-vad --gap-fill
+python scripts/video_to_zh_srt.py path/to/input.mp4 --gap-fill
 ```
 
 不生成质量报告：
@@ -280,7 +265,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
 python scripts/video_to_zh_srt.py path/to/input.mp4 --bilingual
 ```
 
-会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour` 调整（颜色用 ASS 的 `&HAABBGGRR` 格式）。下面那行日文用的是参与翻译的补漏后 SRT，因此中日两行逐条对齐。
+会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour` 调整（颜色用 ASS 的 `&HAABBGGRR` 格式）。下面那行日文来自参与翻译的日语 SRT（默认 `.ja.srt`，加 `--gap-fill` 时为 `.filled.ja.srt`），因此中日两行逐条对齐。
 
 调整最终中文字幕和双语 ASS 的显示留白：
 
@@ -314,19 +299,11 @@ python scripts/retime_existing_subtitles.py path/to/videos/ \
 python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
-使用更快、更保守的预设：
+如果显卡显存不够，降低 ASR 批大小：
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --preset fast
+python scripts/video_to_zh_srt.py path/to/input.mp4 --main-local-batch-size 8
 ```
-
-使用最高覆盖率预设：
-
-```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --preset high-coverage
-```
-
-`high-coverage` 可能补出更多低声对白，但会更慢，也可能引入更多不稳定短句。
 
 批量处理时，如果某个视频失败后继续处理后面的视频：
 
@@ -358,7 +335,7 @@ python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
 已有日语 SRT，只做翻译：
 
 ```bash
-python scripts/translate_srt_hymt.py work/input/input.filled.ja.srt \
+python scripts/translate_srt_hymt.py work/input/input.ja.srt \
   --output outputs/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
   --context-size 1 \
@@ -371,7 +348,7 @@ python scripts/translate_srt_hymt.py work/input/input.filled.ja.srt \
 ```bash
 python scripts/make_bilingual_ass.py \
   --zh-srt outputs/input.zh.srt \
-  --ja-srt work/input/input.filled.ja.srt \
+  --ja-srt work/input/input.ja.srt \
   --output outputs/input.zh.ass
 ```
 
@@ -379,12 +356,15 @@ python scripts/make_bilingual_ass.py \
 
 ```bash
 python scripts/quality_report.py \
-  --ja-srt work/input/input.filled.ja.srt \
+  --ja-srt work/input/input.ja.srt \
   --zh-srt outputs/input.zh.srt \
   --audio work/input/input.wav \
-  --fills-metadata work/input/input.fills.tsv \
   --output work/input/input.quality.txt
 ```
+
+如果已经运行过 `fill_ja_srt_gaps.py`，翻译、ASS 和质量报告都改用
+`work/input/input.filled.ja.srt`；质量报告可额外传入
+`--fills-metadata work/input/input.fills.tsv`。
 
 只翻译前 N 条，方便调试：
 
@@ -434,6 +414,9 @@ Missing HY-MT model: .../models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 
 通常是 `llama-cpp-python` 没有启用 CUDA，或者 GPU 显存不足导致部分层在 CPU 上运行。先按“CUDA 验证”检查。如果无法使用 GPU，可以继续用 CPU 跑，但长视频会很慢。
 
+如果是 ASR 阶段 CUDA 显存不足，优先降低 `--main-local-batch-size`；默认值
+`24` 偏向吞吐量，小显存显卡可能需要改成 `12`、`8` 或 `4`。
+
 ### `ffmpeg` 找不到
 
 安装 FFmpeg，并确认命令在 `PATH` 中：
@@ -453,11 +436,13 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### 字幕有漏识别
 
-一键流程默认会跑二阶段补漏。它不是只按空窗长度判断，而是先用 VAD 分析 WAV 音频，只对空窗内存在足够语音的片段重新识别。`fast` 和 `coverage` 用全片 VAD 做这个判断。长视频中如果全片 VAD 漏掉字幕空窗里的真实语音，可以用 `high-coverage` 或 `--gap-local-vad`，它会对每个达到长度门槛的空窗直接跑局部 VAD；想更激进时，可以降低空窗阈值或语音时长阈值。
+默认主识别已经用滑窗局部 VAD 扫描整段 WAV。想提高召回，可以降低
+`--main-local-vad-threshold`（默认 0.5）或提高 `--main-local-vad-max-cluster-gap`
+（默认 2.0）；两者都会选中更多音频，也会带来更多需要过滤的幻觉。
 
-`--main-local-vad` 是另一条实验性的第一阶段识别路径：它先用滑窗局部 VAD 扫描整段
-WAV，再进入 Whisper 主识别。这个模式适合调参实验，但可能把接近整片的视频音频重新送入
-Whisper，导致比默认第一阶段更慢。
+如果还想覆盖更多语音，加 `--gap-fill`。它会对字幕空窗跑局部 VAD，只对存在足够语音的
+空窗重新识别，并复用主识别清洗过滤。但补漏最容易出现在轻声、背景音或近静音处，
+所以更慢，也更可能产生听错或幻觉字幕。
 
 ### 字幕有重复内容
 
@@ -493,5 +478,4 @@ Whisper，导致比默认第一阶段更慢。
 ## 后续改进
 
 - 给 Whisper 增加可配置 `initial_prompt`，用于人名、术语、作品名和场景词。
-- 增加可配置术语表，用于修正常见人名、地名、作品名和专有词。
 - 继续改进 ASR 后处理，减少孤立符号、无意义短字幕、乱码和片尾噪声词。
