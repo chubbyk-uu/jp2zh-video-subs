@@ -631,25 +631,18 @@ def main_local_vad_dry_run(audio_path: Path, args: argparse.Namespace) -> None:
     report_main_local_vad_stats(audio_duration, speech_intervals, clusters, clips)
 
 
-def transcribe_audio_with_sliding_vad(model, audio_path: Path, args: argparse.Namespace) -> list[SubtitleEntry]:
-    audio = decode_audio(str(audio_path), sampling_rate=16000)
-    audio_duration = len(audio) / 16000
-    speech_intervals, clusters, clips = build_main_local_clips(audio, audio_duration, args)
-    report_main_local_vad_stats(audio_duration, speech_intervals, clusters, clips)
+def transcribe_clips_batched(model, audio, clips: list[Interval], args: argparse.Namespace) -> list[SubtitleEntry]:
+    """Transcribe a list of speech clips in one batched pass.
+
+    Shared by the sliding main pass and gap fill. clip_timestamps makes
+    BatchedInferencePipeline transcribe only those regions (vad_filter is ignored)
+    and return segment timestamps already in full-audio coordinates, so no per-clip
+    loop or manual offset is needed. without_timestamps=False keeps Whisper's natural
+    per-sentence segmentation (the batched default collapses each clip into one line)."""
     if not clips:
         return []
-
-    # One batched pass over the selected clips. clip_timestamps makes
-    # BatchedInferencePipeline transcribe only those regions (vad_filter is
-    # ignored) and return segment timestamps already in full-audio coordinates,
-    # so no per-clip loop or manual offset is needed.
     batched = BatchedInferencePipeline(model)
     clip_timestamps = [{"start": clip.start, "end": clip.end} for clip in clips]
-    print(
-        f"Main local VAD: transcribing {len(clips)} clips "
-        f"(batched, batch_size={args.main_local_batch_size})",
-        flush=True,
-    )
     segments, _ = batched.transcribe(
         audio,
         language=args.language,
@@ -659,8 +652,6 @@ def transcribe_audio_with_sliding_vad(model, audio_path: Path, args: argparse.Na
         word_timestamps=True,
         condition_on_previous_text=False,
         batch_size=args.main_local_batch_size,
-        # Keep Whisper's natural per-sentence segmentation; the batched default
-        # (without_timestamps=True) collapses each clip into one long line.
         without_timestamps=False,
     )
     return collect_entries(
@@ -673,46 +664,26 @@ def transcribe_audio_with_sliding_vad(model, audio_path: Path, args: argparse.Na
     )
 
 
-def transcribe_audio(model, audio_path: Path, args: argparse.Namespace) -> list[SubtitleEntry]:
-    if getattr(args, "main_local_vad", False):
-        entries = transcribe_audio_with_sliding_vad(model, audio_path, args)
-        if getattr(args, "filter_hallucinations", True):
-            entries, filtered = filter_main_local_entries(entries, args)
-            if filtered:
-                samples = ", ".join(entry.text[:24] for entry in filtered[:5])
-                print(f"Filtered main-ASR hallucinations/noise: {len(filtered)} ({samples})", flush=True)
-        return entries
+def transcribe_audio_with_sliding_vad(model, audio_path: Path, args: argparse.Namespace) -> list[SubtitleEntry]:
+    audio = decode_audio(str(audio_path), sampling_rate=16000)
+    audio_duration = len(audio) / 16000
+    speech_intervals, clusters, clips = build_main_local_clips(audio, audio_duration, args)
+    report_main_local_vad_stats(audio_duration, speech_intervals, clusters, clips)
+    print(
+        f"Main local VAD: transcribing {len(clips)} clips "
+        f"(batched, batch_size={args.main_local_batch_size})",
+        flush=True,
+    )
+    return transcribe_clips_batched(model, audio, clips, args)
 
-    vad_parameters = None
-    if not args.no_vad:
-        vad_parameters = {
-            "threshold": args.vad_threshold,
-            "min_silence_duration_ms": args.vad_min_silence_ms,
-            "speech_pad_ms": args.vad_speech_pad_ms,
-        }
-    segments, info = model.transcribe(
-        str(audio_path),
-        language=args.language,
-        beam_size=5,
-        vad_filter=not args.no_vad,
-        vad_parameters=vad_parameters,
-        word_timestamps=True,
-        condition_on_previous_text=args.condition_on_previous_text,
-    )
-    print(f"Detected language: {info.language} ({info.language_probability:.2f})")
-    entries = collect_entries(
-        segments,
-        args.min_duration,
-        args.max_duration,
-        args.max_chars,
-        args.max_word_gap,
-        args.max_merge_gap,
-    )
+
+def transcribe_audio(model, audio_path: Path, args: argparse.Namespace) -> list[SubtitleEntry]:
+    entries = transcribe_audio_with_sliding_vad(model, audio_path, args)
     if getattr(args, "filter_hallucinations", True):
-        entries, filtered = filter_hallucination_entries(entries)
+        entries, filtered = filter_main_local_entries(entries, args)
         if filtered:
             samples = ", ".join(entry.text[:24] for entry in filtered[:5])
-            print(f"Filtered main-ASR hallucinations: {len(filtered)} ({samples})", flush=True)
+            print(f"Filtered main-ASR hallucinations/noise: {len(filtered)} ({samples})", flush=True)
     return entries
 
 
@@ -722,15 +693,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", default=str(DEFAULT_MODEL))
     parser.add_argument("--language", default="ja")
-    parser.add_argument("--condition-on-previous-text", action="store_true")
     parser.add_argument("--min-duration", type=float, default=1.0)
     parser.add_argument("--max-duration", type=float, default=10.0)
     parser.add_argument("--max-chars", type=int, default=42)
-    parser.add_argument("--no-vad", action="store_true")
-    parser.add_argument("--vad-threshold", type=float, default=0.05)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    parser.add_argument("--main-local-vad", action="store_true")
     parser.add_argument(
         "--main-local-vad-dry-run",
         action="store_true",
@@ -779,7 +746,7 @@ def main() -> None:
     model = load_model(args.model)
     entries = transcribe_audio(model, args.audio, args)
     entries = resolve_overlaps(entries)
-    if getattr(args, "main_local_vad", False) and args.near_dup_similarity > 0:
+    if args.near_dup_similarity > 0:
         before = len(entries)
         entries = drop_adjacent_near_duplicates(
             entries, args.near_dup_max_gap, args.near_dup_similarity, args.near_dup_squeeze_seconds

@@ -52,78 +52,6 @@ class VideoJob:
     audio: Path
 
 
-@dataclass(frozen=True)
-class PipelinePreset:
-    vad_threshold: float
-    fill_min_gap_seconds: float
-    fill_min_speech_seconds: float
-    fill_max_clip_seconds: float
-    fill_min_chars: int
-    fill_min_clip_seconds: float
-    fill_clip_pad_seconds: float
-    fill_existing_pad_seconds: float
-    fill_max_existing_overlap_seconds: float
-    fill_max_cluster_gap: float
-    fill_duplicate_window_seconds: float
-    gap_local_vad_threshold: float = 0.30
-    gap_local_vad: bool = False
-
-
-PIPELINE_PRESETS = {
-    "fast": PipelinePreset(
-        vad_threshold=0.20,
-        fill_min_gap_seconds=6.0,
-        fill_min_speech_seconds=2.0,
-        fill_max_clip_seconds=45.0,
-        fill_min_chars=3,
-        fill_min_clip_seconds=1.0,
-        fill_clip_pad_seconds=0.6,
-        fill_existing_pad_seconds=0.3,
-        fill_max_existing_overlap_seconds=0.5,
-        fill_max_cluster_gap=2.0,
-        fill_duplicate_window_seconds=8.0,
-    ),
-    "coverage": PipelinePreset(
-        vad_threshold=0.05,
-        fill_min_gap_seconds=2.0,
-        fill_min_speech_seconds=1.0,
-        fill_max_clip_seconds=45.0,
-        fill_min_chars=3,
-        fill_min_clip_seconds=0.6,
-        fill_clip_pad_seconds=0.4,
-        fill_existing_pad_seconds=0.1,
-        fill_max_existing_overlap_seconds=1.0,
-        fill_max_cluster_gap=2.0,
-        fill_duplicate_window_seconds=8.0,
-    ),
-    "high-coverage": PipelinePreset(
-        vad_threshold=0.05,
-        fill_min_gap_seconds=2.0,
-        fill_min_speech_seconds=1.0,
-        fill_max_clip_seconds=45.0,
-        fill_min_chars=3,
-        fill_min_clip_seconds=0.6,
-        fill_clip_pad_seconds=0.4,
-        fill_existing_pad_seconds=0.1,
-        fill_max_existing_overlap_seconds=1.0,
-        fill_max_cluster_gap=2.0,
-        fill_duplicate_window_seconds=8.0,
-        gap_local_vad_threshold=0.60,
-        gap_local_vad=True,
-    ),
-}
-
-
-def apply_preset_defaults(args: argparse.Namespace) -> None:
-    preset = PIPELINE_PRESETS[args.preset]
-    for field, value in preset.__dict__.items():
-        if field == "gap_local_vad":
-            args.gap_local_vad = args.gap_local_vad or value
-            continue
-        if getattr(args, field) is None:
-            setattr(args, field, value)
-
-
 def extract_audio(video: Path, audio: Path) -> None:
     audio.parent.mkdir(parents=True, exist_ok=True)
     run(["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)])
@@ -235,8 +163,6 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.max_duration),
             "--max-chars",
             str(args.max_chars),
-            "--vad-threshold",
-            str(args.vad_threshold),
             "--vad-min-silence-ms",
             str(args.vad_min_silence_ms),
             "--vad-speech-pad-ms",
@@ -278,12 +204,6 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             "--max-merge-gap",
             str(args.max_merge_gap),
         ]
-        if args.main_local_vad:
-            transcribe_command.append("--main-local-vad")
-        if args.condition_on_previous_text:
-            transcribe_command.append("--condition-on-previous-text")
-        if args.no_vad:
-            transcribe_command.append("--no-vad")
         run(transcribe_command)
     else:
         # Transcribe and gap-fill share one loaded Whisper model in a single process.
@@ -317,8 +237,6 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.max_word_gap),
             "--max-merge-gap",
             str(args.max_merge_gap),
-            "--vad-threshold",
-            str(args.vad_threshold),
             "--vad-min-silence-ms",
             str(args.vad_min_silence_ms),
             "--vad-speech-pad-ms",
@@ -347,12 +265,8 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.fill_min_speech_seconds),
             "--min-clip-seconds",
             str(args.fill_min_clip_seconds),
-            "--max-clip-seconds",
-            str(args.fill_max_clip_seconds),
             "--max-cluster-gap",
             str(args.fill_max_cluster_gap),
-            "--clip-pad-seconds",
-            str(args.fill_clip_pad_seconds),
             "--existing-pad-seconds",
             str(args.fill_existing_pad_seconds),
             "--max-existing-overlap-seconds",
@@ -386,14 +300,6 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             "--max-fill-compression-ratio",
             str(args.max_fill_compression_ratio),
         ]
-        if args.gap_local_vad:
-            fill_command.append("--gap-local-vad")
-        if args.main_local_vad:
-            fill_command.append("--main-local-vad")
-        if args.condition_on_previous_text:
-            fill_command.append("--condition-on-previous-text")
-        if args.no_vad:
-            fill_command.append("--no-vad")
         run(fill_command)
         translate_input_srt = filled_ja_srt
 
@@ -449,8 +355,6 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(audio),
             "--output",
             str(report_path),
-            "--vad-threshold",
-            str(args.vad_threshold),
             "--vad-min-silence-ms",
             str(args.vad_min_silence_ms),
             "--vad-speech-pad-ms",
@@ -498,13 +402,7 @@ def main() -> None:
     parser.add_argument(
         "--gap-fill",
         action="store_true",
-        help="Run the legacy audio-aware gap fill stage after transcription (off by default)",
-    )
-    parser.add_argument(
-        "--preset",
-        choices=sorted(PIPELINE_PRESETS),
-        default="coverage",
-        help="Pipeline tuning preset: fast is quicker and more conservative; coverage is the default; high-coverage enables gap-local VAD.",
+        help="Run the audio-aware gap fill stage after transcription (off by default)",
     )
     parser.add_argument(
         "--bilingual",
@@ -525,27 +423,11 @@ def main() -> None:
     parser.add_argument("--lead-out-seconds", type=float, default=0.5)
     parser.add_argument("--min-display-seconds", type=float, default=1.5)
     parser.add_argument("--language", default="ja")
-    parser.add_argument("--condition-on-previous-text", action="store_true")
     parser.add_argument("--min-duration", type=float, default=1.0)
     parser.add_argument("--max-duration", type=float, default=10.0)
     parser.add_argument("--max-chars", type=int, default=42)
-    parser.add_argument("--no-vad", action="store_true")
-    parser.add_argument(
-        "--vad-threshold",
-        type=float,
-        default=None,
-        help="Silero VAD speech probability cutoff (lower keeps quieter speech). "
-        "0.05 recovers soft conversational lines that 0.35 silently drops; going "
-        "lower (e.g. 0.02) starts placing text over near-silence.",
-    )
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    parser.add_argument(
-        "--main-local-vad",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Sliding-window main-pass VAD (default); use --no-main-local-vad for the legacy whole-file VAD pass",
-    )
     parser.add_argument("--main-local-vad-threshold", type=float, default=0.5)
     parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
     parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
@@ -557,18 +439,15 @@ def main() -> None:
     parser.add_argument("--main-local-batch-size", type=int, default=24)
     parser.add_argument("--max-word-gap", type=float, default=6.0)
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
-    parser.add_argument("--fill-min-gap-seconds", type=float)
-    parser.add_argument("--fill-min-speech-seconds", type=float)
-    parser.add_argument("--fill-max-clip-seconds", type=float)
-    parser.add_argument("--fill-min-chars", type=int)
-    parser.add_argument("--fill-min-clip-seconds", type=float)
-    parser.add_argument("--fill-clip-pad-seconds", type=float)
-    parser.add_argument("--fill-existing-pad-seconds", type=float)
-    parser.add_argument("--fill-max-existing-overlap-seconds", type=float)
-    parser.add_argument("--fill-max-cluster-gap", type=float)
-    parser.add_argument("--fill-duplicate-window-seconds", type=float)
-    parser.add_argument("--gap-local-vad", action="store_true")
-    parser.add_argument("--gap-local-vad-threshold", type=float, default=None)
+    parser.add_argument("--fill-min-gap-seconds", type=float, default=2.0)
+    parser.add_argument("--fill-min-speech-seconds", type=float, default=1.0)
+    parser.add_argument("--fill-min-chars", type=int, default=3)
+    parser.add_argument("--fill-min-clip-seconds", type=float, default=0.6)
+    parser.add_argument("--fill-existing-pad-seconds", type=float, default=0.1)
+    parser.add_argument("--fill-max-existing-overlap-seconds", type=float, default=1.0)
+    parser.add_argument("--fill-max-cluster-gap", type=float, default=2.0)
+    parser.add_argument("--fill-duplicate-window-seconds", type=float, default=8.0)
+    parser.add_argument("--gap-local-vad-threshold", type=float, default=0.60)
     parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=10.0)
     parser.add_argument("--gap-local-vad-window-seconds", type=float, default=5.0)
     parser.add_argument("--gap-local-vad-window-overlap-seconds", type=float, default=3.0)
@@ -588,7 +467,6 @@ def main() -> None:
         help="Do not copy the final subtitle file (SRT, or ASS with --bilingual) next to the input video",
     )
     args = parser.parse_args()
-    apply_preset_defaults(args)
 
     if args.keep_audio:
         print("Warning: --keep-audio is deprecated and has no effect (audio is kept by default).", flush=True)

@@ -21,7 +21,6 @@ from hallucination_filters import (
 from quality_report import (
     Entry,
     parse_srt,
-    speech_intervals_from_audio,
 )
 from srt_utils import (
     Interval,
@@ -38,6 +37,7 @@ from transcribe_ja_srt import (
     load_model,
     resolve_overlaps,
     transcribe_audio,
+    transcribe_clips_batched,
     write_entries,
 )
 
@@ -152,44 +152,6 @@ def split_clip_with_overlap(
     return clips
 
 
-
-
-def transcribe_clip(
-    model,
-    audio,
-    clip: Interval,
-    args: argparse.Namespace,
-) -> list[SubtitleEntry]:
-    sample_rate = 16000
-    start_sample = max(0, int(clip.start * sample_rate))
-    end_sample = min(len(audio), int(clip.end * sample_rate))
-    if end_sample <= start_sample:
-        return []
-
-    segments, _ = model.transcribe(
-        audio[start_sample:end_sample],
-        language=args.language,
-        beam_size=args.beam_size,
-        vad_filter=False,
-        word_timestamps=True,
-        condition_on_previous_text=False,
-        temperature=args.temperature,
-        no_speech_threshold=args.no_speech_threshold,
-        log_prob_threshold=args.log_prob_threshold,
-        compression_ratio_threshold=args.compression_ratio_threshold,
-    )
-    entries = collect_entries(
-        segments,
-        args.min_duration,
-        args.max_duration,
-        args.max_chars,
-        args.max_word_gap,
-        args.max_merge_gap,
-    )
-    for entry in entries:
-        entry.start += clip.start
-        entry.end += clip.start
-    return entries
 
 
 def confidence_text(value: float | None) -> str:
@@ -343,15 +305,6 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
 
     audio = decode_audio(str(args.audio), sampling_rate=16000)
     audio_duration = len(audio) / 16000
-    speech_intervals = []
-    if not args.gap_local_vad:
-        speech_intervals = speech_intervals_from_audio(
-            args.audio,
-            args.vad_threshold,
-            args.vad_min_silence_ms,
-            args.vad_speech_pad_ms,
-            audio=audio,
-        )
     covered = existing_intervals(existing_entries, args.existing_pad_seconds)
     gaps = srt_gaps_with_boundaries(existing_entries, audio_duration)
 
@@ -360,39 +313,31 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
     for gap in gaps:
         if gap.end - gap.start < args.min_gap_seconds:
             continue
-        if args.gap_local_vad:
-            gap_seconds = gap.end - gap.start
-            if gap_seconds >= args.gap_local_vad_window_min_gap_seconds:
-                gap_speech_intervals = speech_intervals_from_sliding_gap_audio(
-                    audio,
-                    gap,
-                    args.gap_local_vad_threshold,
-                    args.vad_min_silence_ms,
-                    args.vad_speech_pad_ms,
-                    args.gap_local_vad_window_seconds,
-                    args.gap_local_vad_window_overlap_seconds,
-                )
-                clip_source = "gap_local_vad_window"
-            else:
-                gap_speech_intervals = speech_intervals_from_gap_audio(
-                    audio,
-                    gap,
-                    args.gap_local_vad_threshold,
-                    args.vad_min_silence_ms,
-                    args.vad_speech_pad_ms,
-                )
-                clip_source = "gap_local_vad"
-            speech_seconds = overlap_seconds(gap, gap_speech_intervals)
-            clip_pad_seconds = args.gap_local_asr_pad_seconds
-            max_clip_seconds = args.gap_local_asr_max_clip_seconds
-            clip_overlap_seconds = args.gap_local_asr_overlap_seconds
+        gap_seconds = gap.end - gap.start
+        if gap_seconds >= args.gap_local_vad_window_min_gap_seconds:
+            gap_speech_intervals = speech_intervals_from_sliding_gap_audio(
+                audio,
+                gap,
+                args.gap_local_vad_threshold,
+                args.vad_min_silence_ms,
+                args.vad_speech_pad_ms,
+                args.gap_local_vad_window_seconds,
+                args.gap_local_vad_window_overlap_seconds,
+            )
+            clip_source = "gap_local_vad_window"
         else:
-            gap_speech_intervals = speech_intervals
-            speech_seconds = overlap_seconds(gap, gap_speech_intervals)
-            clip_pad_seconds = args.clip_pad_seconds
-            max_clip_seconds = args.max_clip_seconds
-            clip_overlap_seconds = 0.0
-            clip_source = "full_vad"
+            gap_speech_intervals = speech_intervals_from_gap_audio(
+                audio,
+                gap,
+                args.gap_local_vad_threshold,
+                args.vad_min_silence_ms,
+                args.vad_speech_pad_ms,
+            )
+            clip_source = "gap_local_vad"
+        speech_seconds = overlap_seconds(gap, gap_speech_intervals)
+        clip_pad_seconds = args.gap_local_asr_pad_seconds
+        max_clip_seconds = args.gap_local_asr_max_clip_seconds
+        clip_overlap_seconds = args.gap_local_asr_overlap_seconds
         if speech_seconds < args.min_speech_seconds:
             continue
         stats.candidate_gaps += 1
@@ -411,42 +356,50 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
 
     filled_entries: list[SubtitleEntry] = []
     metadata: list[FillMetadata] = []
-    for index, candidate in enumerate(candidate_clips, start=1):
-        clip = candidate.interval
-        print(
-            f"[{index}/{len(candidate_clips)}] fill {clip.start:.2f}-{clip.end:.2f} "
-            f"{candidate.source}",
-            flush=True,
-        )
-        raw_entries = transcribe_clip(model, audio, clip, args)
-        stats.raw_entries += len(raw_entries)
-        for entry in raw_entries:
-            if exceeds_compression_ratio(entry, args.max_fill_compression_ratio):
-                stats.filtered_entries += 1
-                metadata.append(FillMetadata(entry, clip, "filtered", "compression_ratio"))
-                continue
-            if looks_like_noise(entry.text, args.min_fill_chars):
-                stats.filtered_entries += 1
-                metadata.append(FillMetadata(entry, clip, "filtered", "noise"))
-                continue
-            if looks_like_hallucination(entry.text):
-                stats.filtered_entries += 1
-                metadata.append(FillMetadata(entry, clip, "filtered", "hallucination"))
-                continue
-            if is_duplicate_of_nearby(entry, existing_entries, args.duplicate_window_seconds):
-                stats.filtered_entries += 1
-                metadata.append(FillMetadata(entry, clip, "filtered", "duplicate_existing"))
-                continue
-            if is_duplicate_of_nearby(entry, filled_entries, args.duplicate_window_seconds):
-                stats.filtered_entries += 1
-                metadata.append(FillMetadata(entry, clip, "filtered", "duplicate_fill"))
-                continue
-            if overlap_seconds(Interval(entry.start, entry.end), covered) > args.max_existing_overlap_seconds:
-                stats.filtered_entries += 1
-                metadata.append(FillMetadata(entry, clip, "filtered", "overlap_existing"))
-                continue
-            filled_entries.append(entry)
-            metadata.append(FillMetadata(entry, clip, "kept", ""))
+
+    clips = [candidate.interval for candidate in candidate_clips]
+    print(
+        f"Gap fill: transcribing {len(clips)} clips "
+        f"(batched, batch_size={args.main_local_batch_size})",
+        flush=True,
+    )
+    raw_entries = transcribe_clips_batched(model, audio, clips, args)
+    stats.raw_entries = len(raw_entries)
+
+    def source_clip(entry: SubtitleEntry) -> Interval:
+        for candidate in candidate_clips:
+            if candidate.interval.start <= entry.start < candidate.interval.end:
+                return candidate.interval
+        return Interval(entry.start, entry.end)
+
+    for entry in raw_entries:
+        clip = source_clip(entry)
+        if exceeds_compression_ratio(entry, args.max_fill_compression_ratio):
+            stats.filtered_entries += 1
+            metadata.append(FillMetadata(entry, clip, "filtered", "compression_ratio"))
+            continue
+        if looks_like_noise(entry.text, args.min_fill_chars):
+            stats.filtered_entries += 1
+            metadata.append(FillMetadata(entry, clip, "filtered", "noise"))
+            continue
+        if looks_like_hallucination(entry.text):
+            stats.filtered_entries += 1
+            metadata.append(FillMetadata(entry, clip, "filtered", "hallucination"))
+            continue
+        if is_duplicate_of_nearby(entry, existing_entries, args.duplicate_window_seconds):
+            stats.filtered_entries += 1
+            metadata.append(FillMetadata(entry, clip, "filtered", "duplicate_existing"))
+            continue
+        if is_duplicate_of_nearby(entry, filled_entries, args.duplicate_window_seconds):
+            stats.filtered_entries += 1
+            metadata.append(FillMetadata(entry, clip, "filtered", "duplicate_fill"))
+            continue
+        if overlap_seconds(Interval(entry.start, entry.end), covered) > args.max_existing_overlap_seconds:
+            stats.filtered_entries += 1
+            metadata.append(FillMetadata(entry, clip, "filtered", "overlap_existing"))
+            continue
+        filled_entries.append(entry)
+        metadata.append(FillMetadata(entry, clip, "kept", ""))
 
     # Frequency backstop: repeated ordinary dialogue is only auto-dropped when the
     # repeated group is also low-confidence or likely near-silence hallucination.
@@ -513,20 +466,13 @@ def main() -> None:
     parser.add_argument("--no-vad", action="store_true")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--language", default="ja")
-    parser.add_argument("--beam-size", type=int, default=5)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--no-speech-threshold", type=float, default=0.6)
-    parser.add_argument("--log-prob-threshold", type=float, default=-1.0)
-    parser.add_argument("--compression-ratio-threshold", type=float, default=2.4)
     parser.add_argument("--min-duration", type=float, default=1.0)
     parser.add_argument("--max-duration", type=float, default=10.0)
     parser.add_argument("--max-chars", type=int, default=42)
     parser.add_argument("--max-word-gap", type=float, default=6.0)
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
-    parser.add_argument("--vad-threshold", type=float, default=0.05)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    parser.add_argument("--main-local-vad", action="store_true")
     parser.add_argument("--main-local-vad-threshold", type=float, default=0.5)
     parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
     parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
@@ -536,11 +482,6 @@ def main() -> None:
     parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
     parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
     parser.add_argument("--main-local-batch-size", type=int, default=24)
-    parser.add_argument(
-        "--gap-local-vad",
-        action="store_true",
-        help="Use per-gap local VAD for gap-fill candidates instead of full-audio VAD.",
-    )
     parser.add_argument("--gap-local-vad-threshold", type=float, default=0.60)
     parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=10.0)
     parser.add_argument("--gap-local-vad-window-seconds", type=float, default=5.0)
@@ -556,9 +497,7 @@ def main() -> None:
     parser.add_argument("--min-clip-seconds", type=float, default=0.6)
     parser.add_argument("--min-fill-chars", type=int, default=3)
     parser.add_argument("--max-fill-compression-ratio", type=float, default=25.0)
-    parser.add_argument("--max-clip-seconds", type=float, default=45.0)
     parser.add_argument("--max-cluster-gap", type=float, default=2.0)
-    parser.add_argument("--clip-pad-seconds", type=float, default=0.4)
     parser.add_argument("--existing-pad-seconds", type=float, default=0.1)
     parser.add_argument("--max-existing-overlap-seconds", type=float, default=1.0)
     parser.add_argument("--duplicate-window-seconds", type=float, default=8.0)

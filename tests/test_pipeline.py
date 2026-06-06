@@ -1,84 +1,8 @@
-from argparse import Namespace
 import threading
 
 import pytest
 
-from video_to_zh_srt import apply_preset_defaults, run_pipeline
-
-
-def preset_args(preset: str, **overrides):
-    args = Namespace(
-        preset=preset,
-        vad_threshold=None,
-        fill_min_gap_seconds=None,
-        fill_min_speech_seconds=None,
-        fill_max_clip_seconds=None,
-        fill_min_chars=None,
-        fill_min_clip_seconds=None,
-        fill_clip_pad_seconds=None,
-        fill_existing_pad_seconds=None,
-        fill_max_existing_overlap_seconds=None,
-        fill_max_cluster_gap=None,
-        fill_duplicate_window_seconds=None,
-        gap_local_vad_threshold=None,
-        gap_local_vad=False,
-    )
-    for key, value in overrides.items():
-        setattr(args, key, value)
-    return args
-
-
-def test_apply_preset_defaults_uses_coverage_by_default():
-    args = preset_args("coverage")
-    apply_preset_defaults(args)
-    assert args.vad_threshold == 0.05
-    assert args.fill_min_gap_seconds == 2.0
-    assert args.fill_min_speech_seconds == 1.0
-    assert args.fill_min_clip_seconds == 0.6
-    assert args.fill_clip_pad_seconds == 0.4
-    assert args.fill_existing_pad_seconds == 0.1
-    assert args.fill_max_existing_overlap_seconds == 1.0
-    assert args.gap_local_vad_threshold == 0.30
-    assert args.gap_local_vad is False
-
-
-def test_apply_preset_defaults_uses_fast_conservative_values():
-    args = preset_args("fast")
-    apply_preset_defaults(args)
-    assert args.vad_threshold == 0.20
-    assert args.fill_min_gap_seconds == 6.0
-    assert args.fill_min_speech_seconds == 2.0
-    assert args.fill_min_clip_seconds == 1.0
-    assert args.fill_clip_pad_seconds == 0.6
-    assert args.fill_existing_pad_seconds == 0.3
-    assert args.fill_max_existing_overlap_seconds == 0.5
-    assert args.gap_local_vad_threshold == 0.30
-    assert args.gap_local_vad is False
-
-
-def test_apply_preset_defaults_high_coverage_enables_gap_local_vad():
-    args = preset_args("high-coverage")
-    apply_preset_defaults(args)
-    assert args.vad_threshold == 0.05
-    assert args.fill_min_gap_seconds == 2.0
-    assert args.gap_local_vad_threshold == 0.60
-    assert args.gap_local_vad is True
-
-
-def test_apply_preset_defaults_keeps_explicit_overrides():
-    args = preset_args(
-        "fast",
-        vad_threshold=0.25,
-        fill_min_gap_seconds=8.0,
-        gap_local_vad_threshold=0.45,
-        gap_local_vad=True,
-    )
-    apply_preset_defaults(args)
-    assert args.vad_threshold == 0.25
-    assert args.fill_min_gap_seconds == 8.0
-    assert args.fill_min_speech_seconds == 2.0
-    assert args.gap_local_vad_threshold == 0.45
-    assert args.gap_local_vad is True
+from video_to_zh_srt import run_pipeline
 
 
 def test_run_pipeline_processes_all_jobs_in_order():

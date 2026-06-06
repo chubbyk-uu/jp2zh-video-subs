@@ -211,18 +211,14 @@ def test_srt_gaps_with_boundaries_includes_leading_and_trailing_gaps():
     assert [(gap.start, gap.end) for gap in gaps] == [(0.0, 10), (20, 30), (40, 50)]
 
 
-def test_gap_local_vad_skips_full_audio_vad(monkeypatch, tmp_path):
+def test_fill_uses_gap_local_vad_for_each_gap(monkeypatch, tmp_path):
     calls = {"local": 0}
-
-    def fail_full_vad(*args, **kwargs):
-        raise AssertionError("full-audio VAD should not run when gap_local_vad is enabled")
 
     def local_vad(*args, **kwargs):
         calls["local"] += 1
         return []
 
     monkeypatch.setattr(fill_module, "decode_audio", lambda *args, **kwargs: [0] * 160000)
-    monkeypatch.setattr(fill_module, "speech_intervals_from_audio", fail_full_vad)
     monkeypatch.setattr(fill_module, "speech_intervals_from_gap_audio", local_vad)
 
     args = Namespace(
@@ -231,13 +227,11 @@ def test_gap_local_vad_skips_full_audio_vad(monkeypatch, tmp_path):
         output=tmp_path / "out.srt",
         fills_output=tmp_path / "fills.srt",
         fills_metadata_output=tmp_path / "fills.tsv",
-        vad_threshold=0.05,
         vad_min_silence_ms=500,
         vad_speech_pad_ms=400,
         existing_pad_seconds=0.1,
         min_gap_seconds=2.0,
         min_speech_seconds=1.0,
-        gap_local_vad=True,
         gap_local_vad_threshold=0.3,
         gap_local_vad_window_min_gap_seconds=10.0,
         gap_local_vad_window_seconds=5.0,
@@ -245,8 +239,7 @@ def test_gap_local_vad_skips_full_audio_vad(monkeypatch, tmp_path):
         gap_local_asr_pad_seconds=3.0,
         gap_local_asr_max_clip_seconds=45.0,
         gap_local_asr_overlap_seconds=5.0,
-        clip_pad_seconds=0.4,
-        max_clip_seconds=45.0,
+        main_local_batch_size=24,
         max_cluster_gap=2.0,
         max_existing_overlap_seconds=1.0,
         min_clip_seconds=0.6,
