@@ -210,15 +210,18 @@ This can recover more speech, but it further increases processing time and can
 surface more low-confidence fill candidates.
 
 Experimental main-pass sliding VAD is available with `--main-local-vad`. It
-uses 8-second windows with 4-second overlap at `--main-local-vad-threshold 0.50`,
+uses 8-second windows with 4-second overlap at `--main-local-vad-threshold 0.40`,
 then builds ASR clips from merged speech clusters (`--main-local-asr-pad-seconds 0.3`,
-`--main-local-asr-max-clip-seconds 45`, `--main-local-asr-overlap-seconds 5`).
-`--main-local-vad-dry-run` prints the selection coverage (clusters, clips, covered
-minutes, coverage%) without running Whisper, for fast parameter sweeps. When this
-mode is on, the same cleaning the gap-fill stage applies (compression-ratio, noise,
-adjacent-duplicate, and repeat-hallucination filters) is run on the main-pass output
-so it can stand in for main+fill. This is not part of any preset; keep it for
-controlled experiments rather than default batch processing.
+`--main-local-vad-max-cluster-gap 1.0`, `--main-local-asr-max-clip-seconds 30`). Clips
+are transcribed in one batched pass (`BatchedInferencePipeline`,
+`--main-local-batch-size 20`); clips are capped at the 30s Whisper window so none are
+truncated. `--main-local-vad-dry-run` prints the selection coverage (clusters, clips,
+covered minutes, coverage%) without running Whisper, for fast parameter sweeps. When
+this mode is on, the same cleaning the gap-fill stage applies (compression-ratio,
+noise/looping-repetition, adjacent-duplicate, and repeat-hallucination filters, plus a
+`--min-cue-seconds 0.3` floor that drops overlap-squeezed flash cues) is run on the
+main-pass output so it can stand in for main+fill. This is not part of any preset; keep
+it for controlled experiments rather than default batch processing.
 
 Because the aggressive gates re-transcribe near-silent clips, gap fill also drops Whisper
 hallucinations. The hard list is limited to platform/subtitle boilerplate (`ご視聴…`,

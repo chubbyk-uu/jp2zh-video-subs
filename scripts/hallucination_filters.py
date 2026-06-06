@@ -114,6 +114,19 @@ def repeated_character_ratio(text: str) -> float:
     return max(compact.count(char) for char in set(compact)) / len(compact)
 
 
+# A short token (1-4 chars) repeated 5+ times in a row, e.g. "はいはいはい…×12" or the
+# "うんうんうん…" tail of "おやすみなさいうんうん…". This is Whisper's in-segment repetition
+# loop; punctuation between tokens (、) is stripped first so "はい、はい、…" still matches.
+LOOPING_REPETITION_RE = re.compile(r"(.{1,4}?)\1{4,}")
+LOOP_STRIP_RE = re.compile(r"[、。．，！？!?…・ー～~\s　]+")
+
+
+def looks_like_looping_repetition(text: str) -> bool:
+    core = LOOP_STRIP_RE.sub("", text)
+    match = LOOPING_REPETITION_RE.search(core)
+    return bool(match) and len(match.group(0)) >= 6
+
+
 def looks_like_noise(text: str, min_text_chars: int) -> bool:
     compact = compact_text(text)
     if not compact:
@@ -126,6 +139,8 @@ def looks_like_noise(text: str, min_text_chars: int) -> bool:
             if token * (len(compact) // size) == compact:
                 return True
     if len(compact) >= 5 and repeated_character_ratio(compact) >= 0.8:
+        return True
+    if looks_like_looping_repetition(text):
         return True
     if re.fullmatch(r"[あぁアァうぅウゥんンはハぁー〜…・。、,.!?！？]+", compact) and len(compact) >= 4:
         return True
@@ -168,13 +183,20 @@ def repeated_hallucination_texts(
             groups.setdefault(key, []).append(entry)
 
     repeated: set[str] = set()
+
+    # High-risk greetings/thanks hallucinations come with varying trailing junk
+    # (おやすみなさいはい, おやすみなさいああ, おやすみなさいうんうん, ...), so each exact
+    # variant counts as 1 and never reaches the cap. Count by the core phrase across
+    # every variant that contains it, then drop all of those variants together.
+    if high_risk_max_repeats > 0:
+        for phrase in HIGH_RISK_REPEAT_PHRASES:
+            variant_keys = [key for key in groups if phrase in key]
+            total = sum(len(groups[key]) for key in variant_keys)
+            if total >= high_risk_max_repeats:
+                repeated.update(variant_keys)
+
     for key, group in groups.items():
-        if (
-            high_risk_max_repeats > 0
-            and is_high_risk_repeat_phrase(key)
-            and len(group) >= high_risk_max_repeats
-        ):
-            repeated.add(key)
+        if key in repeated:
             continue
         if len(group) < min_repeats:
             continue

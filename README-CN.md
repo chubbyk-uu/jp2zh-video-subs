@@ -200,12 +200,14 @@ Whisper 幻觉概率也会升高；对准确率要求高时，建议复查
 它可能找回更多语音，但会进一步拉长处理时间，也可能带来更多低置信度补漏候选。
 
 实验性的主识别滑窗 VAD 可用 `--main-local-vad` 开启。它会用 8 秒窗口、4 秒重叠、
-`--main-local-vad-threshold 0.50` 扫描整段 WAV，再把合并后的语音簇送入 ASR
-（`--main-local-asr-pad-seconds 0.3`、`--main-local-asr-max-clip-seconds 45`、
-`--main-local-asr-overlap-seconds 5`）。`--main-local-vad-dry-run` 可只打印选区覆盖率
-（语音簇、片段数、覆盖分钟、覆盖率%）而不跑 Whisper，便于快速扫参。开启该模式时，
-补漏阶段的同一套清洗（压缩比、噪声、相邻去重、重复幻觉过滤）会作用于主识别输出，
-使其能替代"主识别+补漏"。该功能不属于任何预设，更适合受控实验，不建议作为默认批处理方式。
+`--main-local-vad-threshold 0.40` 扫描整段 WAV，再把合并后的语音簇送入 ASR
+（`--main-local-asr-pad-seconds 0.3`、`--main-local-vad-max-cluster-gap 1.0`、
+`--main-local-asr-max-clip-seconds 30`）。所有片段用 `BatchedInferencePipeline` 一次批量
+转写（`--main-local-batch-size 20`），并限制在 30 秒 Whisper 窗口内以免被截断。
+`--main-local-vad-dry-run` 可只打印选区覆盖率（语音簇、片段数、覆盖分钟、覆盖率%）而不跑
+Whisper，便于快速扫参。开启该模式时，补漏阶段的同一套清洗（压缩比、噪声/循环重复、相邻去重、
+重复幻觉过滤，外加 `--min-cue-seconds 0.3` 丢弃 overlap 挤压出的一闪而过 cue）会作用于主识别
+输出，使其能替代"主识别+补漏"。该功能不属于任何预设，更适合受控实验，不建议作为默认批处理方式。
 
 由于激进门槛会对接近静音的片段重新识别，补漏阶段同时会过滤 Whisper 幻觉。硬过滤清单只保留平台/字幕套话
 （`ご視聴…`、`チャンネル登録`、`それではまた` 等）以及明显字幕标签/语境错配短语

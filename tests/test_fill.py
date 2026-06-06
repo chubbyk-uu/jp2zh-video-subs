@@ -153,6 +153,27 @@ def test_repeated_hallucination_texts_drops_extreme_high_risk_repeats():
     assert repeated == {"おやすみなさい"}
 
 
+def test_repeated_hallucination_texts_groups_high_risk_variants_by_core():
+    # Greeting hallucinations carry varying trailing junk, so each exact variant
+    # appears only once; they must still be counted together by the core phrase.
+    entries = [
+        SubtitleEntry(0.0, 1.0, "おやすみなさいはい", -0.2, 0.1),
+        SubtitleEntry(10.0, 11.0, "おやすみなさいああ", -0.2, 0.1),
+        SubtitleEntry(20.0, 21.0, "おやすみなさいうんうん", -0.2, 0.1),
+        SubtitleEntry(30.0, 31.0, "今日はいい天気ですね", -0.2, 0.1),
+    ]
+
+    repeated = repeated_hallucination_texts(
+        entries,
+        min_repeats=10,
+        no_speech_prob_at_least=0.75,
+        avg_logprob_at_most=-0.8,
+        high_risk_max_repeats=3,
+    )
+
+    assert repeated == {"おやすみなさいはい", "おやすみなさいああ", "おやすみなさいうんうん"}
+
+
 def test_fill_gaps_with_no_entries_writes_empty_output(tmp_path):
     # A silent/music-only clip transcribes to nothing; gap filling must not crash,
     # it should just emit an empty SRT (no audio decode or model load needed).
@@ -242,3 +263,12 @@ def test_gap_local_vad_skips_full_audio_vad(monkeypatch, tmp_path):
     fill_gaps(args, model=object(), existing_entries=existing)
 
     assert calls["local"] == 1
+
+
+def test_looks_like_looping_repetition_catches_in_segment_loops():
+    from hallucination_filters import looks_like_noise
+    assert looks_like_noise("はい、はい、はい、はい、はい、はい、はい、はい、はい、はい、はい", 1)
+    assert looks_like_noise("おやすみなさいうんうんうんうんうんうんうんうんうんうん", 1)
+    # natural short responses and normal sentences survive
+    assert not looks_like_noise("はい", 1)
+    assert not looks_like_noise("今日はいい天気ですね", 1)

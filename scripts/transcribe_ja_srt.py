@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from faster_whisper.audio import decode_audio
-from faster_whisper import WhisperModel
+from faster_whisper import BatchedInferencePipeline, WhisperModel
 
 from hallucination_filters import (
     exceeds_compression_ratio,
@@ -522,35 +522,6 @@ def split_clip_with_overlap(
     return clips
 
 
-def transcribe_audio_clip(model, audio, clip: Interval, args: argparse.Namespace) -> list[SubtitleEntry]:
-    sample_rate = 16000
-    start_sample = max(0, int(clip.start * sample_rate))
-    end_sample = min(len(audio), int(clip.end * sample_rate))
-    if end_sample <= start_sample:
-        return []
-
-    segments, _ = model.transcribe(
-        audio[start_sample:end_sample],
-        language=args.language,
-        beam_size=5,
-        vad_filter=False,
-        word_timestamps=True,
-        condition_on_previous_text=False,
-    )
-    entries = collect_entries(
-        segments,
-        args.min_duration,
-        args.max_duration,
-        args.max_chars,
-        args.max_word_gap,
-        args.max_merge_gap,
-    )
-    for entry in entries:
-        entry.start += clip.start
-        entry.end += clip.start
-    return entries
-
-
 def build_main_local_clips(
     audio,
     audio_duration: float,
@@ -572,6 +543,10 @@ def build_main_local_clips(
         args.main_local_asr_pad_seconds,
         audio_duration,
     )
+    # BatchedInferencePipeline transcribes each clip in one 30s Whisper window and
+    # silently drops anything past 30s ("Segment N is longer than 30 seconds..."),
+    # so never hand it a clip longer than that window.
+    max_clip_seconds = min(args.main_local_asr_max_clip_seconds, 30.0)
     clips: list[Interval] = []
     for cluster in clusters:
         if cluster.end - cluster.start < args.main_local_min_clip_seconds:
@@ -579,7 +554,7 @@ def build_main_local_clips(
         clips.extend(
             split_clip_with_overlap(
                 cluster,
-                args.main_local_asr_max_clip_seconds,
+                max_clip_seconds,
                 args.main_local_asr_overlap_seconds,
             )
         )
@@ -626,11 +601,41 @@ def transcribe_audio_with_sliding_vad(model, audio_path: Path, args: argparse.Na
     audio_duration = len(audio) / 16000
     speech_intervals, clusters, clips = build_main_local_clips(audio, audio_duration, args)
     report_main_local_vad_stats(audio_duration, speech_intervals, clusters, clips)
-    entries: list[SubtitleEntry] = []
-    for index, clip in enumerate(clips, start=1):
-        print(f"[{index}/{len(clips)}] main {clip.start:.2f}-{clip.end:.2f}", flush=True)
-        entries.extend(transcribe_audio_clip(model, audio, clip, args))
-    return entries
+    if not clips:
+        return []
+
+    # One batched pass over the selected clips. clip_timestamps makes
+    # BatchedInferencePipeline transcribe only those regions (vad_filter is
+    # ignored) and return segment timestamps already in full-audio coordinates,
+    # so no per-clip loop or manual offset is needed.
+    batched = BatchedInferencePipeline(model)
+    clip_timestamps = [{"start": clip.start, "end": clip.end} for clip in clips]
+    print(
+        f"Main local VAD: transcribing {len(clips)} clips "
+        f"(batched, batch_size={args.main_local_batch_size})",
+        flush=True,
+    )
+    segments, _ = batched.transcribe(
+        audio,
+        language=args.language,
+        beam_size=5,
+        vad_filter=False,
+        clip_timestamps=clip_timestamps,
+        word_timestamps=True,
+        condition_on_previous_text=False,
+        batch_size=args.main_local_batch_size,
+        # Keep Whisper's natural per-sentence segmentation; the batched default
+        # (without_timestamps=True) collapses each clip into one long line.
+        without_timestamps=False,
+    )
+    return collect_entries(
+        segments,
+        args.min_duration,
+        args.max_duration,
+        args.max_chars,
+        args.max_word_gap,
+        args.max_merge_gap,
+    )
 
 
 def transcribe_audio(model, audio_path: Path, args: argparse.Namespace) -> list[SubtitleEntry]:
@@ -696,14 +701,15 @@ def main() -> None:
         action="store_true",
         help="Run sliding VAD selection only, print coverage stats, and exit (no Whisper)",
     )
-    parser.add_argument("--main-local-vad-threshold", type=float, default=0.50)
+    parser.add_argument("--main-local-vad-threshold", type=float, default=0.4)
     parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
     parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
     parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=1.0)
     parser.add_argument("--main-local-asr-pad-seconds", type=float, default=0.3)
-    parser.add_argument("--main-local-asr-max-clip-seconds", type=float, default=45.0)
+    parser.add_argument("--main-local-asr-max-clip-seconds", type=float, default=30.0)
     parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
     parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
+    parser.add_argument("--main-local-batch-size", type=int, default=20)
     # Consolidated main-pass cleaning (so the sliding pass can replace main+gap-fill).
     parser.add_argument("--main-min-chars", type=int, default=1)
     parser.add_argument("--main-max-compression-ratio", type=float, default=25.0)
@@ -712,6 +718,7 @@ def main() -> None:
     parser.add_argument("--hallucination-repeat-no-speech-prob", type=float, default=0.75)
     parser.add_argument("--hallucination-repeat-avg-logprob", type=float, default=-0.80)
     parser.add_argument("--hallucination-high-risk-max-repeats", type=int, default=3)
+    parser.add_argument("--min-cue-seconds", type=float, default=0.3)
     parser.add_argument("--max-word-gap", type=float, default=6.0)
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
     parser.add_argument(
@@ -733,7 +740,16 @@ def main() -> None:
 
     model = load_model(args.model)
     entries = transcribe_audio(model, args.audio, args)
-    write_entries(resolve_overlaps(entries), args.output)
+    entries = resolve_overlaps(entries)
+    if args.min_cue_seconds > 0:
+        # Overlapping clip-boundary cues get trimmed to near-zero by resolve_overlaps
+        # and then flash by (long text, ~0.02s on screen) because the next cue leaves
+        # no room for min-display to lengthen them. Drop those squeezed-out artifacts.
+        before = len(entries)
+        entries = [entry for entry in entries if entry.end - entry.start >= args.min_cue_seconds]
+        if before != len(entries):
+            print(f"Dropped {before - len(entries)} sub-{args.min_cue_seconds}s cues", flush=True)
+    write_entries(entries, args.output)
     print(f"Wrote {args.output}")
 
 
