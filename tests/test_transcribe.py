@@ -2,6 +2,7 @@ import types
 
 from transcribe_ja_srt import (
     SubtitleEntry,
+    drop_adjacent_near_duplicates,
     estimate_display_duration,
     filter_hallucination_entries,
     filter_main_local_entries,
@@ -51,6 +52,29 @@ def test_filter_main_local_drops_adjacent_duplicate_from_clip_overlap():
     # The overlap duplicate at 10.5 is removed; the far-apart one at 30s survives.
     assert [(e.start, e.text) for e in kept] == [(10.0, "こんにちは"), (30.0, "こんにちは")]
     assert len(dropped) == 1
+
+
+def test_drop_adjacent_near_duplicates_keeps_fuller_twin():
+    entries = [
+        SubtitleEntry(10.0, 10.36, "いやいや今選んでください"),       # squeezed twin
+        SubtitleEntry(10.36, 11.94, "いやいや、今選んでください"),     # fuller version
+        SubtitleEntry(20.0, 21.0, "はい"),
+        SubtitleEntry(21.0, 23.0, "ありがとうございます"),            # adjacent but unrelated
+    ]
+    kept = drop_adjacent_near_duplicates(entries, max_gap=0.5, similarity=0.6, squeeze_seconds=0.8)
+    assert [e.text for e in kept] == ["いやいや、今選んでください", "はい", "ありがとうございます"]
+
+
+def test_drop_adjacent_near_duplicates_keeps_genuine_repeats_at_normal_duration():
+    # Real repeated moaning at normal durations must NOT be deduped — only the
+    # squeezed flash twin is removed.
+    entries = [
+        SubtitleEntry(10.0, 11.5, "気持ちいい"),
+        SubtitleEntry(11.5, 13.0, "気持ちいい、気持ちいい"),
+        SubtitleEntry(13.0, 14.5, "気持ちいい?"),
+    ]
+    kept = drop_adjacent_near_duplicates(entries, max_gap=0.5, similarity=0.6, squeeze_seconds=0.8)
+    assert len(kept) == 3
 
 
 def test_filter_main_local_repeat_backstop_drops_high_risk_signoff():

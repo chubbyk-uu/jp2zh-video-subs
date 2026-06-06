@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -369,6 +370,40 @@ def filter_main_local_entries(
     return survivors, filtered
 
 
+def drop_adjacent_near_duplicates(
+    entries: list[SubtitleEntry],
+    max_gap: float,
+    similarity: float,
+    squeeze_seconds: float,
+) -> list[SubtitleEntry]:
+    """Drop the squeezed twin of a near-duplicate cue pair that overlapping clips produce.
+
+    The exact-match dedup misses pairs that differ by only a comma or particle
+    ("いやいや今選んでください" vs "いやいや、今選んでください"); resolve_overlaps then squeezes
+    one of them to a flash. Only drop when the shorter twin is squeezed below
+    squeeze_seconds, so genuinely repeated dialogue (気持ちいい / 気持ちいい? at normal
+    durations) is left alone — only the flash artifact is removed."""
+    ordered = sorted(entries, key=lambda item: (item.start, item.end))
+    kept: list[SubtitleEntry] = []
+    for entry in ordered:
+        if kept:
+            previous = kept[-1]
+            if entry.start - previous.end <= max_gap:
+                ratio = difflib.SequenceMatcher(
+                    None, compact_text(previous.text), compact_text(entry.text)
+                ).ratio()
+                prev_dur = previous.end - previous.start
+                cur_dur = entry.end - entry.start
+                if ratio >= similarity and min(prev_dur, cur_dur) < squeeze_seconds:
+                    # Drop whichever twin is the squeezed flash; keep the fuller one.
+                    if cur_dur < prev_dur:
+                        continue
+                    kept[-1] = entry
+                    continue
+        kept.append(entry)
+    return kept
+
+
 def resolve_overlaps(entries: list[SubtitleEntry]) -> list[SubtitleEntry]:
     """Sort entries and trim any overlap so each subtitle ends no later than the next starts.
 
@@ -719,6 +754,9 @@ def main() -> None:
     parser.add_argument("--hallucination-repeat-avg-logprob", type=float, default=-0.80)
     parser.add_argument("--hallucination-high-risk-max-repeats", type=int, default=3)
     parser.add_argument("--min-cue-seconds", type=float, default=0.3)
+    parser.add_argument("--near-dup-max-gap", type=float, default=0.5)
+    parser.add_argument("--near-dup-similarity", type=float, default=0.6)
+    parser.add_argument("--near-dup-squeeze-seconds", type=float, default=0.8)
     parser.add_argument("--max-word-gap", type=float, default=6.0)
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
     parser.add_argument(
@@ -741,6 +779,13 @@ def main() -> None:
     model = load_model(args.model)
     entries = transcribe_audio(model, args.audio, args)
     entries = resolve_overlaps(entries)
+    if getattr(args, "main_local_vad", False) and args.near_dup_similarity > 0:
+        before = len(entries)
+        entries = drop_adjacent_near_duplicates(
+            entries, args.near_dup_max_gap, args.near_dup_similarity, args.near_dup_squeeze_seconds
+        )
+        if before != len(entries):
+            print(f"Dropped {before - len(entries)} adjacent near-duplicate cues", flush=True)
     if args.min_cue_seconds > 0:
         # Overlapping clip-boundary cues get trimmed to near-zero by resolve_overlaps
         # and then flash by (long text, ~0.02s on screen) because the next cue leaves
