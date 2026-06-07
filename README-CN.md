@@ -163,7 +163,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 - 抽取音频：默认保留 WAV，方便复查和调参
 
 没有流程预设了，唯一的批处理滑窗主识别就是默认。用 `--main-local-vad-threshold`
-（默认 0.5，调低能捞回更多轻声但幻觉变多）和 `--main-local-vad-max-cluster-gap`
+（默认 0.6，调低能捞回更多轻声但幻觉变多）和 `--main-local-vad-max-cluster-gap`
 （默认 2.0）在召回和干净度之间权衡。
 
 可选的二阶段补漏（`--gap-fill`）会重新检查字幕空窗，捞回偏精度的主识别漏掉的语音。
@@ -176,7 +176,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 它会拉长处理时间，也可能带来更多低置信度、幻觉或听错的候选，对准确率要求高时复查
 `input.quality.txt` 和 `input.fills.tsv`。
 
-主识别用 8 秒窗口、4 秒重叠、`--main-local-vad-threshold 0.5` 扫描整段 WAV，
+主识别用 8 秒窗口、4 秒重叠、`--main-local-vad-threshold 0.6` 扫描整段 WAV，
 再把合并后的语音簇送入 ASR（`--main-local-asr-pad-seconds 0.3`、
 `--main-local-vad-max-cluster-gap 2.0`、`--main-local-asr-max-clip-seconds 30`）。所有片段用
 `BatchedInferencePipeline` 一次批量转写（`--main-local-batch-size 24`），并限制在 30 秒
@@ -438,7 +438,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ### 字幕有漏识别
 
 默认主识别已经用滑窗局部 VAD 扫描整段 WAV。想提高召回，可以降低
-`--main-local-vad-threshold`（默认 0.5）或提高 `--main-local-vad-max-cluster-gap`
+`--main-local-vad-threshold`（默认 0.6）或提高 `--main-local-vad-max-cluster-gap`
 （默认 2.0）；两者都会选中更多音频，也会带来更多需要过滤的幻觉。
 
 如果还想覆盖更多语音，加 `--gap-fill`。它会对字幕空窗跑局部 VAD，只对存在足够语音的

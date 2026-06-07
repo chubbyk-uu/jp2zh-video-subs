@@ -167,7 +167,7 @@ The one-command pipeline uses:
 
 There are no pipeline presets; the single batched sliding-window pass is the
 default. Tune recall vs. cleanliness with `--main-local-vad-threshold` (default
-0.5; lower keeps more quiet speech but adds hallucinations to filter) and
+0.6; lower keeps more quiet speech but adds hallucinations to filter) and
 `--main-local-vad-max-cluster-gap` (default 2.0).
 
 Optional gap fill (`--gap-fill`) re-examines subtitle gaps to recover speech the
@@ -184,7 +184,7 @@ processing time and can surface more low-confidence, hallucinated, or misheard
 candidates, so review `input.quality.txt` and `input.fills.tsv` when accuracy matters.
 
 The main pass uses 8-second windows with 4-second overlap at
-`--main-local-vad-threshold 0.5`, then builds ASR clips from merged speech
+`--main-local-vad-threshold 0.6`, then builds ASR clips from merged speech
 clusters (`--main-local-asr-pad-seconds 0.3`, `--main-local-vad-max-cluster-gap 2.0`,
 `--main-local-asr-max-clip-seconds 30`). Clips are transcribed in one batched pass
 (`BatchedInferencePipeline`, `--main-local-batch-size 24`); clips are capped at the
@@ -479,7 +479,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ### Some Speech Is Missed
 
 The sliding-window main pass already scans the whole WAV with local VAD. If you
-prefer more recall, lower `--main-local-vad-threshold` (default 0.5) or raise
+prefer more recall, lower `--main-local-vad-threshold` (default 0.6) or raise
 `--main-local-vad-max-cluster-gap` (default 2.0); both select more audio at the
 cost of more clips and more hallucinations to filter.
 

@@ -617,7 +617,7 @@ def main() -> None:
     parser.add_argument("--max-merge-gap", type=float, default=1.0)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)
     parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    parser.add_argument("--main-local-vad-threshold", type=float, default=0.5)
+    parser.add_argument("--main-local-vad-threshold", type=float, default=0.6)
     parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
     parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
     parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=2.0)
