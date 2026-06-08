@@ -14,11 +14,14 @@ from typing import Callable, Iterable
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt.py"
+QWEN_TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt_qwen.py"
 TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_hymt.py"
 QUALITY_REPORT_SCRIPT = SCRIPTS_DIR / "quality_report.py"
 FILL_GAPS_SCRIPT = SCRIPTS_DIR / "fill_ja_srt_gaps.py"
 BILINGUAL_SCRIPT = SCRIPTS_DIR / "make_bilingual_ass.py"
 WHISPER_MODEL = PROJECT_ROOT / "models" / "faster-whisper-large-v3"
+QWEN_ASR_MODEL = PROJECT_ROOT / "models" / "Qwen3-ASR-1.7B"
+QWEN_ALIGNER_MODEL = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 TRANSLATE_MODEL = PROJECT_ROOT / "models" / "HY-MT1.5-7B-GGUF" / "HY-MT1.5-7B-Q4_K_M.gguf"
 VIDEO_EXTENSIONS = {
     ".mp4",
@@ -146,7 +149,41 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
     ja_srt = job_dir / f"{video.stem}.ja.srt"
     translate_input_srt = ja_srt
 
-    if not args.gap_fill:
+    if args.asr == "qwen":
+        # Qwen3-ASR full-coverage sliding pass: no VAD gate, no gap fill, minimal
+        # post-processing (it rarely fabricates, so Whisper-style filters are off).
+        transcribe_command = [
+            sys.executable,
+            str(QWEN_TRANSCRIBE_SCRIPT),
+            str(audio),
+            str(ja_srt),
+            "--model",
+            str(QWEN_ASR_MODEL),
+            "--forced-aligner",
+            str(QWEN_ALIGNER_MODEL),
+            "--language",
+            "Japanese" if args.language == "ja" else args.language,
+            "--batch-size",
+            str(args.qwen_batch_size),
+            "--chunk-seconds",
+            str(args.qwen_chunk_seconds),
+            "--chunk-overlap-seconds",
+            str(args.qwen_chunk_overlap_seconds),
+            "--phrase-max-chars",
+            str(args.qwen_phrase_max_chars),
+            "--phrase-max-duration",
+            str(args.qwen_phrase_max_duration),
+            "--phrase-max-internal-gap",
+            str(args.qwen_phrase_max_internal_gap),
+            "--phrase-max-char-seconds",
+            str(args.qwen_phrase_max_char_seconds),
+            "--min-cue-seconds",
+            str(args.min_cue_seconds),
+        ]
+        if args.qwen_filter_hallucinations:
+            transcribe_command.append("--filter-hallucinations")
+        run(transcribe_command)
+    elif not args.gap_fill:
         transcribe_command = [
             sys.executable,
             str(TRANSCRIBE_SCRIPT),
@@ -457,6 +494,25 @@ def main() -> None:
     parser.add_argument("--lead-out-seconds", type=float, default=0.5)
     parser.add_argument("--min-display-seconds", type=float, default=1.5)
     parser.add_argument("--language", default="ja")
+    parser.add_argument(
+        "--asr",
+        choices=("whisper", "qwen"),
+        default="whisper",
+        help="Transcription backend. 'qwen' uses Qwen3-ASR full-coverage sliding pass "
+        "(no VAD gate, no gap fill); downstream translate/bilingual/quality are shared.",
+    )
+    parser.add_argument("--qwen-batch-size", type=int, default=16)
+    parser.add_argument("--qwen-chunk-seconds", type=float, default=30.0)
+    parser.add_argument("--qwen-chunk-overlap-seconds", type=float, default=3.0)
+    parser.add_argument("--qwen-phrase-max-chars", type=int, default=26)
+    parser.add_argument("--qwen-phrase-max-duration", type=float, default=8.0)
+    parser.add_argument("--qwen-phrase-max-internal-gap", type=float, default=2.0)
+    parser.add_argument("--qwen-phrase-max-char-seconds", type=float, default=0.5)
+    parser.add_argument(
+        "--qwen-filter-hallucinations",
+        action="store_true",
+        help="Apply the Whisper-style hallucination/near-duplicate filters to Qwen output (off by default).",
+    )
     parser.add_argument("--min-duration", type=float, default=1.0)
     parser.add_argument("--max-duration", type=float, default=10.0)
     parser.add_argument("--max-chars", type=int, default=42)
@@ -512,6 +568,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.asr == "qwen":
+        # Qwen is a full-coverage pass; gap fill is a Whisper-only stage.
+        if args.gap_fill:
+            print("Note: --gap-fill is ignored with --asr qwen (full-coverage pass).", flush=True)
+        args.gap_fill = False
+
     if args.keep_audio:
         print("Warning: --keep-audio is deprecated and has no effect (audio is kept by default).", flush=True)
     if args.lead_out_seconds < 0:
@@ -528,9 +590,14 @@ def main() -> None:
     if shutil.which("ffmpeg") is None:
         raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")
 
-    require_file(WHISPER_MODEL / "model.bin", "Whisper model")
+    if args.asr == "qwen":
+        require_file(QWEN_ASR_MODEL, "Qwen3-ASR model")
+        require_file(QWEN_ALIGNER_MODEL, "Qwen3 forced aligner")
+        require_file(QWEN_TRANSCRIBE_SCRIPT, "Qwen transcription script")
+    else:
+        require_file(WHISPER_MODEL / "model.bin", "Whisper model")
+        require_file(TRANSCRIBE_SCRIPT, "transcription script")
     require_file(TRANSLATE_MODEL, "HY-MT model")
-    require_file(TRANSCRIBE_SCRIPT, "transcription script")
     require_file(TRANSLATE_SCRIPT, "translation script")
     require_file(QUALITY_REPORT_SCRIPT, "quality report script")
     require_file(FILL_GAPS_SCRIPT, "gap fill script")
