@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+import argparse
+import re
+from pathlib import Path
+
+from llama_cpp import Llama
+
+from translate_srt_hymt import (
+    DEFAULT_GLOSSARY,
+    Entry,
+    GlossaryTerm,
+    HISTORY_RESET_SECONDS,
+    clean_translation,
+    glossary_issues,
+    is_context_sensitive_short_text,
+    normalize_source,
+    parse_srt,
+    write_entry,
+    write_terms_report,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
+DEFAULT_MODEL = PROJECT_ROOT / "models" / "Sakura-14B-Qwen2.5-v1.0-GGUF" / "sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
+
+# Sakura v1.0 (Qwen2.5) was trained on this exact template; the HY-MT instruction
+# format must not be reused. System prompt and the dictionary phrasing are fixed by
+# the model card.
+SAKURA_SYSTEM = (
+    "你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体中文，"
+    "并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。"
+)
+PLAIN_USER = "将下面的日文文本翻译成中文："
+
+
+def relevant_terms(text: str, glossary: tuple[GlossaryTerm, ...]) -> list[GlossaryTerm]:
+    """Glossary terms whose source occurs in `text`, longest-match deduplicated.
+
+    Skips a term whose source is a substring of an already-kept longer source, so a
+    line containing 「ご主人様」 injects only ``ご主人様->主人`` and not the competing
+    bare ``主人->老公`` rule. This mirrors glossary_issues' matching.
+    """
+    kept: list[GlossaryTerm] = []
+    for term in sorted(glossary, key=lambda t: len(t.source), reverse=True):
+        if term.source not in text:
+            continue
+        if any(term.source in k.source or k.source in term.source for k in kept):
+            continue
+        kept.append(term)
+    return kept
+
+
+def sakura_user_prompt(text: str, glossary: tuple[GlossaryTerm, ...]) -> str:
+    """Current-line user turn, with a Sakura GPT dictionary only when terms apply."""
+    terms = relevant_terms(text, glossary)
+    if not terms:
+        return f"{PLAIN_USER}{text}"
+    dict_lines = "\n".join(
+        f"{t.source}->{t.target} #{t.note}" if t.note else f"{t.source}->{t.target}"
+        for t in terms
+    )
+    return (
+        "根据以下术语表（可以为空）：\n"
+        f"{dict_lines}\n"
+        f"将下面的日文文本根据对应关系和备注翻译成中文：{text}"
+    )
+
+
+def build_messages(text: str, history: list[tuple[str, str]], glossary: tuple[GlossaryTerm, ...]) -> list[dict]:
+    messages: list[dict] = [{"role": "system", "content": SAKURA_SYSTEM}]
+    for prev_source, prev_translation in history:
+        messages.append({"role": "user", "content": f"{PLAIN_USER}{prev_source}"})
+        messages.append({"role": "assistant", "content": prev_translation})
+    messages.append({"role": "user", "content": sakura_user_prompt(text, glossary)})
+    return messages
+
+
+def looks_degenerate(source: str, text: str) -> bool:
+    """Detect the runaway/looping output Sakura can produce, which the model card says
+    to fix by raising frequency_penalty."""
+    if not text:
+        return False
+    if len(text) > max(40, 3 * len(source) + 10):
+        return True
+    for unit in range(1, 6):
+        if re.search(r"(.{%d})\1{5,}" % unit, text):
+            return True
+    return False
+
+
+def translate_one(
+    llm: Llama,
+    text: str,
+    history: list[tuple[str, str]] | None = None,
+    glossary: tuple[GlossaryTerm, ...] = DEFAULT_GLOSSARY,
+    frequency_penalty: float = 0.0,
+) -> str:
+    text = normalize_source(text)
+    # Short fillers translate better standalone than swayed by a prior turn.
+    if history is None or is_context_sensitive_short_text(text):
+        history = []
+    result = llm.create_chat_completion(
+        messages=build_messages(text, history, glossary),
+        max_tokens=512,
+        temperature=0.1,
+        top_p=0.3,
+        top_k=40,
+        repeat_penalty=1.0,
+        frequency_penalty=frequency_penalty,
+    )
+    return clean_translation(result["choices"][0]["message"]["content"])
+
+
+def translate_with_retry(
+    llm: Llama,
+    text: str,
+    history: list[tuple[str, str]] | None = None,
+    glossary: tuple[GlossaryTerm, ...] = DEFAULT_GLOSSARY,
+) -> str:
+    translated = translate_one(llm, text, history, glossary)
+    # Official guidance: on degeneration (looping/runaway) raise frequency_penalty.
+    if looks_degenerate(text, translated):
+        translated = translate_one(llm, text, history, glossary, frequency_penalty=0.2)
+    # Kana leak safety: retry standalone with a penalty.
+    if re.search(r"[ぁ-ゟ゠-ヿ]", translated):
+        translated = translate_one(llm, text, [], glossary, frequency_penalty=0.2)
+    # Glossary violation: retry standalone. The per-line dictionary already narrows to
+    # the matched term; dropping history removes competing context.
+    if glossary_issues(text, translated, glossary):
+        retried = translate_one(llm, text, [], glossary)
+        if retried and not glossary_issues(text, retried, glossary):
+            translated = retried
+    return translated
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Translate a Japanese SRT to Chinese with SakuraLLM.")
+    parser.add_argument("input", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--context-size",
+        type=int,
+        default=2,
+        help="Number of prior dialogue turns supplied as chat history. 0 disables context.",
+    )
+    parser.add_argument("--n-gpu-layers", type=int, default=-1)
+    parser.add_argument("--lead-out-seconds", type=float, default=0.0)
+    parser.add_argument("--min-display-seconds", type=float, default=0.0)
+    parser.add_argument("--terms-report", type=Path)
+    parser.add_argument("--no-glossary", action="store_true")
+    parser.add_argument("--no-terms-report", action="store_true")
+    args = parser.parse_args()
+    if args.context_size < 0:
+        raise SystemExit("--context-size must be >= 0")
+    if args.lead_out_seconds < 0 or args.min_display_seconds < 0:
+        raise SystemExit("--lead-out-seconds and --min-display-seconds must be >= 0")
+    if not args.model_path.exists():
+        raise SystemExit(f"Missing Sakura model: {args.model_path}")
+
+    entries = parse_srt(args.input)
+    if args.limit:
+        entries = entries[: args.limit]
+
+    glossary = () if args.no_glossary else DEFAULT_GLOSSARY
+    terms_report_path = args.terms_report if args.terms_report else args.output.with_suffix(".terms.txt")
+
+    llm = Llama(
+        model_path=str(args.model_path),
+        n_ctx=4096,
+        n_gpu_layers=args.n_gpu_layers,
+        verbose=False,
+    )
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("w", encoding="utf-8") as f:
+        history: list[tuple[str, str]] = []
+        previous_end: float | None = None
+        term_issue_rows: list[tuple[Entry, str, list[GlossaryTerm]]] = []
+        for index, entry in enumerate(entries):
+            next_entry = entries[index + 1] if index + 1 < len(entries) else None
+            if previous_end is not None and entry.start - previous_end > HISTORY_RESET_SECONDS:
+                history = []
+            turns = history[-args.context_size :] if args.context_size > 0 else []
+            translated = translate_with_retry(llm, entry.text, turns, glossary)
+            if not translated:
+                translated = entry.text
+            issues = glossary_issues(entry.text, translated, glossary)
+            if issues:
+                term_issue_rows.append((entry, translated, issues))
+            write_entry(f, entry, translated, next_entry, args.lead_out_seconds, args.min_display_seconds)
+            history.append((normalize_source(entry.text), translated))
+            previous_end = entry.end
+            print(f"{entry.index}: {translated}", flush=True)
+
+    print(f"Wrote {args.output}")
+    if not args.no_terms_report and glossary:
+        write_terms_report(terms_report_path, term_issue_rows)
+        print(f"Terminology report: {terms_report_path}")
+
+
+if __name__ == "__main__":
+    main()

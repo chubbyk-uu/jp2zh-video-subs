@@ -9,7 +9,12 @@
 - **`qwen`（默认）**——用 `Qwen3-ASR-1.7B` 出文本内容，配 `Qwen3-ForcedAligner-0.6B` 出时间轴，在按语音切分（VAD 切片）的片段上识别。输出更干净、时间更贴合，是推荐主线。
 - **`whisper`**——旧的 `faster-whisper-large-v3` 滑窗主识别，可选 `--gap-fill` 音频补漏阶段。
 
-逐项对比见 [识别后端：Qwen vs Whisper](#识别后端qwen-vs-whisper)。
+以及两套翻译后端，用 `--translator` 选择：
+
+- **`sakura`（默认）**——`Sakura-14B-Qwen2.5-v1.0`，针对轻小说/galgame 台词训练的日译中模型。中文更自然口语、对关系/语境措辞处理更好，原生支持术语表。
+- **`hymt`**——`HY-MT1.5-7B`，通用翻译模型。
+
+逐项对比见 [识别后端：Qwen vs Whisper](#识别后端qwen-vs-whisper) 和 [翻译后端：Sakura vs HY-MT](#翻译后端sakura-vs-hy-mt)。
 
 ## 项目功能
 
@@ -17,7 +22,7 @@
 
 1. 用 `ffmpeg` 从视频抽取 16 kHz 单声道 WAV 音频。
 2. 用所选识别后端（默认 `qwen`）识别日语并生成日语 SRT。
-3. 用本地 `HY-MT1.5-7B-GGUF` 把日语 SRT 翻译成简体中文字幕 SRT。
+3. 用所选翻译后端（默认 `sakura`）把日语 SRT 翻译成简体中文字幕 SRT。
 4. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
 
 默认的 Qwen 后端用一个宽松的 VAD 按静音切片（VAD 只用来定切片边界，不会把语音过滤掉），分批识别，再用强制对齐器给每句定时。Qwen 很少凭空捏造内容，所以默认关闭 Whisper 那套重量级幻觉过滤，也没有单独的补漏阶段。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
@@ -35,8 +40,9 @@
 ├── models/                         # 本地模型目录，不提交
 │   ├── Qwen3-ASR-1.7B/              # 默认 ASR 模型（文本内容）
 │   ├── Qwen3-ForcedAligner-0.6B/    # 默认对齐器（时间轴）
+│   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # 默认翻译模型
 │   ├── faster-whisper-large-v3/     # 旧版 CTranslate2 Whisper ASR 模型
-│   └── HY-MT1.5-7B-GGUF/            # GGUF 翻译模型
+│   └── HY-MT1.5-7B-GGUF/            # 旧版 GGUF 翻译模型
 ├── outputs/                         # 最终中文字幕输出
 ├── scripts/
 │   ├── video_to_zh_srt.py           # 一键视频到中文字幕
@@ -44,7 +50,8 @@
 │   ├── transcribe_ja_srt.py         # 音频到日语 SRT（旧版 Whisper 后端）
 │   ├── fill_ja_srt_gaps.py          # 基于 WAV 的日语字幕二阶段补漏
 │   ├── quality_report.py            # 字幕质量报告
-│   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕 SRT
+│   ├── translate_srt_sakura.py      # 日语 SRT 到中文字幕（默认 SakuraLLM）
+│   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕（旧版 HY-MT）
 │   ├── retime_existing_subtitles.py # 基于已有产物批量重定时并刷新 ASS
 │   ├── make_bilingual_ass.py        # 双语 ASS（中文在上，日文在下）
 │   └── srt_utils.py                 # 共享的 SRT 解析、时间和区间工具
@@ -107,7 +114,7 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 
 - ASR（文本内容）：[`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
 - ASR（时间轴）：[`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
-- 翻译模型：[`tencent/HY-MT1.5-7B-GGUF`](https://huggingface.co/tencent/HY-MT1.5-7B-GGUF)
+- 翻译模型：[`SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF`](https://huggingface.co/SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF)
 
 下载到脚本默认目录：
 
@@ -121,9 +128,10 @@ hf download Qwen/Qwen3-ASR-1.7B \
 hf download Qwen/Qwen3-ForcedAligner-0.6B \
   --local-dir models/Qwen3-ForcedAligner-0.6B
 
-# 翻译模型（两套后端共用）
-hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
-  --local-dir models/HY-MT1.5-7B-GGUF
+# 默认翻译模型（SakuraLLM，iq4xs 约 12GB 卡可用）
+hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
+  sakura-14b-qwen2.5-v1.0-iq4xs.gguf \
+  --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
 下载完成后，至少应包含：
@@ -134,7 +142,15 @@ models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors
 models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
 models/Qwen3-ForcedAligner-0.6B/config.json
 models/Qwen3-ForcedAligner-0.6B/model.safetensors
-models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
+models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf
+```
+
+旧版 `hymt` 翻译（`--translator hymt`）改用
+[`tencent/HY-MT1.5-7B-GGUF`](https://huggingface.co/tencent/HY-MT1.5-7B-GGUF)：
+
+```bash
+hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
+  --local-dir models/HY-MT1.5-7B-GGUF
 ```
 
 旧版 Whisper 后端（`--asr whisper`）还需要
@@ -216,6 +232,30 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 
 **推荐：** 常规使用保持默认 Qwen 主线。当你确实需要榨出更多轻声/低能量语音、并愿意复查更多不稳定字幕时，用 `--asr whisper --gap-fill`；没有 CUDA 显卡时也用 Whisper（它有 CPU 回退，Qwen 需要 CUDA）。
 
+## 翻译后端：Sakura vs HY-MT
+
+用 `--translator` 选择翻译后端（默认 `sakura`）：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4                   # Sakura（默认）
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt # 旧版 HY-MT
+```
+
+两者都是 GGUF 模型，通过 `llama-cpp-python` 在和 ASR 独立的进程里运行，共用同一套 SRT 解析、对话历史上下文、术语表和显示时序逻辑——只有模型和 prompt 模板不同。
+
+| | **Sakura（默认）** | **HY-MT（`--translator hymt`）** |
+|---|---|---|
+| 模型 | `Sakura-14B-Qwen2.5-v1.0`（轻小说/galgame 日译中） | `HY-MT1.5-7B`（通用翻译） |
+| 风格 | 更自然、口语化的台词 | 偏直译，偶尔生硬 |
+| 语境措辞 | 关系/惯用表达处理更好 | 这类短语容易被字面直译 |
+| 术语表 | 原生 GPT 字典格式，按句注入，遵守可靠 | 作为 system 指令给出，靠重试强制 |
+| 体量/速度 | 14B，略慢 | 7B，略快 |
+| 显存 | ~8–9 GB（iq4xs） | ~5 GB（Q4_K_M） |
+
+两者都修不了 ASR 阶段听错的专名（识别错了翻译救不回来），都依赖识别出的日文本身正确。
+
+**推荐：** 这类日语台词保持默认 Sakura。想要更小更快的模型，或翻译更正式/通用的内容，用 `--translator hymt`。
+
 ## 默认行为
 
 一键流程默认使用：
@@ -225,7 +265,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 - Qwen VAD 阈值：`--qwen-vad-threshold 0.1`（只用于定边界，不掉召回）
 - Qwen 切片长度/重叠：`--qwen-chunk-seconds 30`、`--qwen-chunk-overlap-seconds 3`
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--qwen-filter-hallucinations` 开启）
-- 翻译模型：`models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf`
+- 翻译后端：`sakura`（`models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf`）；用 `--translator hymt` 切换 HY-MT
 - 识别语言：日语 `ja`
 - 翻译上下文：默认带前 2 轮对话历史（上文原文/译文作为对话上文，当前轮只翻当前句）；设为 0 则逐句独立翻译
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
@@ -325,6 +365,12 @@ python scripts/video_to_zh_srt.py path/to/videos/ --output-dir outputs
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper
+```
+
+选择翻译后端（默认 `sakura`），改用 HY-MT：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
 ```
 
 默认 Qwen 后端用固定均匀平铺代替 VAD 切片（更快，漂移略大）：
@@ -446,7 +492,17 @@ python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
   --fills-metadata-output work/input/input.fills.tsv
 ```
 
-已有日语 SRT，只做翻译：
+已有日语 SRT，用默认 Sakura 翻译：
+
+```bash
+python scripts/translate_srt_sakura.py work/input/input.ja.srt \
+  --output outputs/input.zh.srt \
+  --context-size 2 \
+  --lead-out-seconds 0.5 \
+  --min-display-seconds 1.5
+```
+
+或用旧版 HY-MT 翻译（CLI 相同，只换模型）：
 
 ```bash
 python scripts/translate_srt_hymt.py work/input/input.ja.srt \
@@ -520,12 +576,13 @@ python -m pytest tests/ -q
 ```text
 Missing Qwen ASR model: .../models/Qwen3-ASR-1.7B
 Missing Qwen forced aligner: .../models/Qwen3-ForcedAligner-0.6B
+Missing Sakura model: .../models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf
 Missing Whisper model: .../models/faster-whisper-large-v3/model.bin
 Missing HY-MT model: .../models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
-按"下载模型"一节重新下载，并确认目录名和文件名没有改动。Qwen 两个模型只在默认后端需要，
-Whisper 模型只在 `--asr whisper` 时需要。
+按"下载模型"一节重新下载，并确认目录名和文件名没有改动。Qwen 和 Sakura 模型只在默认后端
+需要；Whisper 模型只在 `--asr whisper` 时需要，HY-MT 模型只在 `--translator hymt` 时需要。
 
 ### 翻译速度很慢
 

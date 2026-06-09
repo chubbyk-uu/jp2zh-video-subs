@@ -16,6 +16,7 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt.py"
 QWEN_TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt_qwen.py"
 TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_hymt.py"
+SAKURA_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_sakura.py"
 QUALITY_REPORT_SCRIPT = SCRIPTS_DIR / "quality_report.py"
 FILL_GAPS_SCRIPT = SCRIPTS_DIR / "fill_ja_srt_gaps.py"
 BILINGUAL_SCRIPT = SCRIPTS_DIR / "make_bilingual_ass.py"
@@ -23,6 +24,7 @@ WHISPER_MODEL = PROJECT_ROOT / "models" / "faster-whisper-large-v3"
 QWEN_ASR_MODEL = PROJECT_ROOT / "models" / "Qwen3-ASR-1.7B"
 QWEN_ALIGNER_MODEL = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 TRANSLATE_MODEL = PROJECT_ROOT / "models" / "HY-MT1.5-7B-GGUF" / "HY-MT1.5-7B-Q4_K_M.gguf"
+SAKURA_MODEL = PROJECT_ROOT / "models" / "Sakura-14B-Qwen2.5-v1.0-GGUF" / "sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
 VIDEO_EXTENSIONS = {
     ".mp4",
     ".mkv",
@@ -382,14 +384,20 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
         run(fill_command)
         translate_input_srt = filled_ja_srt
 
+    # Sakura and HY-MT share the same CLI (input, --output, --model-path,
+    # --context-size, --lead-out/--min-display), so only the script and model differ.
+    if args.translator == "sakura":
+        translate_script, translate_model = SAKURA_TRANSLATE_SCRIPT, SAKURA_MODEL
+    else:
+        translate_script, translate_model = TRANSLATE_SCRIPT, TRANSLATE_MODEL
     translate_command = [
         sys.executable,
-        str(TRANSLATE_SCRIPT),
+        str(translate_script),
         str(translate_input_srt),
         "--output",
         str(output),
         "--model-path",
-        str(TRANSLATE_MODEL),
+        str(translate_model),
         "--context-size",
         str(args.context_size),
         "--lead-out-seconds",
@@ -503,6 +511,13 @@ def main() -> None:
     parser.add_argument("--min-display-seconds", type=float, default=1.5)
     parser.add_argument("--language", default="ja")
     parser.add_argument(
+        "--translator",
+        choices=("sakura", "hymt"),
+        default="sakura",
+        help="Translation backend (default sakura). 'sakura' uses SakuraLLM "
+        "(Japanese->Chinese light-novel/galgame model); 'hymt' uses HY-MT1.5-7B.",
+    )
+    parser.add_argument(
         "--asr",
         choices=("whisper", "qwen"),
         default="qwen",
@@ -613,8 +628,12 @@ def main() -> None:
     else:
         require_file(WHISPER_MODEL / "model.bin", "Whisper model")
         require_file(TRANSCRIBE_SCRIPT, "transcription script")
-    require_file(TRANSLATE_MODEL, "HY-MT model")
-    require_file(TRANSLATE_SCRIPT, "translation script")
+    if args.translator == "sakura":
+        require_file(SAKURA_MODEL, "Sakura model")
+        require_file(SAKURA_TRANSLATE_SCRIPT, "Sakura translation script")
+    else:
+        require_file(TRANSLATE_MODEL, "HY-MT model")
+        require_file(TRANSLATE_SCRIPT, "translation script")
     require_file(QUALITY_REPORT_SCRIPT, "quality report script")
     require_file(FILL_GAPS_SCRIPT, "gap fill script")
     if args.bilingual:

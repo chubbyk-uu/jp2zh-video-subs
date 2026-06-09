@@ -9,7 +9,12 @@ It ships two transcription backends, selectable with `--asr`:
 - **`qwen` (default)** — `Qwen3-ASR-1.7B` for content plus `Qwen3-ForcedAligner-0.6B` for timing, over speech-aware (VAD-cut) clips. Cleaner output and tighter timing; this is the recommended main line.
 - **`whisper`** — the legacy `faster-whisper-large-v3` sliding pass with an optional audio-aware `--gap-fill` recall stage.
 
-See [ASR Backends: Qwen vs Whisper](#asr-backends-qwen-vs-whisper) for a feature-by-feature comparison.
+…and two translation backends, selectable with `--translator`:
+
+- **`sakura` (default)** — `Sakura-14B-Qwen2.5-v1.0`, a Japanese→Chinese model trained on light-novel/galgame dialogue. More natural, colloquial output and better handling of relationship/context wording; follows a terminology table natively.
+- **`hymt`** — `HY-MT1.5-7B`, a general translation model.
+
+See [ASR Backends: Qwen vs Whisper](#asr-backends-qwen-vs-whisper) and [Translation Backends: Sakura vs HY-MT](#translation-backends-sakura-vs-hy-mt) for feature-by-feature comparisons.
 
 ## What It Does
 
@@ -17,7 +22,7 @@ The one-command pipeline performs these steps:
 
 1. Extract a 16 kHz mono WAV file from the input video with `ffmpeg`.
 2. Transcribe Japanese audio into a Japanese SRT with the selected ASR backend (`qwen` by default).
-3. Translate the Japanese SRT into Simplified Chinese with local `HY-MT1.5-7B-GGUF`.
+3. Translate the Japanese SRT into Simplified Chinese with the selected translation backend (`sakura` by default).
 4. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles.
 
 The default Qwen backend cuts clips on silence with a loose VAD (used only for clip
@@ -44,8 +49,9 @@ No online API is required for inference. Model files are not included in this re
 ├── models/                         # Local models, not committed
 │   ├── Qwen3-ASR-1.7B/              # Default ASR model (content)
 │   ├── Qwen3-ForcedAligner-0.6B/    # Default aligner (timing)
+│   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # Default translation model
 │   ├── faster-whisper-large-v3/     # Legacy CTranslate2 Whisper ASR model
-│   └── HY-MT1.5-7B-GGUF/            # GGUF translation model
+│   └── HY-MT1.5-7B-GGUF/            # Legacy GGUF translation model
 ├── outputs/                         # Final Chinese SRT files
 ├── scripts/
 │   ├── video_to_zh_srt.py           # One-command video-to-Chinese-SRT pipeline
@@ -53,7 +59,8 @@ No online API is required for inference. Model files are not included in this re
 │   ├── transcribe_ja_srt.py         # WAV/audio to Japanese SRT (legacy Whisper backend)
 │   ├── fill_ja_srt_gaps.py          # Audio-aware Japanese SRT gap filling
 │   ├── quality_report.py            # Subtitle quality report
-│   ├── translate_srt_hymt.py        # Japanese SRT to Chinese SRT
+│   ├── translate_srt_sakura.py      # Japanese SRT to Chinese SRT (default SakuraLLM)
+│   ├── translate_srt_hymt.py        # Japanese SRT to Chinese SRT (legacy HY-MT)
 │   ├── retime_existing_subtitles.py # Retiming + ASS refresh from existing outputs
 │   ├── make_bilingual_ass.py        # Bilingual ASS (Chinese on top, Japanese below)
 │   └── srt_utils.py                 # Shared SRT parsing, timing, and interval helpers
@@ -125,7 +132,7 @@ Default models:
 
 - ASR (content): [`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
 - ASR (timing): [`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
-- Translation: [`tencent/HY-MT1.5-7B-GGUF`](https://huggingface.co/tencent/HY-MT1.5-7B-GGUF)
+- Translation: [`SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF`](https://huggingface.co/SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF)
 
 Download them to the default paths:
 
@@ -139,9 +146,10 @@ hf download Qwen/Qwen3-ASR-1.7B \
 hf download Qwen/Qwen3-ForcedAligner-0.6B \
   --local-dir models/Qwen3-ForcedAligner-0.6B
 
-# Translation model (shared by both backends)
-hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
-  --local-dir models/HY-MT1.5-7B-GGUF
+# Default translation model (SakuraLLM, iq4xs fits ~12 GB cards)
+hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
+  sakura-14b-qwen2.5-v1.0-iq4xs.gguf \
+  --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
 Required files include:
@@ -152,7 +160,15 @@ models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors
 models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
 models/Qwen3-ForcedAligner-0.6B/config.json
 models/Qwen3-ForcedAligner-0.6B/model.safetensors
-models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
+models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf
+```
+
+The legacy `hymt` translator (`--translator hymt`) needs
+[`tencent/HY-MT1.5-7B-GGUF`](https://huggingface.co/tencent/HY-MT1.5-7B-GGUF) instead:
+
+```bash
+hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
+  --local-dir models/HY-MT1.5-7B-GGUF
 ```
 
 The legacy Whisper backend (`--asr whisper`) additionally needs
@@ -246,6 +262,35 @@ Disable the VAD cutting (fall back to uniform 30 s tiling) with `--no-qwen-vad-c
 are willing to review more unstable lines, or when a CUDA GPU is unavailable (Whisper has
 a CPU fallback; Qwen requires CUDA).
 
+## Translation Backends: Sakura vs HY-MT
+
+The translator is chosen with `--translator` (default `sakura`):
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4                   # Sakura (default)
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt # legacy HY-MT
+```
+
+Both run as GGUF models through `llama-cpp-python` in a process separate from ASR, and
+share the same SRT parsing, chat-history context, terminology table, and display-timing
+logic — only the model and prompt template differ.
+
+| | **Sakura (default)** | **HY-MT (`--translator hymt`)** |
+|---|---|---|
+| Model | `Sakura-14B-Qwen2.5-v1.0` (light-novel/galgame JA→ZH) | `HY-MT1.5-7B` (general translation) |
+| Style | More natural, colloquial dialogue | More literal, occasionally stiff |
+| Context wording | Better on relationship/idiomatic phrasing | Can take such phrases too literally |
+| Terminology table | Native GPT-dictionary format, injected per line; followed reliably | Supplied as a system instruction; enforced with a retry |
+| Size / speed | 14B, a little slower | 7B, a little faster |
+| VRAM | ~8–9 GB (iq4xs) | ~5 GB (Q4_K_M) |
+
+Both leave proper-noun mistakes from the ASR stage untouched (neither can fix a misheard
+name), and both depend on the recognised Japanese being correct.
+
+**Recommendation:** keep the default Sakura translator for this kind of Japanese
+dialogue. Use `--translator hymt` if you want a smaller/faster model or are translating
+more formal/general content.
+
 ## Default Behavior
 
 The one-command pipeline uses:
@@ -255,7 +300,7 @@ The one-command pipeline uses:
 - Qwen VAD threshold: `--qwen-vad-threshold 0.1` (boundary placement only, recall-safe)
 - Qwen clip length / overlap: `--qwen-chunk-seconds 30` with `--qwen-chunk-overlap-seconds 3`
 - Whisper-style hallucination filtering on Qwen output: off (opt in with `--qwen-filter-hallucinations`)
-- Translation model: `models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf`
+- Translation backend: `sakura` (`models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf`); use `--translator hymt` for HY-MT
 - Source language: Japanese, `ja`
 - Translation context: previous 2 dialogue turns as chat history (previous source/translation pairs; the current turn carries only the current line). 0 translates each line standalone
 - Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
@@ -373,6 +418,12 @@ Select the ASR backend (default `qwen`); use the legacy Whisper pipeline with:
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper
+```
+
+Select the translation backend (default `sakura`); use HY-MT with:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
 ```
 
 Run the default Qwen backend with fixed uniform tiling instead of VAD-cut clips
@@ -516,7 +567,17 @@ python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
   --fills-metadata-output work/input/input.fills.tsv
 ```
 
-Translate Japanese SRT to Chinese SRT:
+Translate Japanese SRT to Chinese SRT with the default Sakura translator:
+
+```bash
+python scripts/translate_srt_sakura.py work/input/input.ja.srt \
+  --output outputs/input.zh.srt \
+  --context-size 2 \
+  --lead-out-seconds 0.5 \
+  --min-display-seconds 1.5
+```
+
+Or with the legacy HY-MT translator (same CLI, different model):
 
 ```bash
 python scripts/translate_srt_hymt.py work/input/input.ja.srt \
@@ -590,13 +651,14 @@ If you see errors like:
 ```text
 Missing Qwen ASR model: .../models/Qwen3-ASR-1.7B
 Missing Qwen forced aligner: .../models/Qwen3-ForcedAligner-0.6B
+Missing Sakura model: .../models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf
 Missing Whisper model: .../models/faster-whisper-large-v3/model.bin
 Missing HY-MT model: .../models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
-Download the models again and keep the default directory and file names. The Qwen
-models are only required for the default backend; the Whisper model is only required
-for `--asr whisper`.
+Download the models again and keep the default directory and file names. The Qwen and
+Sakura models are only required for the default backends; the Whisper model is only
+required for `--asr whisper` and the HY-MT model only for `--translator hymt`.
 
 ### Translation Is Slow
 
