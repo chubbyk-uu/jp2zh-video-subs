@@ -43,24 +43,33 @@ class GlossaryTerm:
     forbidden: tuple[str, ...] = ()
 
 
+# 带 様/さん 尊称的「ご主人様」是主仆/角色称呼，译「主人」；不带尊称的「主人」(しゅじん)
+# 是妻子指自己丈夫，译「老公」。两条源词有子串重叠，匹配按最长优先（様 形式先匹配，
+# 裸「主人」跳过），所以尊称形式必须排在裸词前面。
 DEFAULT_GLOSSARY = (
     GlossaryTerm(
         source="ご主人様",
         target="主人",
-        note="称呼语境中的专有称呼；不要译为配偶称呼或普通敬称。",
-        forbidden=("丈夫", "先生"),
-    ),
-    GlossaryTerm(
-        source="ご主人さん",
-        target="主人",
-        note="称呼语境中的专有称呼；不要译为配偶称呼或普通敬称。",
-        forbidden=("丈夫", "先生"),
+        note="主仆/角色尊称",
+        forbidden=("老公", "丈夫"),
     ),
     GlossaryTerm(
         source="主人様",
         target="主人",
-        note="称呼语境中的专有称呼；不要译为配偶称呼或普通敬称。",
-        forbidden=("丈夫", "先生"),
+        note="主仆/角色尊称",
+        forbidden=("老公", "丈夫"),
+    ),
+    GlossaryTerm(
+        source="ご主人さん",
+        target="主人",
+        note="主仆/角色尊称",
+        forbidden=("老公", "丈夫"),
+    ),
+    GlossaryTerm(
+        source="主人",
+        target="老公",
+        note="妻子称自己丈夫",
+        forbidden=("主人", "师傅"),
     ),
 )
 
@@ -118,7 +127,8 @@ def glossary_instruction(glossary: tuple[GlossaryTerm, ...]) -> str:
         return ""
     lines = ["术语规则，不要输出规则本身："]
     for term in glossary:
-        lines.append(f"- {term.source}={term.target}")
+        note = f"（{term.note}）" if term.note else ""
+        lines.append(f"- {term.source}={term.target}{note}")
     return "\n" + "\n".join(lines) + "\n"
 
 
@@ -236,6 +246,22 @@ def translate_with_retry(
             "译文中不能出现任何日文假名或片假名；人名请音译成中文。",
             glossary,
         )
+    # The glossary listing alone does not always overrule the model (e.g. it keeps
+    # rendering bare 主人 as "主人" instead of "老公"). When a forbidden rendering
+    # slips through, retry once with an instruction naming the exact correction and
+    # keep it only if it actually resolves the violation.
+    issues = glossary_issues(text, translated, glossary)
+    if issues:
+        rules = "；".join(
+            f"“{term.source}”必须译为“{term.target}”，绝不能译为“{'/'.join(term.forbidden)}”"
+            for term in issues
+        )
+        # Retry with only the violated terms as glossary so the competing rule
+        # (e.g. ご主人様=主人) is dropped from the prompt and cannot pull the bare
+        # 主人=老公 case back to the wrong rendering.
+        retried = translate_one(llm, text, history, f"严格遵守以下术语：{rules}。", tuple(issues))
+        if retried and not glossary_issues(text, retried, glossary):
+            translated = retried
     return translated
 
 
@@ -268,7 +294,7 @@ def main() -> None:
     parser.add_argument(
         "--context-size",
         type=int,
-        default=1,
+        default=2,
         help="Number of prior dialogue turns (previous source/translation pairs) supplied "
         "as chat history for context. 0 disables context (translate each line standalone).",
     )
