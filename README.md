@@ -77,9 +77,10 @@ Verified environment:
 Recommended hardware:
 
 - GPU: NVIDIA GPU with around 12 GB VRAM is a comfortable target. The default Qwen
-  backend (1.7B ASR + 0.6B aligner) fits in roughly 12 GB at the default batch size and
-  needs less if you lower `--qwen-batch-size`; the legacy Whisper backend fits in about
-  10 GB. Translation runs in a separate process, so it does not stack on top of ASR.
+  backend (1.7B ASR + 0.6B aligner) peaks near 11.5 GB at the default `--qwen-batch-size 24`;
+  on a 12 GB card that is tight, so lower it to `16` if you hit out-of-memory. The legacy
+  Whisper backend fits in about 10 GB. Translation runs in a separate process, so it does
+  not stack on top of ASR.
 - CPU: 8 cores or more.
 - RAM: 16 GB minimum, 32 GB recommended.
 - Disk: at least 20 GB free for the default models and outputs.
@@ -237,7 +238,7 @@ Disable the VAD cutting (fall back to uniform 30 s tiling) with `--no-qwen-vad-c
 | Recall on quiet speech | Good; no separate recall stage needed | Add `--gap-fill` to push recall further |
 | Proper nouns / names | Weaker — can mishear names and rare terms | Similar weakness; neither is reliable on unseen names |
 | Post-processing | Minimal (overlap + flash-cue hygiene); opt into Whisper-style filters with `--qwen-filter-hallucinations` | Full compression/looping/duplicate/hallucination filtering |
-| VRAM | 1.7B + 0.6B, ~12 GB at default batch (less with smaller `--qwen-batch-size`) | large-v3, ~10 GB (less with smaller `--main-local-batch-size`) |
+| VRAM | 1.7B + 0.6B, ~11.5 GB at default `--qwen-batch-size 24` (lower to `16` on 12 GB cards) | large-v3, ~10 GB (less with smaller `--main-local-batch-size`) |
 | Cost of VAD cutting | ~2× clips vs uniform tiling, so the main pass is a bit slower in exchange for less drift | n/a |
 
 **Recommendation:** keep the default Qwen line for general use. Use `--asr whisper`

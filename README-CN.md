@@ -67,7 +67,7 @@
 
 推荐硬件：
 
-- GPU：建议 NVIDIA GPU，显存 12 GB 左右即可。默认 Qwen 后端（1.7B 识别 + 0.6B 对齐）在默认批大小下约占 12 GB，调小 `--qwen-batch-size` 还能更省；旧版 Whisper 后端约 10 GB。翻译是独立进程，不会叠加在识别之上。
+- GPU：建议 NVIDIA GPU，显存 12 GB 左右即可。默认 Qwen 后端（1.7B 识别 + 0.6B 对齐）在默认 `--qwen-batch-size 24` 下峰值约 11.5 GB；12 GB 卡偏紧，遇到显存不足把它降到 `16`。旧版 Whisper 后端约 10 GB。翻译是独立进程，不会叠加在识别之上。
 - CPU：建议 8 核以上。
 - 内存：建议 16 GB 以上，32 GB 更稳。
 - 磁盘：至少预留 20 GB，用于模型和生成文件。
@@ -211,7 +211,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 | 轻声召回 | 好；不需要单独召回阶段 | 加 `--gap-fill` 进一步提升 |
 | 专有名词/人名 | 偏弱——可能听错人名和生僻词 | 同样弱；两者对没见过的人名都不可靠 |
 | 后处理 | 极简（重叠 + 一闪而过 cue 清理）；想要 Whisper 那套过滤用 `--qwen-filter-hallucinations` | 完整的压缩比/循环/去重/幻觉过滤 |
-| 显存 | 1.7B + 0.6B，默认批约 12 GB（调小 `--qwen-batch-size` 更省） | large-v3，约 10 GB（调小 `--main-local-batch-size` 更省） |
+| 显存 | 1.7B + 0.6B，默认 `--qwen-batch-size 24` 约 11.5 GB（12 GB 卡降到 `16`） | large-v3，约 10 GB（调小 `--main-local-batch-size` 更省） |
 | VAD 切片代价 | 切片数约为均匀平铺的 2 倍，主识别略慢，换来更小漂移 | 不适用 |
 
 **推荐：** 常规使用保持默认 Qwen 主线。当你确实需要榨出更多轻声/低能量语音、并愿意复查更多不稳定字幕时，用 `--asr whisper --gap-fill`；没有 CUDA 显卡时也用 Whisper（它有 CPU 回退，Qwen 需要 CUDA）。

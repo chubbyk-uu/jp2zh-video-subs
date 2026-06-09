@@ -487,7 +487,7 @@ def main() -> None:
     parser.add_argument("--language", default="Japanese")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16")
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=24)
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--chunk-seconds", type=float, default=30.0)
     parser.add_argument("--chunk-overlap-seconds", type=float, default=3.0)

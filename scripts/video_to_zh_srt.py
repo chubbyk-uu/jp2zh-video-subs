@@ -510,7 +510,7 @@ def main() -> None:
         "clips (no gap fill); 'whisper' is the legacy sliding+gap-fill pipeline. "
         "Downstream translate/bilingual/quality are shared.",
     )
-    parser.add_argument("--qwen-batch-size", type=int, default=16)
+    parser.add_argument("--qwen-batch-size", type=int, default=24)
     parser.add_argument("--qwen-chunk-seconds", type=float, default=30.0)
     parser.add_argument("--qwen-chunk-overlap-seconds", type=float, default=3.0)
     parser.add_argument("--qwen-phrase-max-chars", type=int, default=26)
