@@ -4,17 +4,25 @@
 
 这个项目用于从本地视频生成简体中文字幕 SRT。当前默认流程面向日语语音，下载好模型后，推理过程全部在本地完成。
 
+项目提供两套识别后端，用 `--asr` 选择：
+
+- **`qwen`（默认）**——用 `Qwen3-ASR-1.7B` 出文本内容，配 `Qwen3-ForcedAligner-0.6B` 出时间轴，在按语音切分（VAD 切片）的片段上识别。输出更干净、时间更贴合，是推荐主线。
+- **`whisper`**——旧的 `faster-whisper-large-v3` 滑窗主识别，可选 `--gap-fill` 音频补漏阶段。
+
+逐项对比见 [识别后端：Qwen vs Whisper](#识别后端qwen-vs-whisper)。
+
 ## 项目功能
 
 一键流程会执行以下步骤：
 
 1. 用 `ffmpeg` 从视频抽取 16 kHz 单声道 WAV 音频。
-2. 用本地 `faster-whisper-large-v3` 识别日语并生成日语 SRT。
-3. 可选运行二阶段补漏（`--gap-fill`），结合 WAV 音频和已有日语字幕补识别字幕空窗里的有效语音。
-4. 用本地 `HY-MT1.5-7B-GGUF` 把日语 SRT 翻译成简体中文字幕 SRT。
-5. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
+2. 用所选识别后端（默认 `qwen`）识别日语并生成日语 SRT。
+3. 用本地 `HY-MT1.5-7B-GGUF` 把日语 SRT 翻译成简体中文字幕 SRT。
+4. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
 
-默认只跑主识别，很多视频已经能得到覆盖率不错的字幕。需要覆盖更多轻声或漏识别语音时，可以加 `--gap-fill` 跑二阶段补漏；代价是处理更慢，也更可能引入幻觉或听错的字幕，重要输出建议复查质量报告和补漏元数据。开启二阶段补漏时，第 2、3 步会在同一个进程里完成，Whisper 模型只加载一次，而不是加载两次。翻译阶段仍是独立进程，这样 Whisper 和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
+默认的 Qwen 后端用一个宽松的 VAD 按静音切片（VAD 只用来定切片边界，不会把语音过滤掉），分批识别，再用强制对齐器给每句定时。Qwen 很少凭空捏造内容，所以默认关闭 Whisper 那套重量级幻觉过滤，也没有单独的补漏阶段。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
+
+用 `--asr whisper` 时，第 2 步走 Whisper 滑窗主识别，`--gap-fill` 再加一个音频补漏阶段捞回更多轻声/漏识别语音（更慢，也更容易引入幻觉或听错的字幕，重要输出建议复查质量报告和补漏元数据）。
 
 批量处理时，视频按文件大小从小到大处理，并且每个视频的音频（第 1 步）会由后台线程提前一个抽取。抽音频是 CPU/IO 密集、识别和翻译是 GPU 密集，所以"当前视频在 GPU 上跑的同时，提前抽下一个视频的音频"能把提取藏进 GPU 时间里，而不是卡在它前面。提取始终保持单路串行读取，以降低机械盘随机 IO 压力；同一块机械盘上不建议同时跑多个流水线。
 
@@ -25,12 +33,15 @@
 ```text
 .
 ├── models/                         # 本地模型目录，不提交
-│   ├── faster-whisper-large-v3/     # CTranslate2 格式 Whisper ASR 模型
+│   ├── Qwen3-ASR-1.7B/              # 默认 ASR 模型（文本内容）
+│   ├── Qwen3-ForcedAligner-0.6B/    # 默认对齐器（时间轴）
+│   ├── faster-whisper-large-v3/     # 旧版 CTranslate2 Whisper ASR 模型
 │   └── HY-MT1.5-7B-GGUF/            # GGUF 翻译模型
 ├── outputs/                         # 最终中文字幕输出
 ├── scripts/
 │   ├── video_to_zh_srt.py           # 一键视频到中文字幕
-│   ├── transcribe_ja_srt.py         # 音频到日语 SRT
+│   ├── transcribe_ja_srt_qwen.py    # 音频到日语 SRT（默认 Qwen 后端）
+│   ├── transcribe_ja_srt.py         # 音频到日语 SRT（旧版 Whisper 后端）
 │   ├── fill_ja_srt_gaps.py          # 基于 WAV 的日语字幕二阶段补漏
 │   ├── quality_report.py            # 字幕质量报告
 │   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕 SRT
@@ -48,18 +59,22 @@
 - OS：Ubuntu 24.04 / Linux x86_64
 - Python：3.11
 - FFmpeg：6.1.1
-- `faster-whisper`：1.2.1
+- `qwen-asr`：0.0.6（默认识别后端；会带入 `torch`、`transformers`、`librosa`、`soundfile`）
+- `torch`：2.10，CUDA 12.8（`cu128`），在 RTX 50 系（Blackwell）显卡上验证
+- `faster-whisper`：1.2.1（旧版识别后端）
 - `llama-cpp-python`：0.3.23
 - `huggingface-hub`：1.15.0
 
 推荐硬件：
 
-- GPU：建议 NVIDIA GPU，显存 12 GB 或以上。
+- GPU：建议 NVIDIA GPU，显存 12 GB 左右即可。默认 Qwen 后端（1.7B 识别 + 0.6B 对齐）在默认批大小下约占 12 GB，调小 `--qwen-batch-size` 还能更省；旧版 Whisper 后端约 10 GB。翻译是独立进程，不会叠加在识别之上。
 - CPU：建议 8 核以上。
 - 内存：建议 16 GB 以上，32 GB 更稳。
-- 磁盘：至少预留 10 GB，用于模型和生成文件。
+- 磁盘：至少预留 20 GB，用于模型和生成文件。
 
-CPU 也可以运行，但长视频会明显更慢。ASR 脚本会优先尝试 CUDA，CUDA 不可用时自动回退到 CPU int8。
+默认 Qwen 后端需要 CUDA GPU。旧版 Whisper 后端（`--asr whisper`）会优先尝试 CUDA，CUDA 不可用时自动回退到 CPU int8；CPU 也能跑，但长视频明显更慢。
+
+> GPU/驱动提示：`qwen-asr` 基于 PyTorch，安装的 `torch` 必须匹配显卡。在很新的显卡上（如 NVIDIA Blackwell / RTX 50 系），PyPI 默认 wheel 可能没有对应算力的核函数——先装匹配的 CUDA 版本，例如 `pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio`。
 
 ## 安装依赖
 
@@ -90,7 +105,8 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 
 默认模型：
 
-- ASR 模型：[`Systran/faster-whisper-large-v3`](https://huggingface.co/Systran/faster-whisper-large-v3)
+- ASR（文本内容）：[`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
+- ASR（时间轴）：[`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
 - 翻译模型：[`tencent/HY-MT1.5-7B-GGUF`](https://huggingface.co/tencent/HY-MT1.5-7B-GGUF)
 
 下载到脚本默认目录：
@@ -98,9 +114,14 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 ```bash
 mkdir -p models
 
-hf download Systran/faster-whisper-large-v3 \
-  --local-dir models/faster-whisper-large-v3
+# 默认 Qwen 识别后端（识别 + 强制对齐）
+hf download Qwen/Qwen3-ASR-1.7B \
+  --local-dir models/Qwen3-ASR-1.7B
 
+hf download Qwen/Qwen3-ForcedAligner-0.6B \
+  --local-dir models/Qwen3-ForcedAligner-0.6B
+
+# 翻译模型（两套后端共用）
 hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
   --local-dir models/HY-MT1.5-7B-GGUF
 ```
@@ -108,12 +129,28 @@ hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
 下载完成后，至少应包含：
 
 ```text
+models/Qwen3-ASR-1.7B/config.json
+models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors
+models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
+models/Qwen3-ForcedAligner-0.6B/config.json
+models/Qwen3-ForcedAligner-0.6B/model.safetensors
+models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
+```
+
+旧版 Whisper 后端（`--asr whisper`）还需要
+[`Systran/faster-whisper-large-v3`](https://huggingface.co/Systran/faster-whisper-large-v3)：
+
+```bash
+hf download Systran/faster-whisper-large-v3 \
+  --local-dir models/faster-whisper-large-v3
+```
+
+```text
 models/faster-whisper-large-v3/model.bin
 models/faster-whisper-large-v3/config.json
 models/faster-whisper-large-v3/tokenizer.json
 models/faster-whisper-large-v3/vocabulary.json
 models/faster-whisper-large-v3/preprocessor_config.json
-models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
 ## 一条命令生成中文字幕
@@ -146,25 +183,73 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 
 公开文档、Issue 或日志里不要写入真实本机路径。
 
+## 识别后端：Qwen vs Whisper
+
+用 `--asr` 选择后端（默认 `qwen`）：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4                 # Qwen（默认）
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whisper
+```
+
+### 默认 Qwen 主线的工作方式
+
+1. 用一个宽松的滑窗 VAD（`--qwen-vad-threshold 0.1`）找出语音并聚成簇。VAD **只用来定切片边界**，不会丢音频，所以即便漏了一个边界，那段语音也还在相邻切片里（不掉召回）。
+2. 每个语音簇变成一个切片，锚定在真实的语音起始时间上（过长的簇带重叠再切分），分批送入 `Qwen3-ASR-1.7B`。
+3. 模型带标点的 `result.text` 作为权威文本内容；单独的 `Qwen3-ForcedAligner-0.6B` 给出逐字时间。句子按标点和较大的内部时间间隙切分，再由对齐器定时。
+4. 因为每个切片都从语音起点开始，第一个 token 锚在真实语音上而不是切片边缘，从而消除了大部分"首词被拽早"的漂移。
+
+想关掉 VAD 切片、回退到固定 30 秒均匀平铺，用 `--no-qwen-vad-chunks`。
+
+### 怎么选
+
+| | **Qwen（默认）** | **Whisper（`--asr whisper`）** |
+|---|---|---|
+| 文本质量 | 更干净；很少捏造，默认关闭重量级幻觉过滤 | 安静音频上更易幻觉/循环，需要内置过滤 |
+| 时间漂移 | 更小——VAD 切片把字幕锚在真实语音起点 | 长段安静处更大 |
+| 速度 | 批量主识别快；无补漏阶段 | 主识别相当；`--gap-fill` 多一个更慢的二阶段 |
+| 轻声召回 | 好；不需要单独召回阶段 | 加 `--gap-fill` 进一步提升 |
+| 专有名词/人名 | 偏弱——可能听错人名和生僻词 | 同样弱；两者对没见过的人名都不可靠 |
+| 后处理 | 极简（重叠 + 一闪而过 cue 清理）；想要 Whisper 那套过滤用 `--qwen-filter-hallucinations` | 完整的压缩比/循环/去重/幻觉过滤 |
+| 显存 | 1.7B + 0.6B，默认批约 12 GB（调小 `--qwen-batch-size` 更省） | large-v3，约 10 GB（调小 `--main-local-batch-size` 更省） |
+| VAD 切片代价 | 切片数约为均匀平铺的 2 倍，主识别略慢，换来更小漂移 | 不适用 |
+
+**推荐：** 常规使用保持默认 Qwen 主线。当你确实需要榨出更多轻声/低能量语音、并愿意复查更多不稳定字幕时，用 `--asr whisper --gap-fill`；没有 CUDA 显卡时也用 Whisper（它有 CPU 回退，Qwen 需要 CUDA）。
+
 ## 默认行为
 
 一键流程默认使用：
 
-- 识别模型：`models/faster-whisper-large-v3`
+- 识别后端：`qwen`（`models/Qwen3-ASR-1.7B` + `models/Qwen3-ForcedAligner-0.6B`）
+- Qwen VAD 切片：开启（`--qwen-vad-chunks`；用 `--no-qwen-vad-chunks` 关闭）
+- Qwen VAD 阈值：`--qwen-vad-threshold 0.1`（只用于定边界，不掉召回）
+- Qwen 切片长度/重叠：`--qwen-chunk-seconds 30`、`--qwen-chunk-overlap-seconds 3`
+- 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--qwen-filter-hallucinations` 开启）
 - 翻译模型：`models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf`
 - 识别语言：日语 `ja`
-- Whisper 前文串联：默认关闭，减少长视频串文和幻觉
-- 单条字幕最大显示时长：默认 10 秒
-- 翻译上下文：默认带前 1 轮对话历史（上一句原文/译文作为对话上文，当前轮只翻当前句）；设为 0 则逐句独立翻译
+- 翻译上下文：默认带前 2 轮对话历史（上文原文/译文作为对话上文，当前轮只翻当前句）；设为 0 则逐句独立翻译
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
-- VAD：整片批处理滑窗局部 VAD（唯一的主识别）
-- 二阶段补漏：默认关闭（用 `--gap-fill` 开启）
+- 二阶段补漏：Qwen 后端不使用（Qwen 本身就是全覆盖识别）
 - 质量报告：默认开启
 - 抽取音频：默认保留 WAV，方便复查和调参
 
-没有流程预设了，唯一的批处理滑窗主识别就是默认。用 `--main-local-vad-threshold`
+Qwen 后端没有补漏阶段，VAD 切片的全覆盖主识别就是唯一识别。用 `--qwen-vad-threshold`
+（默认 0.1，调低捞回更多轻声）和 `--qwen-vad-max-cluster-gap`（默认 2.0，调高把邻近语音
+并成更少更长的切片、跑得更快）在召回和切片数之间权衡。
+
+### Whisper 后端默认值（`--asr whisper`）
+
+选用旧版后端时，改为以下默认：
+
+- 识别模型：`models/faster-whisper-large-v3`
+- Whisper 前文串联：默认关闭，减少长视频串文和幻觉
+- 单条字幕最大显示时长：默认 10 秒
+- VAD：整片批处理滑窗局部 VAD（唯一的主识别）
+- 二阶段补漏：默认关闭（用 `--gap-fill` 开启）
+
+没有流程预设，唯一的批处理滑窗主识别就是默认。用 `--main-local-vad-threshold`
 （默认 0.6，调低能捞回更多轻声但幻觉变多）和 `--main-local-vad-max-cluster-gap`
-（默认 2.0）在召回和干净度之间权衡。
+（默认 2.0）在召回和干净度之间权衡。下面剩余的 Whisper 细节只适用于 `--asr whisper`。
 
 可选的二阶段补漏（`--gap-fill`）会重新检查字幕空窗，捞回偏精度的主识别漏掉的语音。
 它对每个达到门槛的空窗跑逐空窗局部 VAD（`--gap-local-vad-threshold 0.60`）；达到
@@ -236,10 +321,22 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --output outputs/input.zh.sr
 python scripts/video_to_zh_srt.py path/to/videos/ --output-dir outputs
 ```
 
-默认流程是批处理滑窗主识别、不补漏。若要额外跑二阶段补漏提升召回：
+选择识别后端（默认 `qwen`），改用旧版 Whisper 流程：
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --gap-fill
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper
+```
+
+默认 Qwen 后端用固定均匀平铺代替 VAD 切片（更快，漂移略大）：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --no-qwen-vad-chunks
+```
+
+音频补漏阶段属于 Whisper 后端，这样开启：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
 ```
 
 不生成质量报告：
@@ -300,10 +397,12 @@ python scripts/retime_existing_subtitles.py path/to/videos/ \
 python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
-如果显卡显存不够，降低 ASR 批大小：
+如果显卡显存不够，降低 ASR 批大小（默认 Qwen 后端用 `--qwen-batch-size`，
+`--asr whisper` 用 `--main-local-batch-size`）：
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --main-local-batch-size 8
+python scripts/video_to_zh_srt.py path/to/input.mp4 --qwen-batch-size 8
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --main-local-batch-size 8
 ```
 
 批量处理时，如果某个视频失败后继续处理后面的视频：
@@ -314,7 +413,21 @@ python scripts/video_to_zh_srt.py path/to/videos/ --continue-on-error
 
 ## 单步运行
 
-只做语音识别：
+用默认 Qwen 后端识别（VAD 切片）：
+
+```bash
+python scripts/transcribe_ja_srt_qwen.py work/input/input.wav \
+  work/input/input.ja.srt \
+  --model models/Qwen3-ASR-1.7B \
+  --forced-aligner models/Qwen3-ForcedAligner-0.6B \
+  --vad-chunks
+```
+
+想离线快速调后处理参数，可以先用 `--raw-output work/input/input.raw.json` 把原始
+ASR + 对齐器结果导出一次，之后用 `--from-raw work/input/input.raw.json` 跳过模型直接
+重建字幕。
+
+或用旧版 Whisper 后端识别：
 
 ```bash
 python scripts/transcribe_ja_srt.py work/input/input.wav \
@@ -323,7 +436,7 @@ python scripts/transcribe_ja_srt.py work/input/input.wav \
   --max-duration 10
 ```
 
-对已有日语 SRT 做音频补漏：
+对已有日语 SRT 做音频补漏（仅 Whisper 后端）：
 
 ```bash
 python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
@@ -339,7 +452,7 @@ python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
 python scripts/translate_srt_hymt.py work/input/input.ja.srt \
   --output outputs/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
-  --context-size 1 \
+  --context-size 2 \
   --lead-out-seconds 0.5 \
   --min-display-seconds 1.5
 ```
@@ -405,18 +518,21 @@ python -m pytest tests/ -q
 如果报错类似：
 
 ```text
+Missing Qwen ASR model: .../models/Qwen3-ASR-1.7B
+Missing Qwen forced aligner: .../models/Qwen3-ForcedAligner-0.6B
 Missing Whisper model: .../models/faster-whisper-large-v3/model.bin
 Missing HY-MT model: .../models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
-按“下载模型”一节重新下载，并确认目录名和文件名没有改动。
+按"下载模型"一节重新下载，并确认目录名和文件名没有改动。Qwen 两个模型只在默认后端需要，
+Whisper 模型只在 `--asr whisper` 时需要。
 
 ### 翻译速度很慢
 
-通常是 `llama-cpp-python` 没有启用 CUDA，或者 GPU 显存不足导致部分层在 CPU 上运行。先按“CUDA 验证”检查。如果无法使用 GPU，可以继续用 CPU 跑，但长视频会很慢。
+通常是 `llama-cpp-python` 没有启用 CUDA，或者 GPU 显存不足导致部分层在 CPU 上运行。先按"CUDA 验证"检查。如果无法使用 GPU，可以继续用 CPU 跑，但长视频会很慢。
 
-如果是 ASR 阶段 CUDA 显存不足，优先降低 `--main-local-batch-size`；默认值
-`24` 偏向吞吐量，小显存显卡可能需要改成 `12`、`8` 或 `4`。
+如果是 ASR 阶段 CUDA 显存不足，降低批大小：默认 Qwen 后端用 `--qwen-batch-size`（默认
+`16`），`--asr whisper` 用 `--main-local-batch-size`（默认 `24`，偏吞吐量，小显存显卡可能偏高）。
 
 ### `ffmpeg` 找不到
 
@@ -437,7 +553,11 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### 字幕有漏识别
 
-默认主识别已经用滑窗局部 VAD 扫描整段 WAV。想提高召回，可以降低
+默认 Qwen 后端的 VAD 只用来定切片边界（宽松的 `--qwen-vad-threshold 0.1`），不会把语音
+过滤掉；漏掉的语音簇可以进一步调低阈值，或调高 `--qwen-vad-max-cluster-gap`（默认 2.0）
+把邻近语音并起来。作为兜底，`--no-qwen-vad-chunks` 会均匀平铺整条时间轴，不跳过任何区域。
+
+`--asr whisper` 时，主识别已经用滑窗局部 VAD 扫描整段 WAV。想提高召回，可以降低
 `--main-local-vad-threshold`（默认 0.6）或提高 `--main-local-vad-max-cluster-gap`
 （默认 2.0）；两者都会选中更多音频，也会带来更多需要过滤的幻觉。
 

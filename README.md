@@ -4,17 +4,34 @@ English | [Chinese](README-CN.md)
 
 This project generates Simplified Chinese SRT subtitles from local video files. The default pipeline is tuned for Japanese audio and runs fully offline after the required models are downloaded.
 
+It ships two transcription backends, selectable with `--asr`:
+
+- **`qwen` (default)** — `Qwen3-ASR-1.7B` for content plus `Qwen3-ForcedAligner-0.6B` for timing, over speech-aware (VAD-cut) clips. Cleaner output and tighter timing; this is the recommended main line.
+- **`whisper`** — the legacy `faster-whisper-large-v3` sliding pass with an optional audio-aware `--gap-fill` recall stage.
+
+See [ASR Backends: Qwen vs Whisper](#asr-backends-qwen-vs-whisper) for a feature-by-feature comparison.
+
 ## What It Does
 
 The one-command pipeline performs these steps:
 
 1. Extract a 16 kHz mono WAV file from the input video with `ffmpeg`.
-2. Transcribe Japanese audio into a Japanese SRT with local `faster-whisper-large-v3`.
-3. Optionally run an audio-aware second pass (`--gap-fill`) to fill likely missed speech in subtitle gaps.
-4. Translate the Japanese SRT into Simplified Chinese with local `HY-MT1.5-7B-GGUF`.
-5. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles.
+2. Transcribe Japanese audio into a Japanese SRT with the selected ASR backend (`qwen` by default).
+3. Translate the Japanese SRT into Simplified Chinese with local `HY-MT1.5-7B-GGUF`.
+4. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles.
 
-The default main recognition pass already produces useful coverage for many videos. Add `--gap-fill` when you want to recover more quiet or missed speech; it increases processing time and can also introduce more hallucinated or misheard subtitles, so review the quality report and gap-fill metadata for important outputs. When gap filling is enabled, steps 2 and 3 run in a single process that loads the Whisper model once, instead of loading it twice. The translation step stays in its own process so the Whisper and translation models never share VRAM. All generated SRTs are sorted and de-overlapped so cues never overlap or go out of order.
+The default Qwen backend cuts clips on silence with a loose VAD (used only for clip
+boundaries, so it never gates out speech), transcribes them in batches, and times each
+sentence from the forced aligner. Qwen rarely fabricates content, so the heavy
+Whisper-style hallucination filters are off by default and there is no separate gap-fill
+stage. The translation step runs in its own process so the ASR and translation models
+never share VRAM. All generated SRTs are sorted and de-overlapped so cues never overlap
+or go out of order.
+
+With `--asr whisper`, step 2 runs the sliding-window Whisper pass, and `--gap-fill`
+adds an audio-aware second pass to recover more quiet or missed speech (slower, and more
+likely to introduce hallucinated or misheard lines — review the quality report and
+gap-fill metadata for important outputs).
 
 In batch mode, videos are processed smallest first, and each video's audio (step 1) is extracted one step ahead in a background thread. Audio extraction is CPU/IO bound while recognition and translation are GPU bound, so extracting the next video while the current one is on the GPU hides extraction behind the GPU work instead of blocking on it. Extraction stays a single serial read stream to reduce random IO pressure on HDDs; avoid running multiple pipeline instances against the same mechanical disk.
 
@@ -25,12 +42,15 @@ No online API is required for inference. Model files are not included in this re
 ```text
 .
 ├── models/                         # Local models, not committed
-│   ├── faster-whisper-large-v3/     # CTranslate2 Whisper ASR model
+│   ├── Qwen3-ASR-1.7B/              # Default ASR model (content)
+│   ├── Qwen3-ForcedAligner-0.6B/    # Default aligner (timing)
+│   ├── faster-whisper-large-v3/     # Legacy CTranslate2 Whisper ASR model
 │   └── HY-MT1.5-7B-GGUF/            # GGUF translation model
 ├── outputs/                         # Final Chinese SRT files
 ├── scripts/
 │   ├── video_to_zh_srt.py           # One-command video-to-Chinese-SRT pipeline
-│   ├── transcribe_ja_srt.py         # WAV/audio to Japanese SRT
+│   ├── transcribe_ja_srt_qwen.py    # WAV/audio to Japanese SRT (default Qwen backend)
+│   ├── transcribe_ja_srt.py         # WAV/audio to Japanese SRT (legacy Whisper backend)
 │   ├── fill_ja_srt_gaps.py          # Audio-aware Japanese SRT gap filling
 │   ├── quality_report.py            # Subtitle quality report
 │   ├── translate_srt_hymt.py        # Japanese SRT to Chinese SRT
@@ -48,18 +68,30 @@ Verified environment:
 - OS: Ubuntu 24.04 / Linux x86_64
 - Python: 3.11
 - FFmpeg: 6.1.1
-- `faster-whisper`: 1.2.1
+- `qwen-asr`: 0.0.6 (default ASR backend; pulls in `torch`, `transformers`, `librosa`, `soundfile`)
+- `torch`: 2.10 with CUDA 12.8 (`cu128`) on an RTX 50-series (Blackwell) GPU
+- `faster-whisper`: 1.2.1 (legacy ASR backend)
 - `llama-cpp-python`: 0.3.23
 - `huggingface-hub`: 1.15.0
 
 Recommended hardware:
 
-- GPU: NVIDIA GPU with 12 GB VRAM or more is recommended.
+- GPU: NVIDIA GPU with around 12 GB VRAM is a comfortable target. The default Qwen
+  backend (1.7B ASR + 0.6B aligner) fits in roughly 12 GB at the default batch size and
+  needs less if you lower `--qwen-batch-size`; the legacy Whisper backend fits in about
+  10 GB. Translation runs in a separate process, so it does not stack on top of ASR.
 - CPU: 8 cores or more.
 - RAM: 16 GB minimum, 32 GB recommended.
-- Disk: at least 10 GB free for the default models and outputs.
+- Disk: at least 20 GB free for the default models and outputs.
 
-CPU-only execution works, but long videos will be much slower. The ASR script tries CUDA first and falls back to CPU int8 if CUDA is unavailable.
+The default Qwen backend requires a CUDA GPU. The legacy Whisper backend
+(`--asr whisper`) tries CUDA first and falls back to CPU int8 if CUDA is unavailable;
+CPU-only execution works, but long videos will be much slower.
+
+> GPU/driver note: `qwen-asr` runs on PyTorch, so the installed `torch` must match your
+> GPU. On very new GPUs (e.g. NVIDIA Blackwell / RTX 50-series) the default PyPI wheel may
+> not have kernels for your compute capability — install a matching CUDA build first, e.g.
+> `pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio`.
 
 ## Installation
 
@@ -90,7 +122,8 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 
 Default models:
 
-- ASR: [`Systran/faster-whisper-large-v3`](https://huggingface.co/Systran/faster-whisper-large-v3)
+- ASR (content): [`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
+- ASR (timing): [`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
 - Translation: [`tencent/HY-MT1.5-7B-GGUF`](https://huggingface.co/tencent/HY-MT1.5-7B-GGUF)
 
 Download them to the default paths:
@@ -98,9 +131,14 @@ Download them to the default paths:
 ```bash
 mkdir -p models
 
-hf download Systran/faster-whisper-large-v3 \
-  --local-dir models/faster-whisper-large-v3
+# Default Qwen ASR backend (transcription + forced aligner)
+hf download Qwen/Qwen3-ASR-1.7B \
+  --local-dir models/Qwen3-ASR-1.7B
 
+hf download Qwen/Qwen3-ForcedAligner-0.6B \
+  --local-dir models/Qwen3-ForcedAligner-0.6B
+
+# Translation model (shared by both backends)
 hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
   --local-dir models/HY-MT1.5-7B-GGUF
 ```
@@ -108,12 +146,28 @@ hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
 Required files include:
 
 ```text
+models/Qwen3-ASR-1.7B/config.json
+models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors
+models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
+models/Qwen3-ForcedAligner-0.6B/config.json
+models/Qwen3-ForcedAligner-0.6B/model.safetensors
+models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
+```
+
+The legacy Whisper backend (`--asr whisper`) additionally needs
+[`Systran/faster-whisper-large-v3`](https://huggingface.co/Systran/faster-whisper-large-v3):
+
+```bash
+hf download Systran/faster-whisper-large-v3 \
+  --local-dir models/faster-whisper-large-v3
+```
+
+```text
 models/faster-whisper-large-v3/model.bin
 models/faster-whisper-large-v3/config.json
 models/faster-whisper-large-v3/tokenizer.json
 models/faster-whisper-large-v3/vocabulary.json
 models/faster-whisper-large-v3/preprocessor_config.json
-models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
 ## One-Command Usage
@@ -149,26 +203,85 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 
 Do not put private local paths in public documentation or issue reports.
 
+## ASR Backends: Qwen vs Whisper
+
+The backend is chosen with `--asr` (default `qwen`):
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4                 # Qwen (default)
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # legacy Whisper
+```
+
+### How the default Qwen line works
+
+1. A loose sliding-window VAD (`--qwen-vad-threshold 0.1`) finds speech and groups it
+   into clusters. The VAD is used **only to place clip boundaries**, never to drop audio,
+   so a missed boundary still leaves the speech covered by a neighbouring clip (recall-safe).
+2. Each cluster becomes a clip anchored at the real speech-start time (long clusters are
+   split with overlap). Clips are transcribed in batches by `Qwen3-ASR-1.7B`.
+3. The model's punctuated `result.text` is the authoritative content; the separate
+   `Qwen3-ForcedAligner-0.6B` supplies per-character timing. Sentences are split on
+   punctuation and on large internal timing gaps, then timed from the aligner.
+4. Because each clip starts where speech starts, the first token is anchored to real
+   audio instead of the clip edge, which removes most leading-token drift.
+
+Disable the VAD cutting (fall back to uniform 30 s tiling) with `--no-qwen-vad-chunks`.
+
+### When to prefer which
+
+| | **Qwen (default)** | **Whisper (`--asr whisper`)** |
+|---|---|---|
+| Content quality | Cleaner; rarely fabricates, so heavy hallucination filters are off by default | More prone to hallucination/looping on quiet audio; needs the built-in filters |
+| Timing drift | Lower — VAD-cut clips anchor cues to real speech onset | Higher on long quiet stretches |
+| Speed | Fast batched main pass; no gap-fill stage | Comparable main pass; `--gap-fill` adds a slower second pass |
+| Recall on quiet speech | Good; no separate recall stage needed | Add `--gap-fill` to push recall further |
+| Proper nouns / names | Weaker — can mishear names and rare terms | Similar weakness; neither is reliable on unseen names |
+| Post-processing | Minimal (overlap + flash-cue hygiene); opt into Whisper-style filters with `--qwen-filter-hallucinations` | Full compression/looping/duplicate/hallucination filtering |
+| VRAM | 1.7B + 0.6B, ~12 GB at default batch (less with smaller `--qwen-batch-size`) | large-v3, ~10 GB (less with smaller `--main-local-batch-size`) |
+| Cost of VAD cutting | ~2× clips vs uniform tiling, so the main pass is a bit slower in exchange for less drift | n/a |
+
+**Recommendation:** keep the default Qwen line for general use. Use `--asr whisper`
+`--gap-fill` when you specifically need to squeeze out more quiet/low-energy speech and
+are willing to review more unstable lines, or when a CUDA GPU is unavailable (Whisper has
+a CPU fallback; Qwen requires CUDA).
+
 ## Default Behavior
 
 The one-command pipeline uses:
 
-- ASR model: `models/faster-whisper-large-v3`
+- ASR backend: `qwen` (`models/Qwen3-ASR-1.7B` + `models/Qwen3-ForcedAligner-0.6B`)
+- Qwen VAD-cut clips: on (`--qwen-vad-chunks`; disable with `--no-qwen-vad-chunks`)
+- Qwen VAD threshold: `--qwen-vad-threshold 0.1` (boundary placement only, recall-safe)
+- Qwen clip length / overlap: `--qwen-chunk-seconds 30` with `--qwen-chunk-overlap-seconds 3`
+- Whisper-style hallucination filtering on Qwen output: off (opt in with `--qwen-filter-hallucinations`)
 - Translation model: `models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf`
 - Source language: Japanese, `ja`
-- Whisper previous-text conditioning: disabled by default
-- Max subtitle display duration: 10 seconds
-- Translation context: previous 1 dialogue turn as chat history (previous source/translation pair; the current turn carries only the current line). 0 translates each line standalone
+- Translation context: previous 2 dialogue turns as chat history (previous source/translation pairs; the current turn carries only the current line). 0 translates each line standalone
 - Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
-- VAD: batched sliding-window local VAD over the whole WAV (the only main pass)
-- Gap fill: off by default (opt in with `--gap-fill`)
+- Gap fill: not used by the Qwen backend (Qwen has full-coverage recall already)
 - Quality report: enabled by default
 - Extracted WAV audio: kept by default
+
+The Qwen backend has no gap-fill stage; its VAD-cut, full-coverage main pass is the
+only recognition pass. Tune recall vs. clip count with `--qwen-vad-threshold` (default
+0.1; lower keeps more quiet speech) and `--qwen-vad-max-cluster-gap` (default 2.0; higher
+merges nearby speech into fewer, longer clips and runs faster).
+
+### Whisper backend defaults (`--asr whisper`)
+
+When you select the legacy backend, these apply instead:
+
+- ASR model: `models/faster-whisper-large-v3`
+- Whisper previous-text conditioning: disabled by default
+- Max subtitle display duration: 10 seconds
+- VAD: batched sliding-window local VAD over the whole WAV (the only main pass)
+- Gap fill: off by default (opt in with `--gap-fill`)
 
 There are no pipeline presets; the single batched sliding-window pass is the
 default. Tune recall vs. cleanliness with `--main-local-vad-threshold` (default
 0.6; lower keeps more quiet speech but adds hallucinations to filter) and
-`--main-local-vad-max-cluster-gap` (default 2.0).
+`--main-local-vad-max-cluster-gap` (default 2.0). The remaining Whisper-specific
+detail below applies only to `--asr whisper`.
 
 Optional gap fill (`--gap-fill`) re-examines subtitle gaps to recover speech the
 precision-tuned main pass missed. It runs per-gap local VAD on each eligible gap
@@ -255,11 +368,23 @@ Set output directory for batch processing:
 python scripts/video_to_zh_srt.py path/to/videos/ --output-dir outputs
 ```
 
-The default pipeline is the batched sliding-window main pass with no gap fill.
-To also run the audio-aware gap fill stage for more recall:
+Select the ASR backend (default `qwen`); use the legacy Whisper pipeline with:
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --gap-fill
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper
+```
+
+Run the default Qwen backend with fixed uniform tiling instead of VAD-cut clips
+(faster, slightly more drift):
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --no-qwen-vad-chunks
+```
+
+The audio-aware gap-fill stage belongs to the Whisper backend; enable it with:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
 ```
 
 Disable quality report generation:
@@ -332,19 +457,21 @@ Reduce translation context if translated lines include previous subtitles:
 python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
-Recover more quiet speech with the optional gap-fill stage:
+Recover more quiet speech with the Whisper backend's optional gap-fill stage:
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --gap-fill
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
 ```
 
 Gap fill re-examines subtitle gaps and may recover more quiet speech, but it is
 slower and can introduce less stable short lines.
 
-Reduce ASR batch size if your GPU runs out of VRAM:
+Reduce ASR batch size if your GPU runs out of VRAM (`--qwen-batch-size` for the
+default Qwen backend, `--main-local-batch-size` for `--asr whisper`):
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --main-local-batch-size 8
+python scripts/video_to_zh_srt.py path/to/input.mp4 --qwen-batch-size 8
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --main-local-batch-size 8
 ```
 
 Continue batch processing after one video fails:
@@ -355,7 +482,21 @@ python scripts/video_to_zh_srt.py path/to/videos/ --continue-on-error
 
 ## Step-by-Step Usage
 
-Transcribe audio to Japanese SRT:
+Transcribe audio to Japanese SRT with the default Qwen backend (VAD-cut clips):
+
+```bash
+python scripts/transcribe_ja_srt_qwen.py work/input/input.wav \
+  work/input/input.ja.srt \
+  --model models/Qwen3-ASR-1.7B \
+  --forced-aligner models/Qwen3-ForcedAligner-0.6B \
+  --vad-chunks
+```
+
+For fast offline post-processing tuning, dump the raw ASR + aligner stream once with
+`--raw-output work/input/input.raw.json`, then rebuild cues from it without the model
+using `--from-raw work/input/input.raw.json`.
+
+Or transcribe with the legacy Whisper backend:
 
 ```bash
 python scripts/transcribe_ja_srt.py work/input/input.wav \
@@ -364,7 +505,7 @@ python scripts/transcribe_ja_srt.py work/input/input.wav \
   --max-duration 10
 ```
 
-Fill likely missed Japanese subtitles with WAV audio:
+Fill likely missed Japanese subtitles with WAV audio (Whisper backend only):
 
 ```bash
 python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
@@ -380,7 +521,7 @@ Translate Japanese SRT to Chinese SRT:
 python scripts/translate_srt_hymt.py work/input/input.ja.srt \
   --output outputs/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
-  --context-size 1 \
+  --context-size 2 \
   --lead-out-seconds 0.5 \
   --min-display-seconds 1.5
 ```
@@ -446,18 +587,23 @@ python -m pytest tests/ -q
 If you see errors like:
 
 ```text
+Missing Qwen ASR model: .../models/Qwen3-ASR-1.7B
+Missing Qwen forced aligner: .../models/Qwen3-ForcedAligner-0.6B
 Missing Whisper model: .../models/faster-whisper-large-v3/model.bin
 Missing HY-MT model: .../models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
-Download the models again and keep the default directory and file names.
+Download the models again and keep the default directory and file names. The Qwen
+models are only required for the default backend; the Whisper model is only required
+for `--asr whisper`.
 
 ### Translation Is Slow
 
 Usually `llama-cpp-python` is running on CPU or the GPU does not have enough VRAM. Run the CUDA check above. CPU translation still works, but long videos will take much longer.
 
-If ASR fails with CUDA out-of-memory, lower `--main-local-batch-size`; the default
-`24` is intended for throughput and may be too high for smaller GPUs.
+If ASR fails with CUDA out-of-memory, lower the batch size: `--qwen-batch-size` for the
+default Qwen backend (default `16`), or `--main-local-batch-size` for `--asr whisper`
+(default `24`, throughput-oriented and possibly too high for smaller GPUs).
 
 ### `ffmpeg` Not Found
 
@@ -478,9 +624,15 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### Some Speech Is Missed
 
-The sliding-window main pass already scans the whole WAV with local VAD. If you
-prefer more recall, lower `--main-local-vad-threshold` (default 0.6) or raise
-`--main-local-vad-max-cluster-gap` (default 2.0); both select more audio at the
+With the default Qwen backend, the VAD is used only for clip boundaries (loose
+`--qwen-vad-threshold 0.1`), so it does not gate out speech; missed clusters can be
+recovered by lowering the threshold further or raising `--qwen-vad-max-cluster-gap`
+(default 2.0) to merge nearby speech. As a sanity fallback, `--no-qwen-vad-chunks`
+tiles the whole timeline uniformly so no region is skipped.
+
+With `--asr whisper`, the sliding-window main pass already scans the whole WAV with
+local VAD. If you prefer more recall, lower `--main-local-vad-threshold` (default 0.6)
+or raise `--main-local-vad-max-cluster-gap` (default 2.0); both select more audio at the
 cost of more clips and more hallucinations to filter.
 
 For even more recall, add `--gap-fill`. It does not judge gaps by duration alone;

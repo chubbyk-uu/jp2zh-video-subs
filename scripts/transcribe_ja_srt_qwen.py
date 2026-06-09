@@ -9,10 +9,14 @@ from pathlib import Path
 import torch
 from qwen_asr import Qwen3ASRModel
 
+from srt_utils import Interval
 from transcribe_ja_srt import (
     SubtitleEntry,
     filter_main_local_entries,
     resolve_overlaps,
+    speech_clusters,
+    speech_intervals_from_sliding_audio,
+    split_clip_with_overlap,
     write_entries,
 )
 
@@ -267,20 +271,83 @@ class _RawItem:
         self.end_time = end_time
 
 
+@dataclass
+class ChunkJob:
+    """A clip to transcribe plus its cue-ownership window.
+
+    `start`/`end` bound the audio slice (absolute seconds). `keep_lo`/`keep_hi`
+    are the half-open window whose cue centers this clip owns, so overlap that
+    protects boundary words does not duplicate cues across adjacent clips.
+    """
+
+    start: float
+    end: float
+    keep_lo: float
+    keep_hi: float
+
+
+def build_fixed_jobs(duration: float, args: argparse.Namespace) -> list[ChunkJob]:
+    """Uniform tiling over the whole timeline (the default, VAD-free path)."""
+    ranges = chunk_ranges(duration, args.chunk_seconds, args.chunk_overlap_seconds)
+    step = args.chunk_seconds - args.chunk_overlap_seconds
+    jobs: list[ChunkJob] = []
+    for start, end in ranges:
+        is_last = end >= duration - 1e-3
+        keep_hi = float("inf") if is_last else start + step
+        jobs.append(ChunkJob(start, end, start, keep_hi))
+    return jobs
+
+
+def build_vad_jobs(audio, samplerate: int, duration: float, args: argparse.Namespace) -> list[ChunkJob]:
+    """Speech-aligned clips: one clip per speech cluster, anchored to real time.
+
+    Fixed tiling stamps a chunk's first token to the chunk start, so a clip whose
+    speech begins seconds in drags that cue early. Cutting clips on silence puts
+    each clip's first token where speech actually starts, removing that anchor
+    drift. VAD is used only for boundary placement with a loose threshold: a
+    missed boundary still leaves the audio covered by a neighbouring clip, so
+    recall is unaffected.
+    """
+    if samplerate != 16000:
+        raise SystemExit("--vad-chunks requires 16 kHz audio")
+    intervals = speech_intervals_from_sliding_audio(
+        audio,
+        duration,
+        args.vad_threshold,
+        args.vad_min_silence_ms,
+        args.vad_speech_pad_ms,
+        args.vad_window_seconds,
+        args.vad_window_overlap_seconds,
+    )
+    clusters = speech_clusters(intervals, args.vad_max_cluster_gap, args.vad_pad_seconds, duration)
+    max_clip = min(args.chunk_seconds, 30.0)
+    step = max_clip - args.chunk_overlap_seconds
+    jobs: list[ChunkJob] = []
+    for cluster in clusters:
+        if cluster.end - cluster.start < args.vad_min_clip_seconds:
+            continue
+        subs = split_clip_with_overlap(cluster, max_clip, args.chunk_overlap_seconds)
+        for i, sub in enumerate(subs):
+            is_last = i == len(subs) - 1
+            keep_hi = float("inf") if is_last else sub.start + step
+            jobs.append(ChunkJob(sub.start, sub.end, sub.start, keep_hi))
+    return jobs
+
+
 def chunk_entries(
     text: str,
     items,
     *,
     start: float,
-    end: float,
-    duration: float,
-    step: float,
+    keep_lo: float,
+    keep_hi: float,
     args: argparse.Namespace,
 ) -> list[SubtitleEntry]:
     """Build one chunk's kept cues: sentence timing + claim-window dedup.
 
     Shared by the live model path and the --from-raw replay so both produce
-    identical output for the same post-processing knobs.
+    identical output for the same post-processing knobs. A cue is kept by the one
+    clip whose [keep_lo, keep_hi) window holds the cue center.
     """
     sentence_entries = sentences_from_alignment(
         text,
@@ -292,12 +359,6 @@ def chunk_entries(
         max_internal_gap=args.phrase_max_internal_gap,
         max_char_seconds=args.phrase_max_char_seconds,
     )
-    # Claim window: each cue is owned by exactly one chunk (the one whose
-    # [start, start+step) window holds the cue center), so the chunk overlap that
-    # protects boundary words does not duplicate cues.
-    is_last = end >= duration - 1e-3
-    keep_lo = start
-    keep_hi = float("inf") if is_last else start + step
     return [e for e in sentence_entries if keep_lo <= (e.start + e.end) / 2.0 < keep_hi]
 
 
@@ -308,10 +369,17 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
     entries: list[SubtitleEntry] = []
     for ch in raw["chunks"]:
         items = [_RawItem(it["text"], it["start"], it["end"]) for it in ch["items"]]
+        if "keep_lo" in ch:
+            keep_lo = ch["keep_lo"]
+            keep_hi = ch["keep_hi"] if ch.get("keep_hi") is not None else float("inf")
+        else:
+            # Fallback for pre-VAD dumps that only recorded fixed-tiling chunks.
+            keep_lo = ch["start"]
+            keep_hi = float("inf") if ch["end"] >= duration - 1e-3 else ch["start"] + step
         entries.extend(
             chunk_entries(
-                ch["text"], items, start=ch["start"], end=ch["end"],
-                duration=duration, step=step, args=args,
+                ch["text"], items, start=ch["start"],
+                keep_lo=keep_lo, keep_hi=keep_hi, args=args,
             )
         )
     entries.sort(key=lambda e: (e.start, e.end))
@@ -334,20 +402,24 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
 
     audio, samplerate = load_full_audio(args.audio)
     duration = audio.shape[0] / float(samplerate)
-    chunks = chunk_ranges(duration, args.chunk_seconds, args.chunk_overlap_seconds)
-    step = args.chunk_seconds - args.chunk_overlap_seconds
+    if args.vad_chunks:
+        jobs = build_vad_jobs(audio, samplerate, duration, args)
+        mode = "vad"
+    else:
+        jobs = build_fixed_jobs(duration, args)
+        mode = "fixed"
     entries: list[SubtitleEntry] = []
     chunk_results: list[ChunkResult] = []
     raw_chunks: list[dict] = []
     print(
-        f"Qwen ASR: audio={duration / 60.0:.1f}min chunks={len(chunks)} "
+        f"Qwen ASR: audio={duration / 60.0:.1f}min mode={mode} chunks={len(jobs)} "
         f"batch={args.batch_size} chunk_seconds={args.chunk_seconds} overlap={args.chunk_overlap_seconds}",
         flush=True,
     )
 
-    for group_start in range(0, len(chunks), args.batch_size):
-        group = chunks[group_start : group_start + args.batch_size]
-        clips = [(audio[int(s * samplerate) : int(e * samplerate)], samplerate) for s, e in group]
+    for group_start in range(0, len(jobs), args.batch_size):
+        group = jobs[group_start : group_start + args.batch_size]
+        clips = [(audio[int(j.start * samplerate) : int(j.end * samplerate)], samplerate) for j in group]
         t0 = time.time()
         results = model.transcribe(
             audio=clips,
@@ -355,17 +427,20 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             return_time_stamps=True,
         )
         elapsed = time.time() - t0
-        for (start, end), result in zip(group, results):
+        for job, result in zip(group, results):
             text = str(result.text or "").strip()
             items = getattr(result.time_stamps, "items", None) if result.time_stamps is not None else None
             kept = chunk_entries(
-                text, items, start=start, end=end, duration=duration, step=step, args=args
+                text, items, start=job.start,
+                keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
             )
             entries.extend(kept)
             raw_chunks.append(
                 {
-                    "start": start,
-                    "end": end,
+                    "start": job.start,
+                    "end": job.end,
+                    "keep_lo": job.keep_lo,
+                    "keep_hi": None if job.keep_hi == float("inf") else job.keep_hi,
                     "language": str(result.language),
                     "text": text,
                     "items": [
@@ -378,18 +453,18 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             )
             chunk_results.append(
                 ChunkResult(
-                    start=start,
-                    end=end,
+                    start=job.start,
+                    end=job.end,
                     language=str(result.language),
                     text=text,
                     segments=len(kept),
                     seconds=elapsed / len(group),
                 )
             )
-        done = min(group_start + args.batch_size, len(chunks))
+        done = min(group_start + args.batch_size, len(jobs))
         last_text = str(results[-1].text or "").strip()
         print(
-            f"{done}/{len(chunks)} batch_elapsed={elapsed:.2f}s text={last_text[:60]}",
+            f"{done}/{len(jobs)} batch_elapsed={elapsed:.2f}s text={last_text[:60]}",
             flush=True,
         )
     entries.sort(key=lambda e: (e.start, e.end))
@@ -397,6 +472,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
         "chunk_seconds": args.chunk_seconds,
         "chunk_overlap_seconds": args.chunk_overlap_seconds,
         "duration": duration,
+        "mode": mode,
         "chunks": raw_chunks,
     }
     return entries, chunk_results, raw
@@ -415,6 +491,18 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--chunk-seconds", type=float, default=30.0)
     parser.add_argument("--chunk-overlap-seconds", type=float, default=3.0)
+    # VAD chunking: cut clips on silence so each clip's first token sits where
+    # speech starts (removes leading-anchor drift). Opt-in; default is fixed tiling.
+    parser.add_argument("--vad-chunks", dest="vad_chunks", action="store_true")
+    parser.set_defaults(vad_chunks=False)
+    parser.add_argument("--vad-threshold", type=float, default=0.1)
+    parser.add_argument("--vad-window-seconds", type=float, default=8.0)
+    parser.add_argument("--vad-window-overlap-seconds", type=float, default=4.0)
+    parser.add_argument("--vad-min-silence-ms", type=int, default=500)
+    parser.add_argument("--vad-speech-pad-ms", type=int, default=200)
+    parser.add_argument("--vad-max-cluster-gap", type=float, default=2.0)
+    parser.add_argument("--vad-pad-seconds", type=float, default=0.2)
+    parser.add_argument("--vad-min-clip-seconds", type=float, default=0.3)
     parser.add_argument("--phrase-max-chars", type=int, default=26)
     parser.add_argument("--phrase-max-duration", type=float, default=8.0)
     parser.add_argument("--phrase-max-internal-gap", type=float, default=2.0)

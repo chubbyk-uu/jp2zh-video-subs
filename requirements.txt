@@ -1,4 +1,13 @@
+# --- Default ASR backend: Qwen3-ASR (transcription) + Qwen3-ForcedAligner (timing) ---
+# Pulls in torch / transformers / librosa / soundfile. The PyPI torch wheel may not
+# match very new GPUs: for NVIDIA Blackwell (RTX 50-series) install a CUDA 12.8 build
+# first, e.g.:
+#   pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio
+qwen-asr==0.0.6
+
+# --- Legacy ASR backend (--asr whisper): faster-whisper sliding pass + gap fill ---
 faster-whisper==1.2.1
+
 huggingface-hub==1.15.0
 # NOTE: PyPI wheel is CPU-only. For NVIDIA GPU, rebuild after install:
 #   CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \

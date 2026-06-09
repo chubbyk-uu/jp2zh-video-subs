@@ -182,6 +182,14 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
         ]
         if args.qwen_filter_hallucinations:
             transcribe_command.append("--filter-hallucinations")
+        if args.qwen_vad_chunks:
+            transcribe_command += [
+                "--vad-chunks",
+                "--vad-threshold",
+                str(args.qwen_vad_threshold),
+                "--vad-max-cluster-gap",
+                str(args.qwen_vad_max_cluster_gap),
+            ]
         run(transcribe_command)
     elif not args.gap_fill:
         transcribe_command = [
@@ -487,7 +495,7 @@ def main() -> None:
     parser.add_argument(
         "--context-size",
         type=int,
-        default=1,
+        default=2,
         help="Prior dialogue turns supplied to the translator as chat history (previous "
         "source/translation pairs). 0 translates each line standalone.",
     )
@@ -497,9 +505,10 @@ def main() -> None:
     parser.add_argument(
         "--asr",
         choices=("whisper", "qwen"),
-        default="whisper",
-        help="Transcription backend. 'qwen' uses Qwen3-ASR full-coverage sliding pass "
-        "(no VAD gate, no gap fill); downstream translate/bilingual/quality are shared.",
+        default="qwen",
+        help="Transcription backend (default qwen). 'qwen' uses Qwen3-ASR with VAD-cut "
+        "clips (no gap fill); 'whisper' is the legacy sliding+gap-fill pipeline. "
+        "Downstream translate/bilingual/quality are shared.",
     )
     parser.add_argument("--qwen-batch-size", type=int, default=16)
     parser.add_argument("--qwen-chunk-seconds", type=float, default=30.0)
@@ -508,6 +517,13 @@ def main() -> None:
     parser.add_argument("--qwen-phrase-max-duration", type=float, default=8.0)
     parser.add_argument("--qwen-phrase-max-internal-gap", type=float, default=2.0)
     parser.add_argument("--qwen-phrase-max-char-seconds", type=float, default=0.5)
+    parser.add_argument("--qwen-vad-chunks", dest="qwen_vad_chunks",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="Cut Qwen clips on silence (VAD) so each clip's first token "
+                             "sits where speech starts, reducing leading-anchor drift "
+                             "(default on; use --no-qwen-vad-chunks for fixed tiling).")
+    parser.add_argument("--qwen-vad-threshold", type=float, default=0.1)
+    parser.add_argument("--qwen-vad-max-cluster-gap", type=float, default=2.0)
     parser.add_argument(
         "--qwen-filter-hallucinations",
         action="store_true",
