@@ -32,6 +32,10 @@ class SubtitleEntry:
     avg_logprob: float | None = None
     no_speech_prob: float | None = None
     compression_ratio: float | None = None
+    # True when the forced aligner gave this cue a zero-width span (all its
+    # characters share one timestamp) so its start/end are an artefact, not a real
+    # localisation. Used to resolve same-start pile-ups without dropping real cues.
+    collapsed: bool = False
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:

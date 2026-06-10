@@ -71,6 +71,21 @@ DEFAULT_GLOSSARY = (
         note="妻子称自己丈夫",
         forbidden=("主人", "师傅"),
     ),
+    # 契約結ぶ／契約: realistic-drama "sign a contract". Steer away from Sakura's stiff
+    # literary "缔结契约" toward the colloquial "签合同/合同" (phrase form first so the
+    # verb 結ぶ=签 is kept). Wrong for fantasy/pact titles, fine for this content.
+    GlossaryTerm(
+        source="契約結ぶ",
+        target="签合同",
+        note="口语",
+        forbidden=("缔结",),
+    ),
+    GlossaryTerm(
+        source="契約",
+        target="合同",
+        note="口语",
+        forbidden=("缔结",),
+    ),
 )
 
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import time
+import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -25,11 +27,46 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().p
 DEFAULT_MODEL = PROJECT_ROOT / "models" / "Qwen3-ASR-1.7B"
 DEFAULT_ALIGNER = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 
+# Qwen3-ASR `context` is injected as the recognition system prompt to bias decoding.
+# No built-in context by default. Listing a homophone term by its correct spelling
+# can fix that one word, but a standing prompt also pushes the model to emit listed
+# words that were not spoken and can degrade unrelated lines, so it is not worth it
+# for a single homophone. Pass per-title names/terms explicitly with --context.
+DEFAULT_ASR_CONTEXT = ""
+
 # Characters that end a sentence-level cue.
 SENTENCE_END_CHARS = "。！？!?…．."
 # Punctuation/whitespace that carries no timing and is ignored when matching the
 # punctuated `result.text` against the forced-aligner character stream.
 PUNCT_CHARS = set("。、，,！？!?…．・「」『』（）()【】〔〕〜~ー　 \t\r\n")
+# Clause/sentence punctuation preferred as cut points when a cue must be split.
+BREAK_PUNCT = set("。、，,！？!?…．")
+# A cue whose raw (pre-floor) aligned span is at or below this is treated as a
+# collapsed point — the aligner stamped all its characters on one instant rather
+# than localising them. See sentences_from_alignment / drop_same_start_piles.
+COLLAPSED_SPAN_SECONDS = 1e-3
+
+# Punctuation / elongation / small kana stripped (everywhere, not just the ends)
+# before testing whether a cue is a bare interjection mora.
+INTERJECTION_DROP_CHARS = set("。、，．・！？!?…．.,「」『』（）()【】〔〕〜~ーｰっッぁぃぅぇぉ　 \t\r\n\"'")
+# Bare filler morae. A cue that reduces to one of these *and* is walled by long
+# silence on both sides carries no dialogue — it is almost always VAD catching a
+# breath/moan or a music blip that Qwen labels with a default うん. The silence
+# gate (drop_isolated_interjections) is what keeps genuine one-word replies, which
+# sit next to other speech, safe. Elongation marks are removed before matching, so
+# あー→あ, うーん→うん, ねー→ね all fold into the cores below.
+ISOLATED_INTERJECTION_CORES = {
+    "うん", "ううん", "ん", "んん",
+    "ねえ", "ね",
+    "あ", "ああ", "あん",
+    "は", "はあ", "はん",
+    "ふ", "ふう", "ふん",
+    "え", "ええ",
+    "お", "おお", "おう",
+    "う", "うう",
+    "ひ", "ひん",
+    "へ", "ほ",
+}
 
 
 @dataclass
@@ -154,6 +191,50 @@ def split_into_units(text: str, max_chars: int) -> list[str]:
     return result
 
 
+def _split_segment(
+    tokens: list[tuple[str, float, float, bool]],
+    max_chars: int,
+    max_duration: float,
+    min_pause: float = 0.12,
+) -> list[list[tuple[str, float, float, bool]]]:
+    """Split one timed token run so each piece fits max_chars/max_duration.
+
+    Each token is one content character (with any trailing punctuation) plus its
+    aligner start/end and an is-break flag (ends in clause punctuation). A piece is
+    grown greedily until the budget is hit, then cut at, in priority: the last
+    clause-punctuation token, else the largest pause >= min_pause, else the budget
+    edge. This turns punctuation-free run-ons (Qwen sometimes emits no punctuation
+    for long continuous speech) into several correctly-timed cues instead of one
+    cue clamped to max_duration that hides its own tail.
+    """
+    pieces: list[list[tuple[str, float, float, bool]]] = []
+    i, n = 0, len(tokens)
+    while i < n:
+        j = i + 1
+        while j < n and (j - i) < max_chars and (tokens[j - 1][2] - tokens[i][1]) <= max_duration:
+            j += 1
+        if j >= n:
+            pieces.append(tokens[i:n])
+            break
+        cut = None
+        for k in range(j, i, -1):  # last clause-punctuation token in the window
+            if tokens[k - 1][3]:
+                cut = k
+                break
+        if cut is None:  # largest pause within the window
+            best_gap = min_pause
+            for k in range(i + 1, j + 1):
+                gap = tokens[k][1] - tokens[k - 1][2]
+                if gap >= best_gap:
+                    best_gap = gap
+                    cut = k
+        if cut is None:  # no punctuation, no pause: cut at the budget edge
+            cut = j
+        pieces.append(tokens[i:cut])
+        i = cut
+    return pieces
+
+
 def sentences_from_alignment(
     text: str,
     time_stamps,
@@ -169,11 +250,11 @@ def sentences_from_alignment(
 
     The punctuated `result.text` is authoritative for content (no token
     concatenation artifacts); aligner characters are consumed in order only to
-    assign start/end. A 30s ASR window can merge utterances that are seconds
-    apart into one sentence; the aligner then stretches that sentence across the
-    pause. To keep each cue anchored to its own audio, a sentence is broken
-    wherever consecutive characters are separated by more than max_internal_gap.
-    Cue length is floored at min_duration and clamped at max_duration.
+    assign start/end. A 30s ASR window can merge utterances that are seconds apart
+    into one sentence; the aligner then stretches that sentence across the pause, so
+    a segment is first broken wherever consecutive characters are separated by more
+    than max_internal_gap. Each segment is then split (see _split_segment) so no cue
+    exceeds max_chars/max_duration even when Qwen emitted no punctuation.
     """
     char_times = flatten_item_chars(time_stamps, max_char_seconds)
     units = split_into_units(text, max_chars)
@@ -188,41 +269,46 @@ def sentences_from_alignment(
         pos += need
         if not span:
             continue
-        # Split the unit on large internal time gaps, keeping punctuation attached
-        # to the preceding content character.
-        seg_chars: list[str] = []
-        seg_span: list[tuple[str, float, float]] = []
+        # One token per content character: (display, start, end, ends_in_break_punct).
+        # Punctuation has no aligner time, so it rides on the preceding character.
+        tokens: list[tuple[str, float, float, bool]] = []
         ci = 0
-        prev_end: float | None = None
-
-        def flush() -> None:
-            if not seg_span:
-                return
-            start = offset + seg_span[0][1]
-            end = offset + seg_span[-1][2]
-            end = max(end, start + min_duration)
-            end = min(end, start + max_duration)
-            display = "".join(seg_chars).strip()
-            if display:
-                entries.append(SubtitleEntry(start, end, display))
-
         for ch in unit:
             if ch in PUNCT_CHARS:
-                seg_chars.append(ch)
+                if tokens:
+                    disp, s, e, br = tokens[-1]
+                    tokens[-1] = (disp + ch, s, e, br or ch in BREAK_PUNCT)
                 continue
             if ci >= len(span):
-                seg_chars.append(ch)
+                if tokens:
+                    disp, s, e, br = tokens[-1]
+                    tokens[-1] = (disp + ch, s, e, br)
                 continue
-            cstart = span[ci][1]
-            if prev_end is not None and seg_span and (cstart - prev_end) > max_internal_gap:
-                flush()
-                seg_chars = []
-                seg_span = []
-            seg_chars.append(ch)
-            seg_span.append(span[ci])
-            prev_end = span[ci][2]
+            tokens.append((ch, span[ci][1], span[ci][2], False))
             ci += 1
-        flush()
+        if not tokens:
+            continue
+        # Break on large internal time gaps (pauses between merged utterances).
+        segments: list[list[tuple[str, float, float, bool]]] = [[tokens[0]]]
+        for tok in tokens[1:]:
+            if tok[1] - segments[-1][-1][2] > max_internal_gap:
+                segments.append([tok])
+            else:
+                segments[-1].append(tok)
+        for segment in segments:
+            for piece in _split_segment(segment, max_chars, max_duration):
+                start = offset + piece[0][1]
+                end = offset + piece[-1][2]
+                # A zero-width raw span means the aligner could not localise this
+                # piece and collapsed all its characters onto one instant (typically a
+                # short trailing word snapped to the next utterance's onset). Flag it
+                # so a same-start pile-up keeps the genuinely-timed cue, not this point.
+                collapsed = (end - start) <= COLLAPSED_SPAN_SECONDS
+                end = max(end, start + min_duration)
+                end = min(end, start + max_duration)
+                display = "".join(t[0] for t in piece).strip()
+                if display:
+                    entries.append(SubtitleEntry(start, end, display, collapsed=collapsed))
     return entries
 
 
@@ -233,16 +319,91 @@ def drop_same_start_piles(entries: list[SubtitleEntry], tol: float = 0.05) -> li
     onto one timestamp, producing several cues with the same start that the shared
     overlap resolver leaves alone (it skips equal starts to avoid zero-duration
     cues). Their timing is meaningless, so rather than fan them into a flashing
-    staircase we keep the first and discard the rest. Genuinely distinct cues have
-    different start times and are untouched.
+    staircase we collapse each same-start pile to a single cue.
+
+    Which member to keep depends on *why* they share a start. Two cases:
+      - Moaning staircase: every member is a collapsed point (zero raw span). Their
+        order is arbitrary, so we keep the first.
+      - Snapped trailing word: a short word the aligner could not localise (e.g. a
+        trailing 「です。」) is stamped on the *next* utterance's onset, so a collapsed
+        point lands on the same start as a genuinely-timed full sentence. Keeping the
+        first would drop the real line, so a real-span cue always wins over a
+        collapsed point.
+    Genuinely distinct cues have different start times and are untouched.
     """
     ordered = sorted(entries, key=lambda e: (e.start, e.end))
     result: list[SubtitleEntry] = []
     for entry in ordered:
         if result and entry.start - result[-1].start <= tol:
+            # Replace the kept cue only when it is a collapsed point and the new one
+            # is genuinely timed; otherwise keep the first (both real, or both
+            # collapsed, or kept-real vs new-collapsed).
+            if result[-1].collapsed and not entry.collapsed:
+                result[-1] = entry
             continue
         result.append(entry)
     return result
+
+
+def _interjection_core(text: str) -> str:
+    """Reduce a cue's text to its bare mora for interjection matching.
+
+    Drops punctuation, elongation marks and small kana everywhere (not just the
+    ends) so that あー, あっ, 「あ…」 all collapse to あ.
+    """
+    s = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in s if ch not in INTERJECTION_DROP_CHARS)
+
+
+def drop_isolated_interjections(
+    entries: list[SubtitleEntry],
+    min_silence: float,
+    run_min: int = 3,
+    run_gap: float = 5.0,
+) -> tuple[list[SubtitleEntry], list[SubtitleEntry]]:
+    """Drop filler morae (うん/ん/ねえ/あ …) that carry no dialogue.
+
+    Two complementary cases, both keyed on a cue reducing to a single interjection
+    mora (see ISOLATED_INTERJECTION_CORES):
+
+      - Isolated blip: one filler walled by ``min_silence`` seconds of silence on
+        both sides — a stray VAD breath/moan in an otherwise quiet stretch.
+      - Interjection chain: a run of ``run_min``+ consecutive fillers whose adjacent
+        gaps stay within ``run_gap``. Real dialogue never strings 3+ bare うん in a
+        row, so this is the signature of VAD slicing a music bed into blips that Qwen
+        labels with a default うん. A chain is dropped even when it abuts real speech
+        (its bracketing silence may be short), because the chain itself is the tell.
+
+    The silence gate keeps genuine one-word replies — which sit next to other speech
+    and never chain — safe. A missing neighbour (list edge) counts as infinite
+    silence. ``min_silence``<=0 disables the isolated rule; ``run_min``<=0 the chain.
+    """
+    if not entries or (min_silence <= 0 and run_min <= 0):
+        return entries, []
+    ordered = sorted(entries, key=lambda e: (e.start, e.end))
+    n = len(ordered)
+    is_filler = [_interjection_core(e.text) in ISOLATED_INTERJECTION_CORES for e in ordered]
+    drop = [False] * n
+    i = 0
+    while i < n:
+        if not is_filler[i]:
+            i += 1
+            continue
+        # Extend a chain of consecutive fillers separated by <= run_gap.
+        j = i
+        while j + 1 < n and is_filler[j + 1] and (ordered[j + 1].start - ordered[j].end) <= run_gap:
+            j += 1
+        lead = ordered[i].start - ordered[i - 1].end if i > 0 else float("inf")
+        trail = ordered[j + 1].start - ordered[j].end if j + 1 < n else float("inf")
+        bracketed = min_silence > 0 and lead >= min_silence and trail >= min_silence
+        chained = run_min > 0 and (j - i + 1) >= run_min
+        if bracketed or chained:
+            for k in range(i, j + 1):
+                drop[k] = True
+        i = j + 1
+    kept = [e for e, d in zip(ordered, drop) if not d]
+    dropped = [e for e, d in zip(ordered, drop) if d]
+    return kept, dropped
 
 
 def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace) -> list[SubtitleEntry]:
@@ -255,6 +416,15 @@ def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace
     """
     entries = drop_same_start_piles(entries)
     entries = resolve_overlaps(entries)
+    entries, dropped = drop_isolated_interjections(
+        entries,
+        args.isolated_interjection_silence,
+        args.isolated_interjection_run,
+        args.isolated_interjection_run_gap,
+    )
+    if dropped:
+        samples = "、".join(e.text.strip() for e in dropped[:6])
+        print(f"Dropped isolated interjections: {len(dropped)} ({samples})", flush=True)
     if args.min_cue_seconds > 0:
         entries = [e for e in entries if e.end - e.start >= args.min_cue_seconds]
     return entries
@@ -298,15 +468,40 @@ def build_fixed_jobs(duration: float, args: argparse.Namespace) -> list[ChunkJob
     return jobs
 
 
-def build_vad_jobs(audio, samplerate: int, duration: float, args: argparse.Namespace) -> list[ChunkJob]:
-    """Speech-aligned clips: one clip per speech cluster, anchored to real time.
+def merge_clusters_into_groups(clusters: list[Interval], merge_gap: float, target_seconds: float) -> list[Interval]:
+    """Optional second-level merge: pack consecutive speech clusters separated by
+    <= merge_gap into a context group, capped at target_seconds. Off when
+    merge_gap <= 0 (each cluster is its own group), so the default keeps the
+    single-cluster behaviour that was measured to have low drift.
+    """
+    if merge_gap <= 0:
+        return [Interval(c.start, c.end) for c in clusters]
+    groups: list[Interval] = []
+    cur: Interval | None = None
+    for c in clusters:
+        if cur is None:
+            cur = Interval(c.start, c.end)
+        elif (c.start - cur.end) <= merge_gap and (c.end - cur.start) <= target_seconds:
+            cur.end = c.end
+        else:
+            groups.append(cur)
+            cur = Interval(c.start, c.end)
+    if cur is not None:
+        groups.append(cur)
+    return groups
 
-    Fixed tiling stamps a chunk's first token to the chunk start, so a clip whose
-    speech begins seconds in drags that cue early. Cutting clips on silence puts
-    each clip's first token where speech actually starts, removing that anchor
-    drift. VAD is used only for boundary placement with a loose threshold: a
-    missed boundary still leaves the audio covered by a neighbouring clip, so
-    recall is unaffected.
+
+def build_vad_jobs(audio, samplerate: int, duration: float, args: argparse.Namespace) -> list[ChunkJob]:
+    """Speech-aligned clips: VAD is a speech anchor, not a sentence splitter.
+
+    intervals -> speech clusters (vad_max_cluster_gap) -> optional context groups
+    (vad_context_merge_gap, off by default). Each group is split into <=30s subs
+    with overlap; cue ownership uses overlap-midpoint handoff so an internal sub's
+    leading token (anchored to the clip edge) is owned by the previous sub where it
+    sits mid-clip and is well timed. The audio fed to Qwen may be widened a little
+    for recognition context (pre/post), but cue ownership stays tight; the total
+    leading expansion (including the pad speech_clusters already added) is capped at
+    vad_max_leading_silence so widening never re-introduces leading-silence drift.
     """
     if samplerate != 16000:
         raise SystemExit("--vad-chunks requires 16 kHz audio")
@@ -320,17 +515,28 @@ def build_vad_jobs(audio, samplerate: int, duration: float, args: argparse.Names
         args.vad_window_overlap_seconds,
     )
     clusters = speech_clusters(intervals, args.vad_max_cluster_gap, args.vad_pad_seconds, duration)
+    groups = merge_clusters_into_groups(clusters, args.vad_context_merge_gap, args.vad_target_context_seconds)
+    if args.vad_context_merge_gap > 0:
+        print(f"VAD context merge: clusters={len(clusters)} -> groups={len(groups)}", flush=True)
+
     max_clip = min(args.chunk_seconds, 30.0)
-    step = max_clip - args.chunk_overlap_seconds
+    overlap = args.chunk_overlap_seconds
+    half = overlap / 2.0
+    # Cap the new pre-context so pad (already in cluster.start) + pre <= max leading silence.
+    effective_pre = min(args.vad_pre_context_seconds, max(0.0, args.vad_max_leading_silence - args.vad_pad_seconds))
+
     jobs: list[ChunkJob] = []
-    for cluster in clusters:
-        if cluster.end - cluster.start < args.vad_min_clip_seconds:
+    for group in groups:
+        if group.end - group.start < args.vad_min_clip_seconds:
             continue
-        subs = split_clip_with_overlap(cluster, max_clip, args.chunk_overlap_seconds)
+        subs = split_clip_with_overlap(group, max_clip, overlap)
+        last = len(subs) - 1
         for i, sub in enumerate(subs):
-            is_last = i == len(subs) - 1
-            keep_hi = float("inf") if is_last else sub.start + step
-            jobs.append(ChunkJob(sub.start, sub.end, sub.start, keep_hi))
+            keep_lo = group.start if i == 0 else sub.start + half
+            keep_hi = group.end if i == last else sub.end - half
+            audio_start = max(0.0, sub.start - effective_pre)
+            audio_end = min(duration, sub.end + args.vad_post_context_seconds)
+            jobs.append(ChunkJob(audio_start, audio_end, keep_lo, keep_hi))
     return jobs
 
 
@@ -366,9 +572,11 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
     """Rebuild cues from a dumped raw chunk stream, skipping the model entirely."""
     duration = raw["duration"]
     step = raw["chunk_seconds"] - raw["chunk_overlap_seconds"]
+    context = raw.get("context", "")
     entries: list[SubtitleEntry] = []
     for ch in raw["chunks"]:
         items = [_RawItem(it["text"], it["start"], it["end"]) for it in ch["items"]]
+        text = "" if is_context_echo(ch["text"], context) else ch["text"]
         if "keep_lo" in ch:
             keep_lo = ch["keep_lo"]
             keep_hi = ch["keep_hi"] if ch.get("keep_hi") is not None else float("inf")
@@ -378,12 +586,43 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
             keep_hi = float("inf") if ch["end"] >= duration - 1e-3 else ch["start"] + step
         entries.extend(
             chunk_entries(
-                ch["text"], items, start=ch["start"],
+                text, items, start=ch["start"],
                 keep_lo=keep_lo, keep_hi=keep_hi, args=args,
             )
         )
     entries.sort(key=lambda e: (e.start, e.end))
     return entries
+
+
+def is_context_echo(text: str, context: str) -> bool:
+    """True if `text` is the ASR regurgitating its biasing context.
+
+    Qwen3-ASR injects the context as a system prompt; on near-silent/indistinct
+    clips it falls back to emitting the context text itself. Such echoes are a long
+    contiguous slice of the context, so we flag a clip whose text is mostly a
+    substring of the context. Genuine dialogue that merely reuses a context hotword
+    (e.g. a real line "間接キスになるや") shares only that short word and is kept.
+    """
+    if not context or not text:
+        return False
+    t = text.strip().strip("。．.！!？?、,…　 ")
+    if len(t) < 6:
+        return False
+    match = difflib.SequenceMatcher(None, t, context).find_longest_match(0, len(t), 0, len(context))
+    return match.size >= 6 and match.size >= 0.7 * len(t)
+
+
+def asr_context(args: argparse.Namespace) -> str:
+    """Effective Qwen3-ASR context: the built-in hotword list plus any --context the
+    caller appends (e.g. per-title character names). --no-default-context drops the
+    built-in list."""
+    parts: list[str] = []
+    if not getattr(args, "no_default_context", False) and DEFAULT_ASR_CONTEXT.strip():
+        parts.append(DEFAULT_ASR_CONTEXT)
+    extra = getattr(args, "context", "") or ""
+    if extra.strip():
+        parts.append(extra.strip())
+    return " ".join(parts)
 
 
 def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list[ChunkResult], dict]:
@@ -411,11 +650,19 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
     entries: list[SubtitleEntry] = []
     chunk_results: list[ChunkResult] = []
     raw_chunks: list[dict] = []
-    print(
+    context = asr_context(args)
+    banner = (
         f"Qwen ASR: audio={duration / 60.0:.1f}min mode={mode} chunks={len(jobs)} "
-        f"batch={args.batch_size} chunk_seconds={args.chunk_seconds} overlap={args.chunk_overlap_seconds}",
-        flush=True,
+        f"batch={args.batch_size} chunk_seconds={args.chunk_seconds} overlap={args.chunk_overlap_seconds}"
     )
+    if mode == "vad":
+        banner += (
+            f" vad_pad={args.vad_pad_seconds} pre_context={args.vad_pre_context_seconds} "
+            f"post_context={args.vad_post_context_seconds} max_leading={args.vad_max_leading_silence}"
+        )
+    print(banner, flush=True)
+    if context:
+        print(f"ASR context: {context}", flush=True)
 
     for group_start in range(0, len(jobs), args.batch_size):
         group = jobs[group_start : group_start + args.batch_size]
@@ -423,6 +670,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
         t0 = time.time()
         results = model.transcribe(
             audio=clips,
+            context=context,
             language=[args.language] * len(clips),
             return_time_stamps=True,
         )
@@ -430,8 +678,11 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
         for job, result in zip(group, results):
             text = str(result.text or "").strip()
             items = getattr(result.time_stamps, "items", None) if result.time_stamps is not None else None
+            # Drop context echoes (the model regurgitating the biasing prompt on
+            # near-silent clips) before they become spurious cues.
+            display_text = "" if is_context_echo(text, context) else text
             kept = chunk_entries(
-                text, items, start=job.start,
+                display_text, items, start=job.start,
                 keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
             )
             entries.extend(kept)
@@ -473,6 +724,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
         "chunk_overlap_seconds": args.chunk_overlap_seconds,
         "duration": duration,
         "mode": mode,
+        "context": context,
         "chunks": raw_chunks,
     }
     return entries, chunk_results, raw
@@ -491,6 +743,11 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--chunk-seconds", type=float, default=30.0)
     parser.add_argument("--chunk-overlap-seconds", type=float, default=3.0)
+    # Qwen3-ASR biasing context (system prompt). --context appends to the built-in
+    # hotword list; --no-default-context drops the built-in list entirely.
+    parser.add_argument("--context", default="", help="Extra ASR context/hotwords appended to the built-in list (e.g. character names).")
+    parser.add_argument("--no-default-context", dest="no_default_context", action="store_true")
+    parser.set_defaults(no_default_context=False)
     # VAD chunking: cut clips on silence so each clip's first token sits where
     # speech starts (removes leading-anchor drift). Opt-in; default is fixed tiling.
     parser.add_argument("--vad-chunks", dest="vad_chunks", action="store_true")
@@ -503,12 +760,28 @@ def main() -> None:
     parser.add_argument("--vad-max-cluster-gap", type=float, default=2.0)
     parser.add_argument("--vad-pad-seconds", type=float, default=0.2)
     parser.add_argument("--vad-min-clip-seconds", type=float, default=0.3)
+    # Small audio context fed to Qwen (does not change cue ownership). Total leading
+    # expansion incl. vad_pad_seconds is capped at --vad-max-leading-silence.
+    parser.add_argument("--vad-pre-context-seconds", type=float, default=0.0)
+    parser.add_argument("--vad-post-context-seconds", type=float, default=0.5)
+    parser.add_argument("--vad-max-leading-silence", type=float, default=0.5)
+    # Optional second-level merge of speech clusters into context groups. Off by
+    # default (0.0): the first-level speech_clusters(vad_max_cluster_gap) merge stands.
+    parser.add_argument("--vad-context-merge-gap", type=float, default=0.0)
+    parser.add_argument("--vad-target-context-seconds", type=float, default=24.0)
     parser.add_argument("--phrase-max-chars", type=int, default=26)
     parser.add_argument("--phrase-max-duration", type=float, default=8.0)
     parser.add_argument("--phrase-max-internal-gap", type=float, default=2.0)
     parser.add_argument("--phrase-max-char-seconds", type=float, default=0.5)
     parser.add_argument("--min-duration", type=float, default=0.8)
     parser.add_argument("--min-cue-seconds", type=float, default=0.2)
+    # Drop bare filler morae (うん/ん/ねえ/あ …) that carry no dialogue. Two rules
+    # (drop_isolated_interjections): an isolated blip needs this much silence on both
+    # sides (0 disables); a chain of --isolated-interjection-run+ consecutive fillers
+    # within --isolated-interjection-run-gap is dropped outright (run<=0 disables).
+    parser.add_argument("--isolated-interjection-silence", type=float, default=3.0)
+    parser.add_argument("--isolated-interjection-run", type=int, default=3)
+    parser.add_argument("--isolated-interjection-run-gap", type=float, default=5.0)
     parser.add_argument("--near-dup-max-gap", type=float, default=0.25)
     parser.add_argument("--near-dup-similarity", type=float, default=0.90)
     parser.add_argument("--near-dup-squeeze-seconds", type=float, default=0.5)
@@ -543,6 +816,8 @@ def main() -> None:
             raise SystemExit(f"Missing Qwen forced aligner: {args.forced_aligner}")
         if args.chunk_overlap_seconds >= args.chunk_seconds:
             raise SystemExit("--chunk-overlap-seconds must be smaller than --chunk-seconds")
+        if 0 < args.vad_context_merge_gap < args.vad_max_cluster_gap:
+            raise SystemExit("--vad-context-merge-gap must be >= --vad-max-cluster-gap (or 0 to disable)")
 
     started = time.time()
     if args.from_raw is not None:
@@ -580,6 +855,11 @@ def main() -> None:
                 "phrase_max_duration": args.phrase_max_duration,
                 "phrase_max_internal_gap": args.phrase_max_internal_gap,
                 "phrase_max_char_seconds": args.phrase_max_char_seconds,
+                "vad_chunks": args.vad_chunks,
+                "vad_pre_context_seconds": args.vad_pre_context_seconds,
+                "vad_post_context_seconds": args.vad_post_context_seconds,
+                "vad_max_leading_silence": args.vad_max_leading_silence,
+                "vad_context_merge_gap": args.vad_context_merge_gap,
                 "entries": len(entries),
                 "elapsed_seconds": time.time() - started,
                 "chunks": [asdict(item) for item in chunk_results],

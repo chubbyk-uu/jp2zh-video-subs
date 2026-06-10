@@ -57,8 +57,11 @@ class VideoJob:
     audio: Path
 
 
-def extract_audio(video: Path, audio: Path) -> None:
+def extract_audio(video: Path, audio: Path, reuse_existing: bool = False) -> None:
     audio.parent.mkdir(parents=True, exist_ok=True)
+    if reuse_existing and audio.exists() and audio.stat().st_size > 0:
+        print(f"Reusing existing audio: {audio}", flush=True)
+        return
     run(["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)])
 
 
@@ -181,6 +184,8 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             str(args.qwen_phrase_max_char_seconds),
             "--min-cue-seconds",
             str(args.min_cue_seconds),
+            "--isolated-interjection-silence",
+            str(args.qwen_isolated_interjection_silence),
         ]
         if args.qwen_filter_hallucinations:
             transcribe_command.append("--filter-hallucinations")
@@ -192,6 +197,8 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
                 "--vad-max-cluster-gap",
                 str(args.qwen_vad_max_cluster_gap),
             ]
+        if args.qwen_context:
+            transcribe_command += ["--context", args.qwen_context]
         run(transcribe_command)
     elif not args.gap_fill:
         transcribe_command = [
@@ -485,6 +492,7 @@ def main() -> None:
     parser.add_argument("--continue-on-error", action="store_true", help="Continue batch processing after a video fails")
     parser.add_argument("--keep-audio", action="store_true", help="Deprecated: audio is kept by default")
     parser.add_argument("--delete-audio", action="store_true", help="Delete extracted WAV audio after processing")
+    parser.add_argument("--reuse-existing-audio", action="store_true", help="Skip ffmpeg extraction when the WAV already exists (reuse it)")
     parser.add_argument("--skip-quality-report", action="store_true", help="Do not write a quality report")
     parser.add_argument(
         "--gap-fill",
@@ -532,6 +540,9 @@ def main() -> None:
     parser.add_argument("--qwen-phrase-max-duration", type=float, default=8.0)
     parser.add_argument("--qwen-phrase-max-internal-gap", type=float, default=2.0)
     parser.add_argument("--qwen-phrase-max-char-seconds", type=float, default=0.5)
+    parser.add_argument("--qwen-context", default="",
+                        help="Extra Qwen ASR hotwords/context appended to the built-in list "
+                             "(e.g. per-title character names) to fix homophone/name errors.")
     parser.add_argument("--qwen-vad-chunks", dest="qwen_vad_chunks",
                         action=argparse.BooleanOptionalAction, default=True,
                         help="Cut Qwen clips on silence (VAD) so each clip's first token "
@@ -539,6 +550,7 @@ def main() -> None:
                              "(default on; use --no-qwen-vad-chunks for fixed tiling).")
     parser.add_argument("--qwen-vad-threshold", type=float, default=0.1)
     parser.add_argument("--qwen-vad-max-cluster-gap", type=float, default=2.0)
+    parser.add_argument("--qwen-isolated-interjection-silence", type=float, default=3.0)
     parser.add_argument(
         "--qwen-filter-hallucinations",
         action="store_true",
@@ -659,7 +671,7 @@ def main() -> None:
     total = len(jobs)
 
     def extract(job: VideoJob) -> None:
-        extract_audio(job.video, job.audio)
+        extract_audio(job.video, job.audio, reuse_existing=args.reuse_existing_audio)
 
     def process(job: VideoJob) -> None:
         print(f"\n[{job.index}/{total}]", flush=True)
