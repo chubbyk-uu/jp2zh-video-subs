@@ -226,7 +226,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 | 速度 | 批量主识别快；无补漏阶段 | 主识别相当；`--gap-fill` 多一个更慢的二阶段 |
 | 轻声召回 | 好；不需要单独召回阶段 | 加 `--gap-fill` 进一步提升 |
 | 专有名词/人名 | 偏弱——可能听错人名和生僻词 | 同样弱；两者对没见过的人名都不可靠 |
-| 后处理 | 极简（重叠 + 一闪而过 cue 清理）；想要 Whisper 那套过滤用 `--qwen-filter-hallucinations` | 完整的压缩比/循环/去重/幻觉过滤 |
+| 后处理 | 极简（重叠 + 一闪而过 cue 清理，外加丢弃 うん/あ 这类不含台词的纯语气词 cue）；想要 Whisper 那套过滤用 `--qwen-filter-hallucinations` | 完整的压缩比/循环/去重/幻觉过滤 |
 | 显存 | 1.7B + 0.6B，默认 `--qwen-batch-size 24` 约 11.5 GB（12 GB 卡降到 `16`） | large-v3，约 10 GB（调小 `--main-local-batch-size` 更省） |
 | VAD 切片代价 | 切片数约为均匀平铺的 2 倍，主识别略慢，换来更小漂移 | 不适用 |
 
@@ -265,6 +265,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt # 旧版 H
 - Qwen VAD 阈值：`--qwen-vad-threshold 0.1`（只用于定边界，不掉召回）
 - Qwen 切片长度/重叠：`--qwen-chunk-seconds 30`、`--qwen-chunk-overlap-seconds 3`
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--qwen-filter-hallucinations` 开启）
+- 对 Qwen 输出的纯语气词过滤：开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——要么是两侧各有 `--qwen-isolated-interjection-silence 3.0` 秒静默的孤立单条，要么是连续 3 条及以上的语气词链（VAD 把背景音乐切成碎片的典型特征）。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）
 - 翻译后端：`sakura`（`models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf`）；用 `--translator hymt` 切换 HY-MT
 - 识别语言：日语 `ja`
 - 翻译上下文：默认带前 2 轮对话历史（上文原文/译文作为对话上文，当前轮只翻当前句）；设为 0 则逐句独立翻译
@@ -395,6 +396,12 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --skip-quality-report
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --delete-audio
+```
+
+复用已抽取的 WAV、跳过重新 `ffmpeg`（在同一视频上反复跑流程调 ASR/翻译时很方便）：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --reuse-existing-audio
 ```
 
 不把最终字幕拷贝到输入视频同目录：
@@ -589,7 +596,7 @@ Missing HY-MT model: .../models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 通常是 `llama-cpp-python` 没有启用 CUDA，或者 GPU 显存不足导致部分层在 CPU 上运行。先按"CUDA 验证"检查。如果无法使用 GPU，可以继续用 CPU 跑，但长视频会很慢。
 
 如果是 ASR 阶段 CUDA 显存不足，降低批大小：默认 Qwen 后端用 `--qwen-batch-size`（默认
-`16`），`--asr whisper` 用 `--main-local-batch-size`（默认 `24`，偏吞吐量，小显存显卡可能偏高）。
+`24`），`--asr whisper` 用 `--main-local-batch-size`（默认 `24`，偏吞吐量，小显存显卡可能偏高）。
 
 ### `ffmpeg` 找不到
 

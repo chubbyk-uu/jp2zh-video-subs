@@ -253,7 +253,7 @@ Disable the VAD cutting (fall back to uniform 30 s tiling) with `--no-qwen-vad-c
 | Speed | Fast batched main pass; no gap-fill stage | Comparable main pass; `--gap-fill` adds a slower second pass |
 | Recall on quiet speech | Good; no separate recall stage needed | Add `--gap-fill` to push recall further |
 | Proper nouns / names | Weaker — can mishear names and rare terms | Similar weakness; neither is reliable on unseen names |
-| Post-processing | Minimal (overlap + flash-cue hygiene); opt into Whisper-style filters with `--qwen-filter-hallucinations` | Full compression/looping/duplicate/hallucination filtering |
+| Post-processing | Minimal (overlap + flash-cue hygiene, plus dropping bare filler interjections like うん/あ that carry no dialogue); opt into Whisper-style filters with `--qwen-filter-hallucinations` | Full compression/looping/duplicate/hallucination filtering |
 | VRAM | 1.7B + 0.6B, ~11.5 GB at default `--qwen-batch-size 24` (lower to `16` on 12 GB cards) | large-v3, ~10 GB (less with smaller `--main-local-batch-size`) |
 | Cost of VAD cutting | ~2× clips vs uniform tiling, so the main pass is a bit slower in exchange for less drift | n/a |
 
@@ -300,6 +300,7 @@ The one-command pipeline uses:
 - Qwen VAD threshold: `--qwen-vad-threshold 0.1` (boundary placement only, recall-safe)
 - Qwen clip length / overlap: `--qwen-chunk-seconds 30` with `--qwen-chunk-overlap-seconds 3`
 - Whisper-style hallucination filtering on Qwen output: off (opt in with `--qwen-filter-hallucinations`)
+- Bare filler-interjection dropping on Qwen output: on. Cues that reduce entirely to a single filler mora (うん/ん/ねえ/あ …) and carry no dialogue are removed — either an isolated blip walled by `--qwen-isolated-interjection-silence 3.0` seconds of silence on both sides, or a chain of 3+ such fillers in a row (the signature of VAD slicing a music bed into blips). Only cues that are *entirely* a filler are eligible, so any line containing real words always survives. Disable with `--qwen-isolated-interjection-silence 0` (also turns off the chain rule)
 - Translation backend: `sakura` (`models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf`); use `--translator hymt` for HY-MT
 - Source language: Japanese, `ja`
 - Translation context: previous 2 dialogue turns as chat history (previous source/translation pairs; the current turn carries only the current line). 0 translates each line standalone
@@ -449,6 +450,13 @@ Delete extracted WAV audio after processing:
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --delete-audio
+```
+
+Reuse an already-extracted WAV instead of re-running `ffmpeg` (handy when re-running the
+pipeline on the same video to tune ASR/translation):
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --reuse-existing-audio
 ```
 
 Do not copy the final subtitle file (the SRT, or the ASS with `--bilingual`) next to the input video:
@@ -665,7 +673,7 @@ required for `--asr whisper` and the HY-MT model only for `--translator hymt`.
 Usually `llama-cpp-python` is running on CPU or the GPU does not have enough VRAM. Run the CUDA check above. CPU translation still works, but long videos will take much longer.
 
 If ASR fails with CUDA out-of-memory, lower the batch size: `--qwen-batch-size` for the
-default Qwen backend (default `16`), or `--main-local-batch-size` for `--asr whisper`
+default Qwen backend (default `24`), or `--main-local-batch-size` for `--asr whisper`
 (default `24`, throughput-oriented and possibly too high for smaller GPUs).
 
 ### `ffmpeg` Not Found
