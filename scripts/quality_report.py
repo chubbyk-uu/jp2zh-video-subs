@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -112,6 +113,16 @@ def parse_fills_metadata(path: Path | None) -> list[FillMetadataRow]:
     return rows
 
 
+def load_json(path: Path | None) -> dict:
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def percentile(values: list[float], q: float) -> float:
     if not values:
         return 0.0
@@ -201,6 +212,7 @@ def build_report(args: argparse.Namespace) -> str:
     ja_entries = parse_srt(args.ja_srt)
     zh_entries = parse_srt(args.zh_srt)
     fills_metadata = parse_fills_metadata(getattr(args, "fills_metadata", None))
+    qwen_metadata = load_json(getattr(args, "qwen_metadata", None))
     warn_avg_logprob_below = getattr(args, "warn_avg_logprob_below", -0.80)
     warn_no_speech_prob_above = getattr(args, "warn_no_speech_prob_above", 0.50)
     warn_compression_ratio_above = getattr(args, "warn_compression_ratio_above", 2.20)
@@ -292,6 +304,50 @@ def build_report(args: argparse.Namespace) -> str:
             lines.append(f"- possible {reason} at {item.index}: {item.text[:80]}")
         lines.append("")
 
+    if qwen_metadata:
+        chunks = qwen_metadata.get("chunks", [])
+        if not isinstance(chunks, list):
+            chunks = []
+        clip_seconds = 0.0
+        model_seconds = 0.0
+        empty_text_chunks = 0
+        chunk_segments = 0
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            try:
+                clip_seconds += max(0.0, float(chunk.get("end", 0.0)) - float(chunk.get("start", 0.0)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                model_seconds += max(0.0, float(chunk.get("seconds", 0.0)))
+            except (TypeError, ValueError):
+                pass
+            if not str(chunk.get("text", "") or "").strip():
+                empty_text_chunks += 1
+            try:
+                chunk_segments += int(chunk.get("segments", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+
+        lines.append("[Qwen ASR Metadata]")
+        lines.append(f"mode: {qwen_metadata.get('mode', 'n/a')}")
+        lines.append(f"vad_chunks: {qwen_metadata.get('vad_chunks', 'n/a')}")
+        if "vad_threshold" in qwen_metadata:
+            lines.append(f"vad_threshold: {qwen_metadata.get('vad_threshold')}")
+        lines.append(f"batch_size: {qwen_metadata.get('batch_size', 'n/a')}")
+        lines.append(f"chunk_count: {len(chunks)}")
+        if chunks:
+            lines.append(f"empty_text_chunks: {empty_text_chunks}")
+            lines.append(f"segments_from_chunks: {chunk_segments}")
+            lines.append(f"clip_audio_total_min: {clip_seconds / 60.0:.1f}")
+            if model_seconds > 0:
+                lines.append(f"model_batch_time_total_min_approx: {model_seconds / 60.0:.1f}")
+        if "elapsed_seconds" in qwen_metadata:
+            lines.append(f"elapsed_min: {float(qwen_metadata['elapsed_seconds']) / 60.0:.1f}")
+        lines.append(f"entries_after_postprocess: {qwen_metadata.get('entries', 'n/a')}")
+        lines.append("")
+
     if fills_metadata:
         kept = [item for item in fills_metadata if item.status == "kept"]
         filtered = [item for item in fills_metadata if item.status == "filtered"]
@@ -381,6 +437,7 @@ def main() -> None:
     parser.add_argument("--zh-srt", type=Path)
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--fills-metadata", type=Path)
+    parser.add_argument("--qwen-metadata", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--vad-threshold", type=float, default=0.05)
     parser.add_argument("--vad-min-silence-ms", type=int, default=500)

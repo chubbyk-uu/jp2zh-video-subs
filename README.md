@@ -25,13 +25,14 @@ The one-command pipeline performs these steps:
 3. Translate the Japanese SRT into Simplified Chinese with the selected translation backend (`sakura` by default).
 4. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles.
 
-The default Qwen backend cuts clips on silence with a loose VAD (used only for clip
-boundaries, so it never gates out speech), transcribes them in batches, and times each
-sentence from the forced aligner. Qwen rarely fabricates content, so the heavy
-Whisper-style hallucination filters are off by default and there is no separate gap-fill
-stage. The translation step runs in its own process so the ASR and translation models
-never share VRAM. All generated SRTs are sorted and de-overlapped so cues never overlap
-or go out of order.
+The default Qwen backend cuts clips on silence with a loose VAD to reduce timing drift,
+transcribes those clips in batches, and times each sentence from the forced aligner. In
+current project tests it has been less prone to Whisper-style looping/hallucination, so
+the heavy Whisper filters are off by default and there is no separate gap-fill stage. If
+you suspect the VAD-cut pass missed speech, use `--no-qwen-vad-chunks` to fall back to
+uniform timeline tiling for comparison. The translation step runs in its own process so
+the ASR and translation models never share VRAM. All generated SRTs are sorted and
+de-overlapped so cues never overlap or go out of order.
 
 With `--asr whisper`, step 2 runs the sliding-window Whisper pass, and `--gap-fill`
 adds an audio-aware second pass to recover more quiet or missed speech (slower, and more
@@ -79,7 +80,7 @@ Verified environment:
 - `torch`: 2.10 with CUDA 12.8 (`cu128`) on an RTX 50-series (Blackwell) GPU
 - `faster-whisper`: 1.2.1 (legacy ASR backend)
 - `llama-cpp-python`: 0.3.23
-- `huggingface-hub`: 1.15.0
+- `huggingface-hub`: 0.36.2
 
 Recommended hardware:
 
@@ -232,8 +233,8 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # legacy Whi
 ### How the default Qwen line works
 
 1. A loose sliding-window VAD (`--qwen-vad-threshold 0.1`) finds speech and groups it
-   into clusters. The VAD is used **only to place clip boundaries**, never to drop audio,
-   so a missed boundary still leaves the speech covered by a neighbouring clip (recall-safe).
+   into clusters. The VAD places Qwen clips near speech starts, which reduces
+   leading-anchor drift, but a missed speech island can still reduce recall.
 2. Each cluster becomes a clip anchored at the real speech-start time (long clusters are
    split with overlap). Clips are transcribed in batches by `Qwen3-ASR-1.7B`.
 3. The model's punctuated `result.text` is the authoritative content; the separate
@@ -248,10 +249,10 @@ Disable the VAD cutting (fall back to uniform 30 s tiling) with `--no-qwen-vad-c
 
 | | **Qwen (default)** | **Whisper (`--asr whisper`)** |
 |---|---|---|
-| Content quality | Cleaner; rarely fabricates, so heavy hallucination filters are off by default | More prone to hallucination/looping on quiet audio; needs the built-in filters |
+| Content quality | Cleaner in current tests; heavy hallucination filters are off by default | More prone to hallucination/looping on quiet audio; needs the built-in filters |
 | Timing drift | Lower — VAD-cut clips anchor cues to real speech onset | Higher on long quiet stretches |
 | Speed | Fast batched main pass; no gap-fill stage | Comparable main pass; `--gap-fill` adds a slower second pass |
-| Recall on quiet speech | Good; no separate recall stage needed | Add `--gap-fill` to push recall further |
+| Recall on quiet speech | Good in current tests; verify with the quality report and use fixed tiling if VAD-cut clips look suspicious | Add `--gap-fill` to push recall further |
 | Proper nouns / names | Weaker — can mishear names and rare terms | Similar weakness; neither is reliable on unseen names |
 | Post-processing | Minimal (overlap + flash-cue hygiene, plus dropping bare filler interjections like うん/あ that carry no dialogue); opt into Whisper-style filters with `--qwen-filter-hallucinations` | Full compression/looping/duplicate/hallucination filtering |
 | VRAM | 1.7B + 0.6B, ~11.5 GB at default `--qwen-batch-size 24` (lower to `16` on 12 GB cards) | large-v3, ~10 GB (less with smaller `--main-local-batch-size`) |
@@ -297,7 +298,7 @@ The one-command pipeline uses:
 
 - ASR backend: `qwen` (`models/Qwen3-ASR-1.7B` + `models/Qwen3-ForcedAligner-0.6B`)
 - Qwen VAD-cut clips: on (`--qwen-vad-chunks`; disable with `--no-qwen-vad-chunks`)
-- Qwen VAD threshold: `--qwen-vad-threshold 0.1` (boundary placement only, recall-safe)
+- Qwen VAD threshold: `--qwen-vad-threshold 0.1` (places speech-cut clips; lower may recover quieter speech but creates more clips)
 - Qwen clip length / overlap: `--qwen-chunk-seconds 30` with `--qwen-chunk-overlap-seconds 3`
 - Whisper-style hallucination filtering on Qwen output: off (opt in with `--qwen-filter-hallucinations`)
 - Bare filler-interjection dropping on Qwen output: on. Cues that reduce entirely to a single filler mora (うん/ん/ねえ/あ …) and carry no dialogue are removed — either an isolated blip walled by `--qwen-isolated-interjection-silence 3.0` seconds of silence on both sides, or a chain of 3+ such fillers in a row (the signature of VAD slicing a music bed into blips). Only cues that are *entirely* a filler are eligible, so any line containing real words always survives. Disable with `--qwen-isolated-interjection-silence 0` (also turns off the chain rule)
@@ -305,14 +306,15 @@ The one-command pipeline uses:
 - Source language: Japanese, `ja`
 - Translation context: previous 2 dialogue turns as chat history (previous source/translation pairs; the current turn carries only the current line). 0 translates each line standalone
 - Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
-- Gap fill: not used by the Qwen backend (Qwen has full-coverage recall already)
+- Gap fill: not used by the Qwen backend (use `--no-qwen-vad-chunks` for a fixed-tiling Qwen comparison, or `--asr whisper --gap-fill` for the legacy recall pass)
 - Quality report: enabled by default
 - Extracted WAV audio: kept by default
 
-The Qwen backend has no gap-fill stage; its VAD-cut, full-coverage main pass is the
-only recognition pass. Tune recall vs. clip count with `--qwen-vad-threshold` (default
-0.1; lower keeps more quiet speech) and `--qwen-vad-max-cluster-gap` (default 2.0; higher
-merges nearby speech into fewer, longer clips and runs faster).
+The Qwen backend has no gap-fill stage; its VAD-cut main pass is the only recognition
+pass. Tune recall vs. clip count with `--qwen-vad-threshold` (default 0.1; lower keeps
+more quiet speech) and `--qwen-vad-max-cluster-gap` (default 2.0; higher merges nearby
+speech into fewer, longer clips and runs faster). Use `--no-qwen-vad-chunks` when you
+want a fixed-tiling sanity check that does not depend on VAD-found clusters.
 
 ### Whisper backend defaults (`--asr whisper`)
 
@@ -707,11 +709,11 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### Some Speech Is Missed
 
-With the default Qwen backend, the VAD is used only for clip boundaries (loose
-`--qwen-vad-threshold 0.1`), so it does not gate out speech; missed clusters can be
-recovered by lowering the threshold further or raising `--qwen-vad-max-cluster-gap`
-(default 2.0) to merge nearby speech. As a sanity fallback, `--no-qwen-vad-chunks`
-tiles the whole timeline uniformly so no region is skipped.
+With the default Qwen backend, the VAD decides where speech-cut clips are created. It is
+loose by default (`--qwen-vad-threshold 0.1`), but if a speech island is missed it may
+not be sent to Qwen. Lower the threshold, raise `--qwen-vad-max-cluster-gap` (default
+2.0), or use `--no-qwen-vad-chunks` to tile the whole timeline uniformly so no region is
+skipped.
 
 With `--asr whisper`, the sliding-window main pass already scans the whole WAV with
 local VAD. If you prefer more recall, lower `--main-local-vad-threshold` (default 0.6)

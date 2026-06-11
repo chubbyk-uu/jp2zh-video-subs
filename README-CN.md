@@ -25,7 +25,7 @@
 3. 用所选翻译后端（默认 `sakura`）把日语 SRT 翻译成简体中文字幕 SRT。
 4. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
 
-默认的 Qwen 后端用一个宽松的 VAD 按静音切片（VAD 只用来定切片边界，不会把语音过滤掉），分批识别，再用强制对齐器给每句定时。Qwen 很少凭空捏造内容，所以默认关闭 Whisper 那套重量级幻觉过滤，也没有单独的补漏阶段。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
+默认的 Qwen 后端用一个宽松的 VAD 按静音切片来降低时间轴漂移，分批识别，再用强制对齐器给每句定时。在当前项目测试里，它比 Whisper 更少出现循环/幻觉，所以默认关闭 Whisper 那套重量级幻觉过滤，也没有单独的补漏阶段。如果怀疑 VAD 切片漏掉语音，用 `--no-qwen-vad-chunks` 回退到固定均匀平铺做对比。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
 
 用 `--asr whisper` 时，第 2 步走 Whisper 滑窗主识别，`--gap-fill` 再加一个音频补漏阶段捞回更多轻声/漏识别语音（更慢，也更容易引入幻觉或听错的字幕，重要输出建议复查质量报告和补漏元数据）。
 
@@ -70,7 +70,7 @@
 - `torch`：2.10，CUDA 12.8（`cu128`），在 RTX 50 系（Blackwell）显卡上验证
 - `faster-whisper`：1.2.1（旧版识别后端）
 - `llama-cpp-python`：0.3.23
-- `huggingface-hub`：1.15.0
+- `huggingface-hub`：0.36.2
 
 推荐硬件：
 
@@ -210,7 +210,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 
 ### 默认 Qwen 主线的工作方式
 
-1. 用一个宽松的滑窗 VAD（`--qwen-vad-threshold 0.1`）找出语音并聚成簇。VAD **只用来定切片边界**，不会丢音频，所以即便漏了一个边界，那段语音也还在相邻切片里（不掉召回）。
+1. 用一个宽松的滑窗 VAD（`--qwen-vad-threshold 0.1`）找出语音并聚成簇。VAD 用来把 Qwen 切片放在语音起点附近，从而降低首词时间漂移；如果整段语音岛被 VAD 漏掉，召回仍可能下降。
 2. 每个语音簇变成一个切片，锚定在真实的语音起始时间上（过长的簇带重叠再切分），分批送入 `Qwen3-ASR-1.7B`。
 3. 模型带标点的 `result.text` 作为权威文本内容；单独的 `Qwen3-ForcedAligner-0.6B` 给出逐字时间。句子按标点和较大的内部时间间隙切分，再由对齐器定时。
 4. 因为每个切片都从语音起点开始，第一个 token 锚在真实语音上而不是切片边缘，从而消除了大部分"首词被拽早"的漂移。
@@ -221,10 +221,10 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 
 | | **Qwen（默认）** | **Whisper（`--asr whisper`）** |
 |---|---|---|
-| 文本质量 | 更干净；很少捏造，默认关闭重量级幻觉过滤 | 安静音频上更易幻觉/循环，需要内置过滤 |
+| 文本质量 | 当前测试里更干净；默认关闭重量级幻觉过滤 | 安静音频上更易幻觉/循环，需要内置过滤 |
 | 时间漂移 | 更小——VAD 切片把字幕锚在真实语音起点 | 长段安静处更大 |
 | 速度 | 批量主识别快；无补漏阶段 | 主识别相当；`--gap-fill` 多一个更慢的二阶段 |
-| 轻声召回 | 好；不需要单独召回阶段 | 加 `--gap-fill` 进一步提升 |
+| 轻声召回 | 当前测试里较好；仍建议看质量报告，VAD 切片可疑时用固定平铺对比 | 加 `--gap-fill` 进一步提升 |
 | 专有名词/人名 | 偏弱——可能听错人名和生僻词 | 同样弱；两者对没见过的人名都不可靠 |
 | 后处理 | 极简（重叠 + 一闪而过 cue 清理，外加丢弃 うん/あ 这类不含台词的纯语气词 cue）；想要 Whisper 那套过滤用 `--qwen-filter-hallucinations` | 完整的压缩比/循环/去重/幻觉过滤 |
 | 显存 | 1.7B + 0.6B，默认 `--qwen-batch-size 24` 约 11.5 GB（12 GB 卡降到 `16`） | large-v3，约 10 GB（调小 `--main-local-batch-size` 更省） |
@@ -262,7 +262,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt # 旧版 H
 
 - 识别后端：`qwen`（`models/Qwen3-ASR-1.7B` + `models/Qwen3-ForcedAligner-0.6B`）
 - Qwen VAD 切片：开启（`--qwen-vad-chunks`；用 `--no-qwen-vad-chunks` 关闭）
-- Qwen VAD 阈值：`--qwen-vad-threshold 0.1`（只用于定边界，不掉召回）
+- Qwen VAD 阈值：`--qwen-vad-threshold 0.1`（用于定位语音切片；调低可能捞回轻声，但切片数会增加）
 - Qwen 切片长度/重叠：`--qwen-chunk-seconds 30`、`--qwen-chunk-overlap-seconds 3`
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--qwen-filter-hallucinations` 开启）
 - 对 Qwen 输出的纯语气词过滤：开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——要么是两侧各有 `--qwen-isolated-interjection-silence 3.0` 秒静默的孤立单条，要么是连续 3 条及以上的语气词链（VAD 把背景音乐切成碎片的典型特征）。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）
@@ -270,13 +270,14 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt # 旧版 H
 - 识别语言：日语 `ja`
 - 翻译上下文：默认带前 2 轮对话历史（上文原文/译文作为对话上文，当前轮只翻当前句）；设为 0 则逐句独立翻译
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
-- 二阶段补漏：Qwen 后端不使用（Qwen 本身就是全覆盖识别）
+- 二阶段补漏：Qwen 后端不使用（需要对比时用 `--no-qwen-vad-chunks` 做固定平铺 Qwen 识别，或用 `--asr whisper --gap-fill` 走旧版补漏）
 - 质量报告：默认开启
 - 抽取音频：默认保留 WAV，方便复查和调参
 
-Qwen 后端没有补漏阶段，VAD 切片的全覆盖主识别就是唯一识别。用 `--qwen-vad-threshold`
+Qwen 后端没有补漏阶段，VAD 切片主识别就是唯一识别。用 `--qwen-vad-threshold`
 （默认 0.1，调低捞回更多轻声）和 `--qwen-vad-max-cluster-gap`（默认 2.0，调高把邻近语音
-并成更少更长的切片、跑得更快）在召回和切片数之间权衡。
+并成更少更长的切片、跑得更快）在召回和切片数之间权衡。需要不依赖 VAD 语音簇的兜底对比时，用
+`--no-qwen-vad-chunks`。
 
 ### Whisper 后端默认值（`--asr whisper`）
 
@@ -626,9 +627,10 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### 字幕有漏识别
 
-默认 Qwen 后端的 VAD 只用来定切片边界（宽松的 `--qwen-vad-threshold 0.1`），不会把语音
-过滤掉；漏掉的语音簇可以进一步调低阈值，或调高 `--qwen-vad-max-cluster-gap`（默认 2.0）
-把邻近语音并起来。作为兜底，`--no-qwen-vad-chunks` 会均匀平铺整条时间轴，不跳过任何区域。
+默认 Qwen 后端的 VAD 决定哪些语音切片会送入 Qwen。默认阈值较宽松
+（`--qwen-vad-threshold 0.1`），但如果整段语音岛被漏掉，它仍可能没有进入识别。可以调低阈值，
+或调高 `--qwen-vad-max-cluster-gap`（默认 2.0）把邻近语音并起来。作为兜底，
+`--no-qwen-vad-chunks` 会均匀平铺整条时间轴，不跳过任何区域。
 
 `--asr whisper` 时，主识别已经用滑窗局部 VAD 扫描整段 WAV。想提高召回，可以降低
 `--main-local-vad-threshold`（默认 0.6）或提高 `--main-local-vad-max-cluster-gap`

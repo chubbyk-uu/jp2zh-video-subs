@@ -238,8 +238,8 @@ def process_video_stages(
     translate_input_srt = ja_srt
 
     if args.asr == "qwen":
-        # Qwen3-ASR full-coverage sliding pass: no VAD gate, no gap fill, minimal
-        # post-processing (it rarely fabricates, so Whisper-style filters are off).
+        # Qwen3-ASR uses VAD-cut clips by default to reduce leading-anchor drift.
+        # Use --no-qwen-vad-chunks for fixed uniform tiling when VAD boundaries are suspect.
         transcribe_command = [
             sys.executable,
             str(QWEN_TRANSCRIBE_SCRIPT),
@@ -547,6 +547,8 @@ def process_video_stages(
         ]
         if args.gap_fill:
             quality_command.extend(["--fills-metadata", str(job_dir / f"{video.stem}.fills.tsv")])
+        if args.asr == "qwen":
+            quality_command.extend(["--qwen-metadata", str(ja_srt.with_suffix(ja_srt.suffix + ".meta.json"))])
         run(quality_command, log)
         log.print(f"Quality report: {report_path}")
 
@@ -712,9 +714,9 @@ def main() -> None:
         args.reuse_existing_audio = True
 
     if args.asr == "qwen":
-        # Qwen is a full-coverage pass; gap fill is a Whisper-only stage.
+        # Qwen gap-fill is intentionally disabled; use Whisper when a second recall pass is required.
         if args.gap_fill:
-            print("Note: --gap-fill is ignored with --asr qwen (full-coverage pass).", flush=True)
+            print("Note: --gap-fill is ignored with --asr qwen; gap fill belongs to the Whisper backend.", flush=True)
         args.gap_fill = False
 
     if args.keep_audio:

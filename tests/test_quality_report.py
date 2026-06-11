@@ -199,6 +199,37 @@ def test_build_report_lists_possible_japanese_or_traditional_left(tmp_path):
     assert "possible non_simplified_cjk at 1" in report
 
 
+def test_build_report_lists_qwen_metadata(tmp_path):
+    qwen_meta = tmp_path / "sample.ja.srt.meta.json"
+    qwen_meta.write_text(
+        """{
+          "mode": "vad",
+          "vad_chunks": true,
+          "vad_threshold": 0.1,
+          "batch_size": 24,
+          "entries": 3,
+          "elapsed_seconds": 120.0,
+          "chunks": [
+            {"start": 0.0, "end": 10.0, "text": "こんにちは", "segments": 2, "seconds": 4.0},
+            {"start": 20.0, "end": 25.0, "text": "", "segments": 0, "seconds": 2.0}
+          ]
+        }""",
+        encoding="utf-8",
+    )
+    args = _report_args(tmp_path)
+    args.qwen_metadata = qwen_meta
+
+    report = build_report(args)
+
+    assert "[Qwen ASR Metadata]" in report
+    assert "mode: vad" in report
+    assert "vad_threshold: 0.1" in report
+    assert "chunk_count: 2" in report
+    assert "empty_text_chunks: 1" in report
+    assert "segments_from_chunks: 2" in report
+    assert "entries_after_postprocess: 3" in report
+
+
 def test_build_report_respects_relaxed_thresholds(tmp_path):
     args = _report_args(tmp_path)
     # Loosen every threshold so even the bad line is no longer flagged.

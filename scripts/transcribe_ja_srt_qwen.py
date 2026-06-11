@@ -406,8 +406,8 @@ def drop_isolated_interjections(
 def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace) -> list[SubtitleEntry]:
     """Minimal time/format hygiene for Qwen output.
 
-    Qwen rarely fabricates content, so the Whisper hallucination/near-duplicate
-    filters are not applied here (they are opt-in via --filter-hallucinations).
+    In current project tests Qwen has been less prone to Whisper-style
+    looping/hallucination, so those filters are opt-in via --filter-hallucinations.
     This keeps the transcript faithful: only overlap trimming, a sub-second
     flash-cue floor, and de-overlap of collapsed-timestamp cues.
     """
@@ -858,6 +858,10 @@ def main() -> None:
                 "phrase_max_internal_gap": args.phrase_max_internal_gap,
                 "phrase_max_char_seconds": args.phrase_max_char_seconds,
                 "vad_chunks": args.vad_chunks,
+                "vad_threshold": args.vad_threshold,
+                "vad_window_seconds": args.vad_window_seconds,
+                "vad_window_overlap_seconds": args.vad_window_overlap_seconds,
+                "vad_max_cluster_gap": args.vad_max_cluster_gap,
                 "vad_pre_context_seconds": args.vad_pre_context_seconds,
                 "vad_post_context_seconds": args.vad_post_context_seconds,
                 "vad_max_leading_silence": args.vad_max_leading_silence,
