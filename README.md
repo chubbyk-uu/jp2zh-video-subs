@@ -382,6 +382,7 @@ For `path/to/input.mp4`, the default outputs are:
 
 - `work/input/input.wav`: extracted 16 kHz mono WAV audio.
 - `work/input/input.ja.srt`: main-pass Japanese subtitles used for translation by default.
+- `work/input/pipeline.log`: full pipeline log with per-stage timestamps (stdout + stderr of every subprocess). Appended across runs, survives terminal disconnects and reboots.
 - `work/input/input.quality.txt`: quality report.
 - `outputs/input.zh.srt`: final Chinese SRT.
 - `path/to/input.zh.srt`: final Chinese SRT copied next to the input video. With
@@ -459,6 +460,16 @@ pipeline on the same video to tune ASR/translation):
 python scripts/video_to_zh_srt.py path/to/input.mp4 --reuse-existing-audio
 ```
 
+Resume an interrupted run — skips stages whose outputs already exist and look complete:
+transcription (Japanese SRT exists and is non-empty), translation (Chinese SRT cue count
+matches the source Japanese SRT), and audio extraction (WAV exists and is non-empty).
+The ASS and quality-report stages always rerun (fast, no GPU). `--resume` implies
+`--reuse-existing-audio`:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/videos/ --bilingual --resume
+```
+
 Do not copy the final subtitle file (the SRT, or the ASS with `--bilingual`) next to the input video:
 
 ```bash
@@ -476,9 +487,10 @@ bilingual mode only the ASS is placed beside the video (the SRT is not), while
 `outputs/` still keeps both the SRT and the ASS. SRT cannot reliably style each
 line differently, so the bilingual output is ASS: the Chinese line is larger and
 coloured, the Japanese line is smaller and gray. Defaults can be changed with
-`--bilingual-zh-font-size`,
-`--bilingual-ja-font-size`, `--bilingual-zh-colour`, and `--bilingual-ja-colour`
-(colours use the ASS `&HAABBGGRR` format). The Japanese line comes from the
+`--bilingual-zh-font-size`, `--bilingual-ja-font-size`, `--bilingual-zh-colour`,
+`--bilingual-ja-colour` (colours use the ASS `&HAABBGGRR` format), and `--font`
+(default `Microsoft YaHei`, which covers both the Chinese and Japanese lines on Windows;
+non-Windows players fall back via fontconfig). The Japanese line comes from the
 Japanese SRT used for translation (`.ja.srt` by default, `.filled.ja.srt` with
 `--gap-fill`), so the two lines stay aligned cue by cue.
 

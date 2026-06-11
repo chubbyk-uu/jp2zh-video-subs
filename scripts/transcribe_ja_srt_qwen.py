@@ -8,9 +8,6 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import torch
-from qwen_asr import Qwen3ASRModel
-
 from srt_utils import Interval
 from transcribe_ja_srt import (
     SubtitleEntry,
@@ -626,6 +623,11 @@ def asr_context(args: argparse.Namespace) -> str:
 
 
 def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list[ChunkResult], dict]:
+    # Imported here so the pure helpers (filters, chunking) stay importable in
+    # environments without the GPU stack, e.g. the pytest suite.
+    import torch
+    from qwen_asr import Qwen3ASRModel
+
     model = Qwen3ASRModel.from_pretrained(
         str(args.model),
         dtype=getattr(torch, args.dtype),

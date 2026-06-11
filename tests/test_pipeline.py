@@ -2,7 +2,7 @@ import threading
 
 import pytest
 
-from video_to_zh_srt import run_pipeline
+from video_to_zh_srt import run_pipeline, srt_cue_count, translation_is_complete
 
 
 def test_run_pipeline_processes_all_jobs_in_order():
@@ -80,3 +80,39 @@ def test_run_pipeline_raises_without_continue_on_error():
 
     with pytest.raises(RuntimeError):
         run_pipeline([0, 1, 2], lambda job: None, process, continue_on_error=False)
+
+
+SRT_TWO_CUES = """1
+00:00:01,000 --> 00:00:02,000
+こんにちは
+
+2
+00:00:03,000 --> 00:00:04,000
+さようなら
+"""
+
+
+def test_srt_cue_count(tmp_path):
+    srt = tmp_path / "a.srt"
+    srt.write_text(SRT_TWO_CUES, encoding="utf-8")
+    assert srt_cue_count(srt) == 2
+    assert srt_cue_count(tmp_path / "missing.srt") == -1
+
+
+def test_translation_is_complete_requires_matching_cue_counts(tmp_path):
+    ja = tmp_path / "a.ja.srt"
+    zh = tmp_path / "a.zh.srt"
+    ja.write_text(SRT_TWO_CUES, encoding="utf-8")
+
+    # Missing or empty translation: not complete.
+    assert not translation_is_complete(zh, ja)
+    zh.write_text("", encoding="utf-8")
+    assert not translation_is_complete(zh, ja)
+
+    # A crash mid-translation leaves fewer cues than the source: not complete.
+    zh.write_text("1\n00:00:01,000 --> 00:00:02,000\n你好\n", encoding="utf-8")
+    assert not translation_is_complete(zh, ja)
+
+    # One cue per source cue: complete.
+    zh.write_text(SRT_TWO_CUES.replace("こんにちは", "你好").replace("さようなら", "再见"), encoding="utf-8")
+    assert translation_is_complete(zh, ja)

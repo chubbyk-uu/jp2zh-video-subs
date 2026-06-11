@@ -333,6 +333,7 @@ Whisper 窗口内以免被截断。`--main-local-vad-dry-run` 可只打印选区
 
 - `work/input/input.wav`：抽取出来的 16 kHz 单声道音频。
 - `work/input/input.ja.srt`：主识别日语字幕，默认也是翻译输入。
+- `work/input/pipeline.log`：完整流水线日志，记录每个子进程的时间戳、stdout 和 stderr。追加模式，终端断连或系统重启也不会丢。
 - `work/input/input.quality.txt`：质量报告。
 - `outputs/input.zh.srt`：最终中文字幕。
 - `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。加 `--bilingual` 时，放到视频同目录的是双语 `input.zh.ass`，而**不是** SRT（SRT 仍保留在 `outputs/`）。
@@ -404,6 +405,14 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --delete-audio
 python scripts/video_to_zh_srt.py path/to/input.mp4 --reuse-existing-audio
 ```
 
+从中断处续跑——跳过产物已存在且完整的阶段：转写（日语 SRT 存在且非空）、翻译（中文 SRT
+条数与源日语 SRT 一致）、音频抽取（WAV 存在且非空）。ASS 和质量报告始终重新生成（耗时极短，
+不占 GPU）。`--resume` 隐含 `--reuse-existing-audio`：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/videos/ --bilingual --resume
+```
+
 不把最终字幕拷贝到输入视频同目录：
 
 ```bash
@@ -416,7 +425,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
 python scripts/video_to_zh_srt.py path/to/input.mp4 --bilingual
 ```
 
-会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour` 调整（颜色用 ASS 的 `&HAABBGGRR` 格式）。下面那行日文来自参与翻译的日语 SRT（默认 `.ja.srt`，加 `--gap-fill` 时为 `.filled.ja.srt`），因此中日两行逐条对齐。
+会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour`（颜色用 ASS 的 `&HAABBGGRR` 格式）和 `--font`（默认 `Microsoft YaHei`，在 Windows 上中日文行均有字形；非 Windows 播放器经 fontconfig 回退）调整。下面那行日文来自参与翻译的日语 SRT（默认 `.ja.srt`，加 `--gap-fill` 时为 `.filled.ja.srt`），因此中日两行逐条对齐。
 
 调整最终中文字幕和双语 ASS 的显示留白：
 

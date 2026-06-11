@@ -9,7 +9,10 @@ from srt_utils import parse_time
 
 
 # ASS colours are &HAABBGGRR (alpha, blue, green, red); alpha 00 is fully opaque.
-DEFAULT_FONT = "Arial"
+# Microsoft YaHei ships with every Windows install and covers both the Chinese line
+# and the Japanese kana/kanji line; Arial has no CJK glyphs, which left the actual
+# typeface to the player's fallback. Non-Windows renderers fall back via fontconfig.
+DEFAULT_FONT = "Microsoft YaHei"
 DEFAULT_ZH_FONT_SIZE = 36
 DEFAULT_JA_FONT_SIZE = 24
 DEFAULT_ZH_COLOUR = "&H0000FFFF"  # yellow, larger top line

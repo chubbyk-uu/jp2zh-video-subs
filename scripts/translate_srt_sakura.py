@@ -179,22 +179,38 @@ def main() -> None:
         history: list[tuple[str, str]] = []
         previous_end: float | None = None
         term_issue_rows: list[tuple[Entry, str, list[GlossaryTerm]]] = []
+        # Repeated lines dominate this material, so standalone translations are
+        # memoized. A line is standalone when no history turns apply — either none
+        # are available or translate_one drops them (context-sensitive short text) —
+        # which makes its translation a pure function of the source text.
+        translation_cache: dict[str, str] = {}
+        cache_hits = 0
         for index, entry in enumerate(entries):
             next_entry = entries[index + 1] if index + 1 < len(entries) else None
             if previous_end is not None and entry.start - previous_end > HISTORY_RESET_SECONDS:
                 history = []
             turns = history[-args.context_size :] if args.context_size > 0 else []
-            translated = translate_with_retry(llm, entry.text, turns, glossary)
+            source = normalize_source(entry.text)
+            standalone = not turns or is_context_sensitive_short_text(source)
+            cached = translation_cache.get(source) if standalone else None
+            if cached is not None:
+                translated = cached
+                cache_hits += 1
+            else:
+                translated = translate_with_retry(llm, entry.text, turns, glossary)
+                if standalone and translated:
+                    translation_cache[source] = translated
             if not translated:
                 translated = entry.text
             issues = glossary_issues(entry.text, translated, glossary)
             if issues:
                 term_issue_rows.append((entry, translated, issues))
             write_entry(f, entry, translated, next_entry, args.lead_out_seconds, args.min_display_seconds)
-            history.append((normalize_source(entry.text), translated))
+            history.append((source, translated))
             previous_end = entry.end
             print(f"{entry.index}: {translated}", flush=True)
 
+    print(f"Translation cache hits: {cache_hits}/{len(entries)}")
     print(f"Wrote {args.output}")
     if not args.no_terms_report and glossary:
         write_terms_report(terms_report_path, term_issue_rows)

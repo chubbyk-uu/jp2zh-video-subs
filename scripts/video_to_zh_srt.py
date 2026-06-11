@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import queue
 import shutil
 import subprocess
 import sys
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -38,14 +40,76 @@ VIDEO_EXTENSIONS = {
 }
 
 
-def run(command: list[str]) -> None:
-    print("+ " + " ".join(command), flush=True)
-    subprocess.run(command, check=True)
+class JobLog:
+    """Tees pipeline output into the job's work dir so it survives terminal loss
+    and /tmp cleanup; appended across runs, one file per video."""
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = path.open("a", encoding="utf-8")
+
+    def print(self, message: str) -> None:
+        print(message, flush=True)
+        self.file.write(message + "\n")
+        self.file.flush()
+
+    def write_raw(self, text: str) -> None:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        self.file.write(text)
+        self.file.flush()
+
+    def close(self) -> None:
+        self.file.close()
+
+
+def run(command: list[str], log: JobLog | None = None) -> None:
+    if log is None:
+        print("+ " + " ".join(command), flush=True)
+        subprocess.run(command, check=True)
+        return
+    log.print("+ " + " ".join(command))
+    # Child Python processes block-buffer stdout once it is a pipe; force line
+    # buffering so the console and log stay live. stderr is merged so tracebacks
+    # land in the log too.
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env) as proc:
+        assert proc.stdout is not None
+        # Chunked rather than line-based so \r progress (ffmpeg) still streams live.
+        while chunk := proc.stdout.read1(8192):
+            log.write_raw(chunk.decode("utf-8", errors="replace"))
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, command)
 
 
 def require_file(path: Path, label: str) -> None:
     if not path.exists():
         raise SystemExit(f"Missing {label}: {path}")
+
+
+def srt_cue_count(path: Path) -> int:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return -1
+    return sum(1 for line in text.splitlines() if "-->" in line)
+
+
+def translation_is_complete(zh_srt: Path, ja_srt: Path) -> bool:
+    """A finished translation has exactly one cue per source cue. The translator
+    writes incrementally, so a crash leaves a shorter (but valid-looking) SRT —
+    bare existence is not enough to resume past it."""
+    count = srt_cue_count(zh_srt)
+    return count > 0 and count == srt_cue_count(ja_srt)
+
+
+def resume_skip(args: argparse.Namespace, path: Path, log: JobLog, label: str) -> bool:
+    """Whether --resume can skip a stage whose output is written in one shot at the
+    end of the stage (transcription), making existence proof of completeness."""
+    if args.resume and path.exists() and path.stat().st_size > 0:
+        log.print(f"Resume: skipping {label}, reusing {path}")
+        return True
+    return False
 
 
 @dataclass
@@ -57,12 +121,16 @@ class VideoJob:
     audio: Path
 
 
-def extract_audio(video: Path, audio: Path, reuse_existing: bool = False) -> None:
+def extract_audio(video: Path, audio: Path, reuse_existing: bool = False, log: JobLog | None = None) -> None:
     audio.parent.mkdir(parents=True, exist_ok=True)
     if reuse_existing and audio.exists() and audio.stat().st_size > 0:
-        print(f"Reusing existing audio: {audio}", flush=True)
+        message = f"Reusing existing audio: {audio}"
+        if log is not None:
+            log.print(message)
+        else:
+            print(message, flush=True)
         return
-    run(["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)])
+    run(["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)], log)
 
 
 def run_pipeline(
@@ -148,9 +216,24 @@ def work_dir_for(video: Path, input_path: Path, work_dir: Path, recursive: bool)
 
 
 def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: Path, audio: Path) -> None:
-    print(f"\n==> Processing {video}", flush=True)
-    output.parent.mkdir(parents=True, exist_ok=True)
     job_dir.mkdir(parents=True, exist_ok=True)
+    log = JobLog(job_dir / "pipeline.log")
+    try:
+        log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} start {video.name} ===")
+        process_video_stages(args, video, output, job_dir, audio, log)
+        log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} done {video.name} ===")
+    except BaseException as exc:
+        log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} FAILED {video.name}: {exc!r} ===")
+        raise
+    finally:
+        log.close()
+
+
+def process_video_stages(
+    args: argparse.Namespace, video: Path, output: Path, job_dir: Path, audio: Path, log: JobLog
+) -> None:
+    log.print(f"\n==> Processing {video}")
+    output.parent.mkdir(parents=True, exist_ok=True)
     ja_srt = job_dir / f"{video.stem}.ja.srt"
     translate_input_srt = ja_srt
 
@@ -199,7 +282,8 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             ]
         if args.qwen_context:
             transcribe_command += ["--context", args.qwen_context]
-        run(transcribe_command)
+        if not resume_skip(args, ja_srt, log, "transcription"):
+            run(transcribe_command, log)
     elif not args.gap_fill:
         transcribe_command = [
             sys.executable,
@@ -266,7 +350,8 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             "--max-merge-gap",
             str(args.max_merge_gap),
         ]
-        run(transcribe_command)
+        if not resume_skip(args, ja_srt, log, "transcription"):
+            run(transcribe_command, log)
     else:
         # Transcribe and gap-fill share one loaded Whisper model in a single process.
         filled_ja_srt = job_dir / f"{video.stem}.filled.ja.srt"
@@ -388,7 +473,10 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             "--fill-support-max-ratio",
             str(args.fill_support_max_ratio),
         ]
-        run(fill_command)
+        # The fill stage writes the filled SRT and the fills metadata together at
+        # the end, so resuming needs both present.
+        if not (fills_metadata.exists() and resume_skip(args, filled_ja_srt, log, "transcription + gap fill")):
+            run(fill_command, log)
         translate_input_srt = filled_ja_srt
 
     # Sakura and HY-MT share the same CLI (input, --output, --model-path,
@@ -412,7 +500,10 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
         "--min-display-seconds",
         str(args.min_display_seconds),
     ]
-    run(translate_command)
+    if args.resume and translation_is_complete(output, translate_input_srt):
+        log.print(f"Resume: skipping translation, reusing {output}")
+    else:
+        run(translate_command, log)
 
     bilingual_output: Path | None = None
     if args.bilingual:
@@ -434,7 +525,7 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             args.bilingual_zh_colour,
             "--ja-colour",
             args.bilingual_ja_colour,
-        ])
+        ], log)
 
     if not args.skip_quality_report:
         report_path = job_dir / f"{video.stem}.quality.txt"
@@ -456,8 +547,8 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
         ]
         if args.gap_fill:
             quality_command.extend(["--fills-metadata", str(job_dir / f"{video.stem}.fills.tsv")])
-        run(quality_command)
-        print(f"Quality report: {report_path}")
+        run(quality_command, log)
+        log.print(f"Quality report: {report_path}")
 
     if args.delete_audio:
         audio.unlink(missing_ok=True)
@@ -471,15 +562,15 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
             shutil.copy2(source, destination)
         copied_to_video = destination
 
-    print(f"Wrote {output}")
+    log.print(f"Wrote {output}")
     if bilingual_output is not None:
-        print(f"Bilingual ASS: {bilingual_output}")
+        log.print(f"Bilingual ASS: {bilingual_output}")
     if copied_to_video is not None:
         label = "Bilingual ASS" if bilingual_output is not None else "Chinese SRT"
-        print(f"{label} next to video: {copied_to_video}")
-    print(f"Intermediate Japanese SRT: {ja_srt}")
+        log.print(f"{label} next to video: {copied_to_video}")
+    log.print(f"Intermediate Japanese SRT: {ja_srt}")
     if translate_input_srt != ja_srt:
-        print(f"Gap-filled Japanese SRT: {translate_input_srt}")
+        log.print(f"Gap-filled Japanese SRT: {translate_input_srt}")
 
 
 def main() -> None:
@@ -493,6 +584,12 @@ def main() -> None:
     parser.add_argument("--keep-audio", action="store_true", help="Deprecated: audio is kept by default")
     parser.add_argument("--delete-audio", action="store_true", help="Delete extracted WAV audio after processing")
     parser.add_argument("--reuse-existing-audio", action="store_true", help="Skip ffmpeg extraction when the WAV already exists (reuse it)")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip finished stages: reuse existing audio, transcription, and complete translations. "
+        "The ASS/quality-report stages always rerun (cheap, no model).",
+    )
     parser.add_argument("--skip-quality-report", action="store_true", help="Do not write a quality report")
     parser.add_argument(
         "--gap-fill",
@@ -611,6 +708,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.resume:
+        args.reuse_existing_audio = True
+
     if args.asr == "qwen":
         # Qwen is a full-coverage pass; gap fill is a Whisper-only stage.
         if args.gap_fill:
@@ -671,7 +771,14 @@ def main() -> None:
     total = len(jobs)
 
     def extract(job: VideoJob) -> None:
-        extract_audio(job.video, job.audio, reuse_existing=args.reuse_existing_audio)
+        log = JobLog(job.job_dir / "pipeline.log")
+        try:
+            extract_audio(job.video, job.audio, reuse_existing=args.reuse_existing_audio, log=log)
+        except BaseException as exc:
+            log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} FAILED extracting {job.video.name}: {exc!r} ===")
+            raise
+        finally:
+            log.close()
 
     def process(job: VideoJob) -> None:
         print(f"\n[{job.index}/{total}]", flush=True)
