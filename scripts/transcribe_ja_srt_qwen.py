@@ -232,6 +232,109 @@ def _split_segment(
     return pieces
 
 
+# Punctuation accepted as a filler-run boundary (rides on the preceding token's
+# display). A repetition run only collapses when both edges sit on such punctuation
+# or the segment boundary, so word-initial repetition inside real words (ああいう)
+# is never touched.
+RUN_BOUNDARY_PUNCT = set("。、，．,.！？!?…・")
+# Longest-first so うんうん matches core うん rather than two ん with stray う.
+FILLER_COLLAPSE_CORES = sorted(ISOLATED_INTERJECTION_CORES, key=len, reverse=True)
+
+
+def _token_core_char(display: str) -> str:
+    """The matching character a token contributes to a filler core, or "" when the
+    token is transparent (small kana / elongation that rides along a filler)."""
+    base = unicodedata.normalize("NFKC", display[:1])
+    return "" if base in INTERJECTION_DROP_CHARS else base
+
+
+def collapse_filler_repetitions(
+    tokens: list[tuple[str, float, float, bool]],
+) -> list[tuple[str, float, float, bool]]:
+    """Collapse a consecutive same-core filler run (うん、うん、うん…) to one instance.
+
+    Qwen sometimes transcribes a stretch of backchannel/moaning as one cue that
+    repeats a filler mora, either alone (うんうんうん。) or padded around real
+    speech (うん、うん、うん、一人。). The per-cue interjection filter only matches a
+    cue that *is* a single filler, so these slip through. Collapsing at the token
+    level keeps the aligner's per-character times, so the surviving cue's timing is
+    exact rather than re-derived.
+
+    The kept instance is the one adjacent to the surrounding real content — last
+    instance of a leading run, first of a trailing run — so the cue keeps a natural
+    lead-in (うん、一人。) and its start sits a beat early rather than late. A run
+    that spans the whole segment collapses to its first instance, which the
+    silence/chain gates in drop_isolated_interjections then judge as usual.
+    """
+    n = len(tokens)
+    if n < 2:
+        return tokens
+    cores = [_token_core_char(t[0]) for t in tokens]
+
+    def has_trailing_punct(idx: int) -> bool:
+        return any(ch in RUN_BOUNDARY_PUNCT for ch in tokens[idx][0][1:])
+
+    def match_core(core: str, start: int) -> int:
+        """Consume tokens from `start` matching `core` (transparent tokens ride
+        along); return the index past the match, or -1."""
+        pos = 0
+        j = start
+        while j < n and pos < len(core):
+            if cores[j] == "":
+                j += 1
+                continue
+            if cores[j] != core[pos]:
+                return -1
+            pos += 1
+            j += 1
+        return j if pos == len(core) else -1
+
+    keep = [True] * n
+    i = 0
+    while i < n:
+        if cores[i] == "":
+            i += 1
+            continue
+        run_core = None
+        instances: list[tuple[int, int]] = []
+        for core in FILLER_COLLAPSE_CORES:
+            first_end = match_core(core, i)
+            if first_end < 0:
+                continue
+            bounds = [(i, first_end)]
+            while (next_end := match_core(core, bounds[-1][1])) >= 0:
+                bounds.append((bounds[-1][1], next_end))
+            if len(bounds) >= 2:
+                # ああ/ええ/おお/んん … are lexical interjections in their own
+                # right, not padding; a run that *is* one known core stays whole
+                # (the whole-cue silence gate already knows how to judge it).
+                if core * len(bounds) in ISOLATED_INTERJECTION_CORES:
+                    continue
+                run_core, instances = core, bounds
+                break
+        if run_core is None:
+            i += 1
+            continue
+        run_end = instances[-1][1]
+        while run_end < n and cores[run_end] == "":  # absorb trailing small kana
+            run_end += 1
+        left_ok = i == 0 or has_trailing_punct(i - 1)
+        right_ok = run_end >= n or has_trailing_punct(run_end - 1)
+        if not (left_ok and right_ok):
+            i = run_end
+            continue
+        # Trailing run (real content before it) keeps its first instance; any run
+        # followed by content keeps its last. Whole-segment runs keep the first.
+        kept_lo, kept_hi = instances[-1] if run_end < n else instances[0]
+        for k in range(i, run_end):
+            if not (kept_lo <= k < kept_hi):
+                keep[k] = False
+        i = run_end
+    if all(keep):
+        return tokens
+    return [tok for tok, kept in zip(tokens, keep) if kept]
+
+
 def sentences_from_alignment(
     text: str,
     time_stamps,
@@ -242,6 +345,7 @@ def sentences_from_alignment(
     min_duration: float,
     max_internal_gap: float,
     max_char_seconds: float,
+    collapse_fillers: bool = True,
 ) -> list[SubtitleEntry]:
     """Build cues from the raw transcript, timed via the aligner stream.
 
@@ -293,6 +397,8 @@ def sentences_from_alignment(
             else:
                 segments[-1].append(tok)
         for segment in segments:
+            if collapse_fillers:
+                segment = collapse_filler_repetitions(segment)
             for piece in _split_segment(segment, max_chars, max_duration):
                 start = offset + piece[0][1]
                 end = offset + piece[-1][2]
@@ -537,6 +643,72 @@ def build_vad_jobs(audio, samplerate: int, duration: float, args: argparse.Names
     return jobs
 
 
+def uncovered_gap_spans(entries: list[SubtitleEntry], duration: float, min_gap: float) -> list[Interval]:
+    """Timeline spans not covered by any cue, at least min_gap seconds long.
+
+    List edges count: a silent lead-in or tail longer than min_gap is also a span.
+    Feeds the recapture pass, which gives these regions a second, more sensitive
+    VAD+ASR look while the model is still loaded."""
+    spans: list[Interval] = []
+    prev_end = 0.0
+    for entry in sorted(entries, key=lambda e: (e.start, e.end)):
+        if entry.start - prev_end >= min_gap:
+            spans.append(Interval(prev_end, entry.start))
+        prev_end = max(prev_end, entry.end)
+    if duration - prev_end >= min_gap:
+        spans.append(Interval(prev_end, duration))
+    return spans
+
+
+def build_recapture_jobs(
+    audio,
+    samplerate: int,
+    duration: float,
+    spans: list[Interval],
+    args: argparse.Namespace,
+) -> list[ChunkJob]:
+    """Second-look clips inside uncovered gaps, cut with a more sensitive VAD.
+
+    The main pass misses quiet speech that sits under --vad-threshold; re-running
+    VAD only inside the gaps at --recapture-vad-threshold finds it without making
+    the whole-file VAD noisier. A span whose detected speech totals less than
+    --recapture-min-speech is skipped (background blips are not worth a clip).
+    Clip construction mirrors build_vad_jobs: cluster, split at 30s with
+    overlap-midpoint cue ownership."""
+    max_clip = min(args.chunk_seconds, 30.0)
+    overlap = args.chunk_overlap_seconds
+    half = overlap / 2.0
+    jobs: list[ChunkJob] = []
+    for span in spans:
+        lo = int(span.start * samplerate)
+        hi = int(span.end * samplerate)
+        span_duration = span.end - span.start
+        intervals = speech_intervals_from_sliding_audio(
+            audio[lo:hi],
+            span_duration,
+            args.recapture_vad_threshold,
+            args.vad_min_silence_ms,
+            args.vad_speech_pad_ms,
+            args.vad_window_seconds,
+            args.vad_window_overlap_seconds,
+        )
+        if sum(item.end - item.start for item in intervals) < args.recapture_min_speech:
+            continue
+        clusters = speech_clusters(intervals, args.vad_max_cluster_gap, args.vad_pad_seconds, span_duration)
+        for cluster in clusters:
+            if cluster.end - cluster.start < args.vad_min_clip_seconds:
+                continue
+            group = Interval(span.start + cluster.start, span.start + cluster.end)
+            subs = split_clip_with_overlap(group, max_clip, overlap)
+            last = len(subs) - 1
+            for i, sub in enumerate(subs):
+                keep_lo = group.start if i == 0 else sub.start + half
+                keep_hi = group.end if i == last else sub.end - half
+                audio_end = min(duration, sub.end + args.vad_post_context_seconds)
+                jobs.append(ChunkJob(sub.start, audio_end, keep_lo, keep_hi))
+    return jobs
+
+
 def chunk_entries(
     text: str,
     items,
@@ -561,6 +733,7 @@ def chunk_entries(
         min_duration=args.min_duration,
         max_internal_gap=args.phrase_max_internal_gap,
         max_char_seconds=args.phrase_max_char_seconds,
+        collapse_fillers=getattr(args, "collapse_filler_repetition", True),
     )
     return [e for e in sentence_entries if keep_lo <= (e.start + e.end) / 2.0 < keep_hi]
 
@@ -666,60 +839,88 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
     if context:
         print(f"ASR context: {context}", flush=True)
 
-    for group_start in range(0, len(jobs), args.batch_size):
-        group = jobs[group_start : group_start + args.batch_size]
-        clips = [(audio[int(j.start * samplerate) : int(j.end * samplerate)], samplerate) for j in group]
-        t0 = time.time()
-        results = model.transcribe(
-            audio=clips,
-            context=context,
-            language=[args.language] * len(clips),
-            return_time_stamps=True,
-        )
-        elapsed = time.time() - t0
-        for job, result in zip(group, results):
-            text = str(result.text or "").strip()
-            items = getattr(result.time_stamps, "items", None) if result.time_stamps is not None else None
-            # Drop context echoes (the model regurgitating the biasing prompt on
-            # near-silent clips) before they become spurious cues.
-            display_text = "" if is_context_echo(text, context) else text
-            kept = chunk_entries(
-                display_text, items, start=job.start,
-                keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
+    def run_jobs(job_list: list[ChunkJob], label: str) -> int:
+        added = 0
+        for group_start in range(0, len(job_list), args.batch_size):
+            group = job_list[group_start : group_start + args.batch_size]
+            clips = [(audio[int(j.start * samplerate) : int(j.end * samplerate)], samplerate) for j in group]
+            t0 = time.time()
+            results = model.transcribe(
+                audio=clips,
+                context=context,
+                language=[args.language] * len(clips),
+                return_time_stamps=True,
             )
-            entries.extend(kept)
-            raw_chunks.append(
-                {
-                    "start": job.start,
-                    "end": job.end,
-                    "keep_lo": job.keep_lo,
-                    "keep_hi": None if job.keep_hi == float("inf") else job.keep_hi,
-                    "language": str(result.language),
-                    "text": text,
-                    "items": [
-                        {"text": it.text, "start": float(it.start_time), "end": float(it.end_time)}
-                        for it in (items or [])
-                        if getattr(it, "start_time", None) is not None
-                        and getattr(it, "end_time", None) is not None
-                    ],
-                }
-            )
-            chunk_results.append(
-                ChunkResult(
-                    start=job.start,
-                    end=job.end,
-                    language=str(result.language),
-                    text=text,
-                    segments=len(kept),
-                    seconds=elapsed / len(group),
+            elapsed = time.time() - t0
+            for job, result in zip(group, results):
+                text = str(result.text or "").strip()
+                items = getattr(result.time_stamps, "items", None) if result.time_stamps is not None else None
+                # Drop context echoes (the model regurgitating the biasing prompt on
+                # near-silent clips) before they become spurious cues.
+                display_text = "" if is_context_echo(text, context) else text
+                kept = chunk_entries(
+                    display_text, items, start=job.start,
+                    keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
                 )
+                entries.extend(kept)
+                added += len(kept)
+                raw_chunks.append(
+                    {
+                        "start": job.start,
+                        "end": job.end,
+                        "keep_lo": job.keep_lo,
+                        "keep_hi": None if job.keep_hi == float("inf") else job.keep_hi,
+                        "language": str(result.language),
+                        "text": text,
+                        "recapture": label == "recapture",
+                        "items": [
+                            {"text": it.text, "start": float(it.start_time), "end": float(it.end_time)}
+                            for it in (items or [])
+                            if getattr(it, "start_time", None) is not None
+                            and getattr(it, "end_time", None) is not None
+                        ],
+                    }
+                )
+                chunk_results.append(
+                    ChunkResult(
+                        start=job.start,
+                        end=job.end,
+                        language=str(result.language),
+                        text=text,
+                        segments=len(kept),
+                        seconds=elapsed / len(group),
+                    )
+                )
+            done = min(group_start + args.batch_size, len(job_list))
+            last_text = str(results[-1].text or "").strip()
+            print(
+                f"[{label}] {done}/{len(job_list)} batch_elapsed={elapsed:.2f}s text={last_text[:60]}",
+                flush=True,
             )
-        done = min(group_start + args.batch_size, len(jobs))
-        last_text = str(results[-1].text or "").strip()
+        return added
+
+    run_jobs(jobs, "main")
+
+    recapture_stats: dict = {}
+    if args.recapture_min_gap > 0:
+        # Second look while the model is still loaded: gaps are computed on the
+        # pre-filter entries, so regions about to be dropped as interjections still
+        # look covered and are not pointlessly re-transcribed. Anything the
+        # recapture re-finds that is itself a bare interjection gets removed by the
+        # same finalize filters as the main pass.
+        spans = uncovered_gap_spans(entries, duration, args.recapture_min_gap)
+        recapture_jobs = build_recapture_jobs(audio, samplerate, duration, spans, args)
+        added = run_jobs(recapture_jobs, "recapture") if recapture_jobs else 0
+        recapture_stats = {
+            "gap_spans": len(spans),
+            "clips": len(recapture_jobs),
+            "entries_added": added,
+        }
         print(
-            f"{done}/{len(jobs)} batch_elapsed={elapsed:.2f}s text={last_text[:60]}",
+            f"Recapture: gap_spans={len(spans)} clips={len(recapture_jobs)} entries_added={added}",
             flush=True,
         )
+
     entries.sort(key=lambda e: (e.start, e.end))
     raw = {
         "chunk_seconds": args.chunk_seconds,
@@ -727,6 +928,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
         "duration": duration,
         "mode": mode,
         "context": context,
+        "recapture": recapture_stats,
         "chunks": raw_chunks,
     }
     return entries, chunk_results, raw
@@ -784,6 +986,18 @@ def main() -> None:
     parser.add_argument("--isolated-interjection-silence", type=float, default=3.0)
     parser.add_argument("--isolated-interjection-run", type=int, default=3)
     parser.add_argument("--isolated-interjection-run-gap", type=float, default=5.0)
+    # Recapture pass: after the main pass, gaps >= --recapture-min-gap with no cues
+    # get a second VAD look at --recapture-vad-threshold (more sensitive than the
+    # main --vad-threshold); spans whose detected speech totals at least
+    # --recapture-min-speech are re-transcribed. 0 disables.
+    parser.add_argument("--recapture-min-gap", type=float, default=10.0)
+    parser.add_argument("--recapture-min-speech", type=float, default=2.0)
+    parser.add_argument("--recapture-vad-threshold", type=float, default=0.05)
+    # Collapse a same-core filler repetition run inside one cue (うんうんうん。 or
+    # うん、うん、うん、一人。) to a single instance, keeping aligner-exact timing.
+    # The --no form is for A/B comparison via --from-raw replay.
+    parser.add_argument("--collapse-filler-repetition", dest="collapse_filler_repetition",
+                        action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--near-dup-max-gap", type=float, default=0.25)
     parser.add_argument("--near-dup-similarity", type=float, default=0.90)
     parser.add_argument("--near-dup-squeeze-seconds", type=float, default=0.5)
@@ -866,6 +1080,7 @@ def main() -> None:
                 "vad_post_context_seconds": args.vad_post_context_seconds,
                 "vad_max_leading_silence": args.vad_max_leading_silence,
                 "vad_context_merge_gap": args.vad_context_merge_gap,
+                "recapture": raw.get("recapture", {}),
                 "entries": len(entries),
                 "elapsed_seconds": time.time() - started,
                 "chunks": [asdict(item) for item in chunk_results],

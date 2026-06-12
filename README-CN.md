@@ -264,8 +264,10 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt # 旧版 H
 - Qwen VAD 切片：开启（`--qwen-vad-chunks`；用 `--no-qwen-vad-chunks` 关闭）
 - Qwen VAD 阈值：`--qwen-vad-threshold 0.1`（用于定位语音切片；调低可能捞回轻声，但切片数会增加）
 - Qwen 切片长度/重叠：`--qwen-chunk-seconds 30`、`--qwen-chunk-overlap-seconds 3`
+- 空窗补捞：开启。主识别结束后，对长度不小于 `--qwen-recapture-min-gap 10` 秒的字幕空窗，用更灵敏的 `--qwen-recapture-vad-threshold 0.05` 再做一遍 VAD；检出语音合计不少于 `--qwen-recapture-min-speech 2` 秒的空窗会趁模型还在显存里二次识别，捞回主 VAD 漏掉的轻声。补捞回来的纯语气词会被同一套语气词过滤删掉。用 `--qwen-recapture-min-gap 0` 关闭
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--qwen-filter-hallucinations` 开启）
 - 对 Qwen 输出的纯语气词过滤：开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——要么是两侧各有 `--qwen-isolated-interjection-silence 3.0` 秒静默的孤立单条，要么是连续 3 条及以上的语气词链（VAD 把背景音乐切成碎片的典型特征）。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）
+- 语气词重复拼接折叠：开启。同一条 cue 里同一语气词的连续重复（「うんうんうん。」，或「うん、うん、うん、一人。」这种包着真实台词的）在逐字对齐 token 层折叠成一个，保留部分直接用对齐器的逐字时间，时间轴零重算。重复 run 两端必须落在标点或 cue 边界才折叠，所以真词内部的重复（ああいう）绝不会被碰；整条都是重复的 cue 折叠成单语气词后，交给上面的静默/成链门控正常判定。识别脚本可用 `--no-collapse-filler-repetition` 做 A/B 对比
 - 翻译后端：`sakura`（`models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf`）；用 `--translator hymt` 切换 HY-MT
 - 识别语言：日语 `ja`
 - 翻译上下文：默认带前 2 轮对话历史（上文原文/译文作为对话上文，当前轮只翻当前句）；设为 0 则逐句独立翻译
@@ -336,6 +338,7 @@ Whisper 窗口内以免被截断。`--main-local-vad-dry-run` 可只打印选区
 - `work/input/input.ja.srt`：主识别日语字幕，默认也是翻译输入。
 - `work/input/pipeline.log`：完整流水线日志，记录每个子进程的时间戳、stdout 和 stderr。追加模式，终端断连或系统重启也不会丢。
 - `work/input/input.quality.txt`：质量报告。
+- `work/metrics.jsonl`：每处理一个视频追加一行 JSON 关键质量指标（条数、VAD 覆盖率、假名残留、相邻重复、补捞统计）。跨视频跨运行共用一个文件，方便对比调参前后的变化。
 - `outputs/input.zh.srt`：最终中文字幕。
 - `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。加 `--bilingual` 时，放到视频同目录的是双语 `input.zh.ass`，而**不是** SRT（SRT 仍保留在 `outputs/`）。
 
@@ -642,7 +645,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### 字幕有重复内容
 
-先查看质量报告里的 `suspicious_adjacent_duplicates`、`japanese_kana_left` 和 `possible_japanese_or_traditional_left`。ASR 阶段会按词级时间戳切分过长内部空隙，并合并很短的相邻片段；翻译阶段把上下文作为对话历史传入（当前轮只放当前句），从源头避免把上一句翻进来，并在译文残留日文假名时无历史重试一次。`possible_japanese_or_traditional_left` 是针对纯汉字日文残留或非简体字符的保守复查提示，不会自动过滤字幕。
+先查看质量报告里的 `suspicious_adjacent_duplicates`、`japanese_kana_left` 和 `possible_japanese_or_traditional_left`。ASR 阶段会按词级时间戳切分过长内部空隙，并合并很短的相邻片段；翻译阶段把上下文作为对话历史传入（当前轮只放当前句），从源头避免把上一句翻进来。Sakura 翻译还会逐句自纠两类失败：译文残留日文假名时最多无历史重试两次（第二次带采样扰动）；译文与上一条相同但原文不同时，带重复惩罚无历史重试一次——如果模型坚持原译则保留重复（不同原文本来就可能共享同一个译法）。`possible_japanese_or_traditional_left` 是针对纯汉字日文残留或非简体字符的保守复查提示，不会自动过滤字幕。
 
 ### 补漏字幕置信度偏低或疑似幻觉
 

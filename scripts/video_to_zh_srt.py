@@ -269,6 +269,12 @@ def process_video_stages(
             str(args.min_cue_seconds),
             "--isolated-interjection-silence",
             str(args.qwen_isolated_interjection_silence),
+            "--recapture-min-gap",
+            str(args.qwen_recapture_min_gap),
+            "--recapture-min-speech",
+            str(args.qwen_recapture_min_speech),
+            "--recapture-vad-threshold",
+            str(args.qwen_recapture_vad_threshold),
         ]
         if args.qwen_filter_hallucinations:
             transcribe_command.append("--filter-hallucinations")
@@ -544,6 +550,11 @@ def process_video_stages(
             str(args.vad_min_silence_ms),
             "--vad-speech-pad-ms",
             str(args.vad_speech_pad_ms),
+            # Shared history file across videos and runs, for comparing tuning changes.
+            "--metrics-jsonl",
+            str(args.work_dir / "metrics.jsonl"),
+            "--metrics-label",
+            video.stem,
         ]
         if args.gap_fill:
             quality_command.extend(["--fills-metadata", str(job_dir / f"{video.stem}.fills.tsv")])
@@ -650,6 +661,11 @@ def main() -> None:
     parser.add_argument("--qwen-vad-threshold", type=float, default=0.1)
     parser.add_argument("--qwen-vad-max-cluster-gap", type=float, default=2.0)
     parser.add_argument("--qwen-isolated-interjection-silence", type=float, default=3.0)
+    # Recapture: a second, more sensitive VAD+ASR look inside subtitle gaps at least
+    # this long, run while the ASR model is still loaded (0 disables).
+    parser.add_argument("--qwen-recapture-min-gap", type=float, default=10.0)
+    parser.add_argument("--qwen-recapture-min-speech", type=float, default=2.0)
+    parser.add_argument("--qwen-recapture-vad-threshold", type=float, default=0.05)
     parser.add_argument(
         "--qwen-filter-hallucinations",
         action="store_true",

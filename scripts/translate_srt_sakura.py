@@ -33,6 +33,8 @@ SAKURA_SYSTEM = (
 )
 PLAIN_USER = "将下面的日文文本翻译成中文："
 
+KANA_RE = re.compile(r"[ぁ-ゟ゠-ヿ]")
+
 
 def relevant_terms(text: str, glossary: tuple[GlossaryTerm, ...]) -> list[GlossaryTerm]:
     """Glossary terms whose source occurs in `text`, longest-match deduplicated.
@@ -95,6 +97,7 @@ def translate_one(
     history: list[tuple[str, str]] | None = None,
     glossary: tuple[GlossaryTerm, ...] = DEFAULT_GLOSSARY,
     frequency_penalty: float = 0.0,
+    temperature: float = 0.1,
 ) -> str:
     text = normalize_source(text)
     # Short fillers translate better standalone than swayed by a prior turn.
@@ -103,7 +106,7 @@ def translate_one(
     result = llm.create_chat_completion(
         messages=build_messages(text, history, glossary),
         max_tokens=512,
-        temperature=0.1,
+        temperature=temperature,
         top_p=0.3,
         top_k=40,
         repeat_penalty=1.0,
@@ -122,9 +125,14 @@ def translate_with_retry(
     # Official guidance: on degeneration (looping/runaway) raise frequency_penalty.
     if looks_degenerate(text, translated):
         translated = translate_one(llm, text, history, glossary, frequency_penalty=0.2)
-    # Kana leak safety: retry standalone with a penalty.
-    if re.search(r"[ぁ-ゟ゠-ヿ]", translated):
+    # Kana leak safety: retry standalone with a penalty; if kana still survives the
+    # deterministic retry, nudge the sampling once (temperature) to escape an echo.
+    if KANA_RE.search(translated):
         translated = translate_one(llm, text, [], glossary, frequency_penalty=0.2)
+    if KANA_RE.search(translated):
+        retried = translate_one(llm, text, [], glossary, frequency_penalty=0.3, temperature=0.7)
+        if retried and not KANA_RE.search(retried):
+            translated = retried
     # Glossary violation: retry standalone. The per-line dictionary already narrows to
     # the matched term; dropping history removes competing context.
     if glossary_issues(text, translated, glossary):
@@ -185,6 +193,10 @@ def main() -> None:
         # which makes its translation a pure function of the source text.
         translation_cache: dict[str, str] = {}
         cache_hits = 0
+        prev_source: str | None = None
+        prev_translated: str | None = None
+        duplicate_retries = 0
+        duplicate_resolved = 0
         for index, entry in enumerate(entries):
             next_entry = entries[index + 1] if index + 1 < len(entries) else None
             if previous_end is not None and entry.start - previous_end > HISTORY_RESET_SECONDS:
@@ -201,16 +213,40 @@ def main() -> None:
                 if standalone and translated:
                     translation_cache[source] = translated
             if not translated:
+                # An empty completion is a failure mode of its own: one nudged
+                # standalone retry before falling back to the source text (which
+                # the quality report would flag as kana residue).
+                translated = translate_one(llm, entry.text, [], glossary, frequency_penalty=0.2, temperature=0.7)
+            if not translated:
                 translated = entry.text
+            # Adjacent-duplicate nudge: ultra-short interjection lines tend to
+            # collapse onto the previous line's translation even when the source
+            # differs. One standalone retry with a penalty; keep the duplicate if
+            # the model insists (different sources can genuinely share a rendering).
+            if prev_translated is not None and translated == prev_translated and source != prev_source:
+                duplicate_retries += 1
+                retried = translate_one(llm, entry.text, [], glossary, frequency_penalty=0.2)
+                if (
+                    retried
+                    and retried != prev_translated
+                    and not KANA_RE.search(retried)
+                    and not looks_degenerate(source, retried)
+                ):
+                    translated = retried
+                    duplicate_resolved += 1
+                    if standalone:
+                        translation_cache[source] = retried
             issues = glossary_issues(entry.text, translated, glossary)
             if issues:
                 term_issue_rows.append((entry, translated, issues))
             write_entry(f, entry, translated, next_entry, args.lead_out_seconds, args.min_display_seconds)
             history.append((source, translated))
+            prev_source, prev_translated = source, translated
             previous_end = entry.end
             print(f"{entry.index}: {translated}", flush=True)
 
     print(f"Translation cache hits: {cache_hits}/{len(entries)}")
+    print(f"Adjacent duplicate retries resolved: {duplicate_resolved}/{duplicate_retries}")
     print(f"Wrote {args.output}")
     if not args.no_terms_report and glossary:
         write_terms_report(terms_report_path, term_issue_rows)

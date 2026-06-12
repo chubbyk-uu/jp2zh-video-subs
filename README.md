@@ -300,8 +300,10 @@ The one-command pipeline uses:
 - Qwen VAD-cut clips: on (`--qwen-vad-chunks`; disable with `--no-qwen-vad-chunks`)
 - Qwen VAD threshold: `--qwen-vad-threshold 0.1` (places speech-cut clips; lower may recover quieter speech but creates more clips)
 - Qwen clip length / overlap: `--qwen-chunk-seconds 30` with `--qwen-chunk-overlap-seconds 3`
+- Gap recapture: on. After the main pass, subtitle gaps of at least `--qwen-recapture-min-gap 10` seconds get a second VAD look at the more sensitive `--qwen-recapture-vad-threshold 0.05`; gaps with at least `--qwen-recapture-min-speech 2` seconds of detected speech are re-transcribed while the model is still loaded, recovering quiet speech the main VAD missed. Recaptured bare interjections are removed by the same filler filters as the main pass. Disable with `--qwen-recapture-min-gap 0`
 - Whisper-style hallucination filtering on Qwen output: off (opt in with `--qwen-filter-hallucinations`)
 - Bare filler-interjection dropping on Qwen output: on. Cues that reduce entirely to a single filler mora (うん/ん/ねえ/あ …) and carry no dialogue are removed — either an isolated blip walled by `--qwen-isolated-interjection-silence 3.0` seconds of silence on both sides, or a chain of 3+ such fillers in a row (the signature of VAD slicing a music bed into blips). Only cues that are *entirely* a filler are eligible, so any line containing real words always survives. Disable with `--qwen-isolated-interjection-silence 0` (also turns off the chain rule)
+- Filler-repetition collapse: on. A run of the same filler repeated inside one cue (うんうんうん。, or うん、うん、うん、一人。 padding real speech) collapses to a single instance at the token-alignment level, so the surviving cue keeps aligner-exact timing. The run only collapses when both edges sit on punctuation or the cue boundary, so repetition inside real words (ああいう) is never touched; a whole-cue repetition becomes a single filler that the silence/chain gates above then judge as usual. Pass `--collapse-filler-repetition`/`--no-collapse-filler-repetition` to the transcription script for A/B comparison
 - Translation backend: `sakura` (`models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf`); use `--translator hymt` for HY-MT
 - Source language: Japanese, `ja`
 - Translation context: previous 2 dialogue turns as chat history (previous source/translation pairs; the current turn carries only the current line). 0 translates each line standalone
@@ -386,6 +388,7 @@ For `path/to/input.mp4`, the default outputs are:
 - `work/input/input.ja.srt`: main-pass Japanese subtitles used for translation by default.
 - `work/input/pipeline.log`: full pipeline log with per-stage timestamps (stdout + stderr of every subprocess). Appended across runs, survives terminal disconnects and reboots.
 - `work/input/input.quality.txt`: quality report.
+- `work/metrics.jsonl`: one JSON line of key quality metrics per processed video (entries, VAD coverage, kana residue, adjacent duplicates, recapture stats). Shared across videos and runs, for comparing tuning changes over time.
 - `outputs/input.zh.srt`: final Chinese SRT.
 - `path/to/input.zh.srt`: final Chinese SRT copied next to the input video. With
   `--bilingual`, the bilingual `input.zh.ass` is copied next to the video instead
@@ -727,7 +730,7 @@ pass.
 
 ### Duplicate-Looking Lines
 
-Check the quality report, especially `suspicious_adjacent_duplicates`, `japanese_kana_left`, and `possible_japanese_or_traditional_left`. The ASR step already splits long internal word gaps and merges short adjacent fragments, while translation supplies context as chat history (the current turn carries only the current line), which avoids fusing the previous line into the output at the source, and retries once without history if Japanese kana leaks into a translation. `possible_japanese_or_traditional_left` is a conservative review hint for kanji-only leftovers or non-Simplified characters; it does not filter subtitles automatically.
+Check the quality report, especially `suspicious_adjacent_duplicates`, `japanese_kana_left`, and `possible_japanese_or_traditional_left`. The ASR step already splits long internal word gaps and merges short adjacent fragments, while translation supplies context as chat history (the current turn carries only the current line), which avoids fusing the previous line into the output at the source. The Sakura translator also self-corrects two failure modes per line: leaked Japanese kana triggers up to two standalone retries (the second with a sampling nudge), and a translation identical to the previous line's while the source differs triggers one standalone retry with a repetition penalty — the duplicate is kept if the model insists, since different sources can genuinely share a rendering. `possible_japanese_or_traditional_left` is a conservative review hint for kanji-only leftovers or non-Simplified characters; it does not filter subtitles automatically.
 
 ### Low-Confidence or Hallucinated Gap Fills
 

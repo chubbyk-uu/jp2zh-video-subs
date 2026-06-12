@@ -1,9 +1,27 @@
 from transcribe_ja_srt import SubtitleEntry
 from transcribe_ja_srt_qwen import (
     ISOLATED_INTERJECTION_CORES,
+    _RawItem,
     _interjection_core,
     drop_isolated_interjections,
+    sentences_from_alignment,
+    uncovered_gap_spans,
 )
+
+
+def aligned_entries(text: str, chars: list[tuple[str, float, float]], **overrides):
+    """Build cues from `text` with one aligner item per content character."""
+    items = [_RawItem(c, s, e) for c, s, e in chars]
+    kwargs = dict(
+        offset=0.0,
+        max_chars=26,
+        max_duration=8.0,
+        min_duration=0.0,
+        max_internal_gap=2.0,
+        max_char_seconds=0.5,
+    )
+    kwargs.update(overrides)
+    return sentences_from_alignment(text, items, **kwargs)
 
 
 def test_interjection_core_strips_punctuation_elongation_small_kana():
@@ -106,6 +124,153 @@ def test_list_edges_count_as_infinite_silence():
     kept, dropped = drop_isolated_interjections(entries, min_silence=3.0)
     assert kept == []
     assert [e.text for e in dropped] == ["うん。"]
+
+
+def test_collapse_leading_filler_run_keeps_real_speech_and_its_timing():
+    # うん、うん、うん、一人。 -> うん、一人。 The kept うん is the one adjacent to
+    # the real words, so the cue starts at its aligner time (1.2), not at 0.0 and
+    # not at a proportionally re-derived guess.
+    chars = [
+        ("う", 0.0, 0.1), ("ん", 0.1, 0.2),
+        ("う", 0.6, 0.7), ("ん", 0.7, 0.8),
+        ("う", 1.2, 1.3), ("ん", 1.3, 1.4),
+        ("一", 1.8, 2.0), ("人", 2.0, 2.2),
+    ]
+    entries = aligned_entries("うん、うん、うん、一人。", chars)
+    assert len(entries) == 1
+    assert entries[0].text == "うん、一人。"
+    assert entries[0].start == 1.2
+    assert entries[0].end == 2.2
+
+
+def test_collapse_trailing_filler_run_keeps_first_instance():
+    chars = [
+        ("一", 0.0, 0.2), ("人", 0.2, 0.4),
+        ("う", 1.0, 1.1), ("ん", 1.1, 1.2),
+        ("う", 1.6, 1.7), ("ん", 1.7, 1.8),
+        ("う", 2.2, 2.3), ("ん", 2.3, 2.4),
+    ]
+    entries = aligned_entries("一人、うん、うん、うん。", chars)
+    assert len(entries) == 1
+    assert entries[0].text == "一人、うん、"
+    assert entries[0].start == 0.0
+    assert entries[0].end == 1.2
+
+
+def test_collapse_whole_cue_repetition_feeds_the_silence_gate():
+    # A cue that is nothing but repetition collapses to its first instance; the
+    # result is a plain single filler that drop_isolated_interjections then
+    # judges with the usual silence/chain rules.
+    chars = [
+        ("う", 0.0, 0.1), ("ん", 0.1, 0.2),
+        ("う", 0.5, 0.6), ("ん", 0.6, 0.7),
+        ("う", 1.0, 1.1), ("ん", 1.1, 1.2),
+    ]
+    entries = aligned_entries("うんうんうん。", chars)
+    assert len(entries) == 1
+    assert entries[0].text == "うん"
+    assert entries[0].start == 0.0
+    assert entries[0].end == 0.2
+    assert _interjection_core(entries[0].text) in ISOLATED_INTERJECTION_CORES
+
+
+def test_collapse_keeps_lexical_double_mora_interjections():
+    # ええ (huh?/yes) and ああ are interjection words in their own right, listed in
+    # ISOLATED_INTERJECTION_CORES — not padding. They must survive collapse intact
+    # (regression: ええ。 was being rewritten to え).
+    for word in ("ええ", "ああ", "おお"):
+        chars = [(word[0], 0.0, 0.1), (word[1], 0.1, 0.2)]
+        entries = aligned_entries(f"{word}。", chars)
+        assert entries[0].text == f"{word}。", word
+
+
+def test_collapse_keeps_lexical_interjection_before_real_speech():
+    chars = [
+        ("あ", 0.0, 0.1), ("あ", 0.1, 0.2),
+        ("一", 0.6, 0.8), ("人", 0.8, 1.0),
+    ]
+    entries = aligned_entries("ああ、一人。", chars)
+    assert entries[0].text == "ああ、一人。"
+
+
+def test_collapse_never_touches_repetition_inside_real_words():
+    # ああいう starts with あ×2 but the run's right edge has no punctuation — the
+    # boundary guard keeps real words intact.
+    chars = [
+        ("あ", 0.0, 0.1), ("あ", 0.1, 0.2),
+        ("い", 0.2, 0.3), ("う", 0.3, 0.4),
+        ("人", 0.4, 0.6),
+    ]
+    entries = aligned_entries("ああいう人。", chars)
+    assert len(entries) == 1
+    assert entries[0].text == "ああいう人。"
+
+
+def test_collapse_requires_punctuation_boundary_before_real_speech():
+    # うんうんうん一人 (no punctuation at the run edge): conservative, no collapse.
+    chars = [
+        ("う", 0.0, 0.1), ("ん", 0.1, 0.2),
+        ("う", 0.5, 0.6), ("ん", 0.6, 0.7),
+        ("う", 1.0, 1.1), ("ん", 1.1, 1.2),
+        ("一", 1.4, 1.6), ("人", 1.6, 1.8),
+    ]
+    entries = aligned_entries("うんうんうん一人。", chars)
+    assert len(entries) == 1
+    assert entries[0].text == "うんうんうん一人。"
+
+
+def test_collapse_can_be_disabled():
+    chars = [
+        ("う", 0.0, 0.1), ("ん", 0.1, 0.2),
+        ("う", 0.6, 0.7), ("ん", 0.7, 0.8),
+        ("一", 1.2, 1.4), ("人", 1.4, 1.6),
+    ]
+    entries = aligned_entries("うん、うん、一人。", chars, collapse_fillers=False)
+    assert entries[0].text == "うん、うん、一人。"
+
+
+def test_collapse_small_kana_rides_along():
+    # んっ、んっ、んっ collapses to a single ん-instance (small kana ride along),
+    # which the interjection core machinery then recognises.
+    chars = [
+        ("ん", 0.0, 0.1), ("っ", 0.1, 0.2),
+        ("ん", 0.6, 0.7), ("っ", 0.7, 0.8),
+        ("ん", 1.2, 1.3), ("っ", 1.3, 1.4),
+    ]
+    entries = aligned_entries("んっ、んっ、んっ。", chars)
+    assert len(entries) == 1
+    assert _interjection_core(entries[0].text) in ISOLATED_INTERJECTION_CORES
+
+
+def test_uncovered_gap_spans_finds_internal_and_edge_gaps():
+    entries = [
+        SubtitleEntry(15.0, 16.0, "一行目"),
+        SubtitleEntry(18.0, 19.0, "二行目"),
+        SubtitleEntry(40.0, 41.0, "三行目"),
+    ]
+    spans = uncovered_gap_spans(entries, duration=60.0, min_gap=10.0)
+    # Leading silence, the 19->40 gap, and the trailing tail; the 2s gap is ignored.
+    assert [(s.start, s.end) for s in spans] == [(0.0, 15.0), (19.0, 40.0), (41.0, 60.0)]
+
+
+def test_uncovered_gap_spans_handles_overlapping_cues():
+    # prev_end must track the furthest end seen, or an enclosed short cue would
+    # reopen an already-covered region.
+    entries = [
+        SubtitleEntry(0.0, 30.0, "長い行"),
+        SubtitleEntry(5.0, 6.0, "中の行"),
+    ]
+    spans = uncovered_gap_spans(entries, duration=45.0, min_gap=10.0)
+    assert [(s.start, s.end) for s in spans] == [(30.0, 45.0)]
+
+
+def test_uncovered_gap_spans_empty_entries_covers_whole_timeline():
+    spans = uncovered_gap_spans([], duration=20.0, min_gap=10.0)
+    assert [(s.start, s.end) for s in spans] == [(0.0, 20.0)]
+
+
+def test_uncovered_gap_spans_zero_min_gap_short_timeline():
+    assert uncovered_gap_spans([], duration=5.0, min_gap=10.0) == []
 
 
 def test_disabled_thresholds_keep_everything():

@@ -230,6 +230,44 @@ def test_build_report_lists_qwen_metadata(tmp_path):
     assert "entries_after_postprocess: 3" in report
 
 
+def test_build_report_fills_metrics_dict(tmp_path):
+    ja = tmp_path / "x.ja.srt"
+    ja.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\nさようなら\n\n",
+        encoding="utf-8",
+    )
+    zh = tmp_path / "x.zh.srt"
+    zh.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\n你好\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\n你好\n\n",
+        encoding="utf-8",
+    )
+    qwen_meta = tmp_path / "x.ja.srt.meta.json"
+    qwen_meta.write_text(
+        '{"entries": 2, "elapsed_seconds": 90.0, "chunks": [],'
+        ' "recapture": {"gap_spans": 3, "clips": 5, "entries_added": 4}}',
+        encoding="utf-8",
+    )
+    args = _report_args(tmp_path)
+    args.ja_srt = ja
+    args.zh_srt = zh
+    args.fills_metadata = None
+    args.qwen_metadata = qwen_meta
+
+    metrics: dict = {}
+    report = build_report(args, metrics)
+
+    assert metrics["ja_entries"] == 2
+    assert metrics["zh_entries"] == 2
+    assert metrics["kana_left"] == 0
+    assert metrics["adjacent_duplicates"] == 1
+    assert metrics["recapture_gap_spans"] == 3
+    assert metrics["recapture_entries_added"] == 4
+    assert metrics["asr_elapsed_min"] == 1.5
+    assert "recapture: gap_spans=3 clips=5 entries_added=4" in report
+
+
 def test_build_report_respects_relaxed_thresholds(tmp_path):
     args = _report_args(tmp_path)
     # Loosen every threshold so even the bad line is no longer flagged.

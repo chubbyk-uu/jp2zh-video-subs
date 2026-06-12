@@ -6,6 +6,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from srt_utils import (
@@ -208,7 +209,11 @@ def possible_japanese_text_left(entries: list[Entry]) -> list[tuple[Entry, str]]
     return candidates
 
 
-def build_report(args: argparse.Namespace) -> str:
+def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
+    """Render the report text; when `metrics` is given, also fill it with the key
+    numeric indicators so the caller can append them to a metrics history file."""
+    if metrics is None:
+        metrics = {}
     ja_entries = parse_srt(args.ja_srt)
     zh_entries = parse_srt(args.zh_srt)
     fills_metadata = parse_fills_metadata(getattr(args, "fills_metadata", None))
@@ -245,6 +250,14 @@ def build_report(args: argparse.Namespace) -> str:
         for length in (1, 2, 3, 5):
             count = sum(value <= length for value in chars)
             lines.append(f"chars_le_{length}: {count} ({count / len(chars):.1%})")
+        metrics.update(
+            ja_entries=len(ja_entries),
+            display_total_min=round(display_total / 60, 1),
+            duration_median_s=round(percentile(durations, 0.5), 2),
+            chars_median=percentile(chars, 0.5),
+            gaps_gt_10s=sum(item.end - item.start > 10 for item in gaps),
+            gaps_gt_30s=sum(item.end - item.start > 30 for item in gaps),
+        )
         lines.append(f"gaps_gt_10s: {sum(item.end - item.start > 10 for item in gaps)}")
         lines.append(f"gaps_gt_30s: {sum(item.end - item.start > 30 for item in gaps)}")
         lines.append(f"gaps_gt_60s_observational_only: {sum(item.end - item.start > 60 for item in gaps)}")
@@ -272,6 +285,12 @@ def build_report(args: argparse.Namespace) -> str:
                 speech_seconds = overlap_seconds(gap, speech_intervals)
                 if speech_seconds >= args.min_speech_seconds:
                     suspicious.append((gap, speech_seconds))
+            metrics.update(
+                vad_speech_total_s=round(speech_total, 1),
+                vad_speech_uncovered_s=round(speech_uncovered, 1),
+                vad_speech_coverage=round(speech_covered / speech_total, 3) if speech_total > 0 else None,
+                gaps_with_vad_speech=len(suspicious),
+            )
             lines.append("[Audio-aware subtitle gaps]")
             lines.append(f"vad_speech_segments: {len(speech_intervals)}")
             lines.append(f"vad_speech_total_s: {speech_total:.1f}")
@@ -294,6 +313,12 @@ def build_report(args: argparse.Namespace) -> str:
         lines.append(f"japanese_kana_left: {len(jp_left)}")
         lines.append(f"possible_japanese_or_traditional_left: {len(possible_jp_left)}")
         duplicate_candidates = adjacent_duplicate_candidates(ja_entries, zh_entries)
+        metrics.update(
+            zh_entries=len(zh_entries),
+            kana_left=len(jp_left),
+            possible_japanese_left=len(possible_jp_left),
+            adjacent_duplicates=len(duplicate_candidates),
+        )
         lines.append(f"suspicious_adjacent_duplicates: {len(duplicate_candidates)}")
         for item in duplicate_candidates[:max_samples]:
             lines.append(f"- {item}")
@@ -343,8 +368,22 @@ def build_report(args: argparse.Namespace) -> str:
             lines.append(f"clip_audio_total_min: {clip_seconds / 60.0:.1f}")
             if model_seconds > 0:
                 lines.append(f"model_batch_time_total_min_approx: {model_seconds / 60.0:.1f}")
+        recapture = qwen_metadata.get("recapture") or {}
+        if recapture:
+            lines.append(
+                "recapture: "
+                f"gap_spans={recapture.get('gap_spans', 'n/a')} "
+                f"clips={recapture.get('clips', 'n/a')} "
+                f"entries_added={recapture.get('entries_added', 'n/a')}"
+            )
+            metrics.update(
+                recapture_gap_spans=recapture.get("gap_spans"),
+                recapture_clips=recapture.get("clips"),
+                recapture_entries_added=recapture.get("entries_added"),
+            )
         if "elapsed_seconds" in qwen_metadata:
             lines.append(f"elapsed_min: {float(qwen_metadata['elapsed_seconds']) / 60.0:.1f}")
+            metrics["asr_elapsed_min"] = round(float(qwen_metadata["elapsed_seconds"]) / 60.0, 1)
         lines.append(f"entries_after_postprocess: {qwen_metadata.get('entries', 'n/a')}")
         lines.append("")
 
@@ -450,13 +489,35 @@ def main() -> None:
     parser.add_argument("--warn-compression-ratio-above", type=float, default=2.20)
     parser.add_argument("--warn-repeated-fill-phrase-count", type=int, default=3)
     parser.add_argument("--max-samples", type=int, default=20)
+    parser.add_argument(
+        "--metrics-jsonl",
+        type=Path,
+        help="Append one JSON line of key metrics to this file (history across runs/videos)",
+    )
+    parser.add_argument(
+        "--metrics-label",
+        default="",
+        help="Label for the metrics record; defaults to the ja SRT stem without .ja/.filled.ja",
+    )
     args = parser.parse_args()
 
-    report = build_report(args)
+    metrics: dict = {}
+    report = build_report(args, metrics)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(report + "\n", encoding="utf-8")
     print(report)
+    if args.metrics_jsonl:
+        label = args.metrics_label or re.sub(r"\.(filled\.)?ja$", "", args.ja_srt.stem)
+        record = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "label": label,
+            **metrics,
+        }
+        args.metrics_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        with args.metrics_jsonl.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        print(f"Metrics appended: {args.metrics_jsonl}")
 
 
 if __name__ == "__main__":
