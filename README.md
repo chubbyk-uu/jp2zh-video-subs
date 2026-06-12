@@ -9,12 +9,13 @@ It ships two transcription backends, selectable with `--asr`:
 - **`qwen` (default)** — `Qwen3-ASR-1.7B` for content plus `Qwen3-ForcedAligner-0.6B` for timing, over speech-aware (VAD-cut) clips. Cleaner output and tighter timing; this is the recommended main line.
 - **`whisper`** — the legacy `faster-whisper-large-v3` sliding pass with an optional audio-aware `--gap-fill` recall stage.
 
-…and two translation backends, selectable with `--translator`:
+…and three translation backends, selectable with `--translator`:
 
-- **`sakura` (default)** — `Sakura-14B-Qwen2.5-v1.0`, a Japanese→Chinese model trained on light-novel/galgame dialogue. More natural, colloquial output and better handling of relationship/context wording; follows a terminology table natively.
+- **`galtransl` (default)** — `Sakura-GalTransl-7B-v3.7`, a Japanese→Chinese model GRPO-tuned for visual-novel dialogue. Smaller and faster than Sakura-14B with more colloquial output; follows a terminology table natively in its native `src->dst #note` format.
+- **`sakura`** — `Sakura-14B-Qwen2.5-v1.0`, a larger light-novel/galgame model. Heavier but a useful second opinion on long, complex lines.
 - **`hymt`** — `HY-MT1.5-7B`, a general translation model.
 
-See [ASR Backends: Qwen vs Whisper](#asr-backends-qwen-vs-whisper) and [Translation Backends: Sakura vs HY-MT](#translation-backends-sakura-vs-hy-mt) for feature-by-feature comparisons.
+See [ASR Backends: Qwen vs Whisper](#asr-backends-qwen-vs-whisper) and [Translation Backends: GalTransl vs Sakura vs HY-MT](#translation-backends-galtransl-vs-sakura-vs-hy-mt) for feature-by-feature comparisons.
 
 ## What It Does
 
@@ -22,7 +23,7 @@ The one-command pipeline performs these steps:
 
 1. Extract a 16 kHz mono WAV file from the input video with `ffmpeg`.
 2. Transcribe Japanese audio into a Japanese SRT with the selected ASR backend (`qwen` by default).
-3. Translate the Japanese SRT into Simplified Chinese with the selected translation backend (`sakura` by default).
+3. Translate the Japanese SRT into Simplified Chinese with the selected translation backend (`galtransl` by default).
 4. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles.
 
 The default Qwen backend cuts clips on silence with a loose VAD to reduce timing drift,
@@ -50,7 +51,8 @@ No online API is required for inference. Model files are not included in this re
 ├── models/                         # Local models, not committed
 │   ├── Qwen3-ASR-1.7B/              # Default ASR model (content)
 │   ├── Qwen3-ForcedAligner-0.6B/    # Default aligner (timing)
-│   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # Default translation model
+│   ├── Sakura-GalTransl-7B-v3.7-GGUF/ # Default translation model
+│   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # Alternate (larger) translation model
 │   ├── faster-whisper-large-v3/     # Legacy CTranslate2 Whisper ASR model
 │   └── HY-MT1.5-7B-GGUF/            # Legacy GGUF translation model
 ├── outputs/                         # Final Chinese SRT files
@@ -60,7 +62,8 @@ No online API is required for inference. Model files are not included in this re
 │   ├── transcribe_ja_srt.py         # WAV/audio to Japanese SRT (legacy Whisper backend)
 │   ├── fill_ja_srt_gaps.py          # Audio-aware Japanese SRT gap filling
 │   ├── quality_report.py            # Subtitle quality report
-│   ├── translate_srt_sakura.py      # Japanese SRT to Chinese SRT (default SakuraLLM)
+│   ├── translate_srt_galtransl.py   # Japanese SRT to Chinese SRT (default Sakura-GalTransl)
+│   ├── translate_srt_sakura.py      # Japanese SRT to Chinese SRT (Sakura-14B)
 │   ├── translate_srt_hymt.py        # Japanese SRT to Chinese SRT (legacy HY-MT)
 │   ├── retime_existing_subtitles.py # Retiming + ASS refresh from existing outputs
 │   ├── make_bilingual_ass.py        # Bilingual ASS (Chinese on top, Japanese below)
@@ -133,7 +136,7 @@ Default models:
 
 - ASR (content): [`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
 - ASR (timing): [`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
-- Translation: [`SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF`](https://huggingface.co/SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF)
+- Translation: [`SakuraLLM/Sakura-GalTransl-7B-v3.7`](https://huggingface.co/SakuraLLM/Sakura-GalTransl-7B-v3.7)
 
 Download them to the default paths:
 
@@ -147,10 +150,10 @@ hf download Qwen/Qwen3-ASR-1.7B \
 hf download Qwen/Qwen3-ForcedAligner-0.6B \
   --local-dir models/Qwen3-ForcedAligner-0.6B
 
-# Default translation model (SakuraLLM, iq4xs fits ~12 GB cards)
-hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
-  sakura-14b-qwen2.5-v1.0-iq4xs.gguf \
-  --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
+# Default translation model (Sakura-GalTransl-7B-v3.7, ~6.25 GB high-quality quant)
+hf download SakuraLLM/Sakura-GalTransl-7B-v3.7 \
+  Sakura-Galtransl-7B-v3.7.gguf \
+  --local-dir models/Sakura-GalTransl-7B-v3.7-GGUF
 ```
 
 Required files include:
@@ -161,7 +164,16 @@ models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors
 models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
 models/Qwen3-ForcedAligner-0.6B/config.json
 models/Qwen3-ForcedAligner-0.6B/model.safetensors
-models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf
+models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
+```
+
+The larger `sakura` translator (`--translator sakura`) needs
+[`SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF`](https://huggingface.co/SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF) instead:
+
+```bash
+hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
+  sakura-14b-qwen2.5-v1.0-iq4xs.gguf \
+  --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
 The legacy `hymt` translator (`--translator hymt`) needs
@@ -263,34 +275,42 @@ Disable the VAD cutting (fall back to uniform 30 s tiling) with `--no-qwen-vad-c
 are willing to review more unstable lines, or when a CUDA GPU is unavailable (Whisper has
 a CPU fallback; Qwen requires CUDA).
 
-## Translation Backends: Sakura vs HY-MT
+## Translation Backends: GalTransl vs Sakura vs HY-MT
 
-The translator is chosen with `--translator` (default `sakura`):
+The translator is chosen with `--translator` (default `galtransl`):
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4                   # Sakura (default)
-python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt # legacy HY-MT
+python scripts/video_to_zh_srt.py path/to/input.mp4                       # GalTransl (default)
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura   # Sakura-14B
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt     # legacy HY-MT
 ```
 
-Both run as GGUF models through `llama-cpp-python` in a process separate from ASR, and
-share the same SRT parsing, chat-history context, terminology table, and display-timing
-logic — only the model and prompt template differ.
+All three run as GGUF models through `llama-cpp-python` in a process separate from ASR,
+and share the same SRT parsing, context handling, terminology table, and display-timing
+logic — only the model and prompt template differ. GalTransl and Sakura also share the
+translation cache and the kana/empty/adjacent-duplicate retries; GalTransl carries
+context as a 历史翻译 block of prior translations (its native v3 format), while Sakura and
+HY-MT use source/translation chat pairs.
 
-| | **Sakura (default)** | **HY-MT (`--translator hymt`)** |
-|---|---|---|
-| Model | `Sakura-14B-Qwen2.5-v1.0` (light-novel/galgame JA→ZH) | `HY-MT1.5-7B` (general translation) |
-| Style | More natural, colloquial dialogue | More literal, occasionally stiff |
-| Context wording | Better on relationship/idiomatic phrasing | Can take such phrases too literally |
-| Terminology table | Native GPT-dictionary format, injected per line; followed reliably | Supplied as a system instruction; enforced with a retry |
-| Size / speed | 14B, a little slower | 7B, a little faster |
-| VRAM | ~8–9 GB (iq4xs) | ~5 GB (Q4_K_M) |
+| | **GalTransl (default)** | **Sakura (`--translator sakura`)** | **HY-MT (`--translator hymt`)** |
+|---|---|---|---|
+| Model | `Sakura-GalTransl-7B-v3.7` (visual-novel JA→ZH, GRPO-tuned) | `Sakura-14B-Qwen2.5-v1.0` (light-novel/galgame JA→ZH) | `HY-MT1.5-7B` (general translation) |
+| Style | Most natural, colloquial dialogue | Natural, slightly more literary | More literal, occasionally stiff |
+| Terminology table | Native `src->dst #note` format, injected per line | Native GPT-dictionary format, injected per line | Supplied as a system instruction; enforced with a retry |
+| Size | 7B (~6.25 GB Q6) | 14B (~8–9 GB iq4xs) | 7B (~5 GB Q4_K_M) |
 
-Both leave proper-noun mistakes from the ASR stage untouched (neither can fix a misheard
-name), and both depend on the recognised Japanese being correct.
+On a 2-hour title (1491 cues, same Japanese SRT, RTX 5080), GalTransl translated in
+~1m36s vs Sakura-14B's ~2m32s (~1.6× faster) with lower process memory, fewer
+adjacent-duplicate translations, and dialogue that read at least as naturally in a
+side-by-side sample. Because GalTransl (~6 GB) and the Qwen ASR stack (~6 GB) both fit in
+16 GB, they can in principle stay co-resident.
 
-**Recommendation:** keep the default Sakura translator for this kind of Japanese
-dialogue. Use `--translator hymt` if you want a smaller/faster model or are translating
-more formal/general content.
+All three leave proper-noun mistakes from the ASR stage untouched (none can fix a misheard
+name), and all depend on the recognised Japanese being correct.
+
+**Recommendation:** keep the default GalTransl translator for this kind of visual-novel /
+dialogue content. Try `--translator sakura` for a second opinion on long, complex lines,
+or `--translator hymt` for more formal/general material.
 
 ## Default Behavior
 
@@ -304,9 +324,9 @@ The one-command pipeline uses:
 - Whisper-style hallucination filtering on Qwen output: off (opt in with `--qwen-filter-hallucinations`)
 - Bare filler-interjection dropping on Qwen output: on. Cues that reduce entirely to a single filler mora (うん/ん/ねえ/あ …) and carry no dialogue are removed — either an isolated blip walled by `--qwen-isolated-interjection-silence 3.0` seconds of silence on both sides, or a chain of 3+ such fillers in a row (the signature of VAD slicing a music bed into blips). Only cues that are *entirely* a filler are eligible, so any line containing real words always survives. Disable with `--qwen-isolated-interjection-silence 0` (also turns off the chain rule)
 - Filler-repetition collapse: on. A run of the same filler repeated inside one cue (うんうんうん。, or うん、うん、うん、一人。 padding real speech) collapses to a single instance at the token-alignment level, so the surviving cue keeps aligner-exact timing. The run only collapses when both edges sit on punctuation or the cue boundary, so repetition inside real words (ああいう) is never touched; a whole-cue repetition becomes a single filler that the silence/chain gates above then judge as usual. Pass `--collapse-filler-repetition`/`--no-collapse-filler-repetition` to the transcription script for A/B comparison
-- Translation backend: `sakura` (`models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf`); use `--translator hymt` for HY-MT
+- Translation backend: `galtransl` (`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`); use `--translator sakura` for Sakura-14B or `--translator hymt` for HY-MT
 - Source language: Japanese, `ja`
-- Translation context: previous 2 dialogue turns as chat history (previous source/translation pairs; the current turn carries only the current line). 0 translates each line standalone
+- Translation context: previous 6 dialogue turns (galtransl: a 历史翻译 block of prior translations; sakura/hymt: source/translation chat pairs, current turn carries only the current line). 0 translates each line standalone
 - Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
 - Gap fill: not used by the Qwen backend (use `--no-qwen-vad-chunks` for a fixed-tiling Qwen comparison, or `--asr whisper --gap-fill` for the legacy recall pass)
 - Quality report: enabled by default
@@ -427,9 +447,10 @@ Select the ASR backend (default `qwen`); use the legacy Whisper pipeline with:
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper
 ```
 
-Select the translation backend (default `sakura`); use HY-MT with:
+Select the translation backend (default `galtransl`); use Sakura-14B or HY-MT with:
 
 ```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
 ```
 
@@ -592,23 +613,29 @@ python scripts/fill_ja_srt_gaps.py work/input/input.ja.srt \
   --fills-metadata-output work/input/input.fills.tsv
 ```
 
-Translate Japanese SRT to Chinese SRT with the default Sakura translator:
+Translate Japanese SRT to Chinese SRT with the default GalTransl translator:
 
 ```bash
-python scripts/translate_srt_sakura.py work/input/input.ja.srt \
+python scripts/translate_srt_galtransl.py work/input/input.ja.srt \
   --output outputs/input.zh.srt \
-  --context-size 2 \
+  --context-size 6 \
   --lead-out-seconds 0.5 \
   --min-display-seconds 1.5
 ```
 
-Or with the legacy HY-MT translator (same CLI, different model):
+Or with the Sakura-14B / legacy HY-MT translator (same CLI, different model):
 
 ```bash
+python scripts/translate_srt_sakura.py work/input/input.ja.srt \
+  --output outputs/input.zh.srt \
+  --context-size 6 \
+  --lead-out-seconds 0.5 \
+  --min-display-seconds 1.5
+
 python scripts/translate_srt_hymt.py work/input/input.ja.srt \
   --output outputs/input.zh.srt \
   --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
-  --context-size 2 \
+  --context-size 6 \
   --lead-out-seconds 0.5 \
   --min-display-seconds 1.5
 ```
@@ -676,14 +703,15 @@ If you see errors like:
 ```text
 Missing Qwen ASR model: .../models/Qwen3-ASR-1.7B
 Missing Qwen forced aligner: .../models/Qwen3-ForcedAligner-0.6B
-Missing Sakura model: .../models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf
+Missing GalTransl model: .../models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 Missing Whisper model: .../models/faster-whisper-large-v3/model.bin
 Missing HY-MT model: .../models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
 ```
 
 Download the models again and keep the default directory and file names. The Qwen and
-Sakura models are only required for the default backends; the Whisper model is only
-required for `--asr whisper` and the HY-MT model only for `--translator hymt`.
+GalTransl models are only required for the default backends; the Sakura model is only
+required for `--translator sakura`, the Whisper model only for `--asr whisper`, and the
+HY-MT model only for `--translator hymt`.
 
 ### Translation Is Slow
 
@@ -730,7 +758,7 @@ pass.
 
 ### Duplicate-Looking Lines
 
-Check the quality report, especially `suspicious_adjacent_duplicates`, `japanese_kana_left`, and `possible_japanese_or_traditional_left`. The ASR step already splits long internal word gaps and merges short adjacent fragments, while translation supplies context as chat history (the current turn carries only the current line), which avoids fusing the previous line into the output at the source. The Sakura translator also self-corrects two failure modes per line: leaked Japanese kana triggers up to two standalone retries (the second with a sampling nudge), and a translation identical to the previous line's while the source differs triggers one standalone retry with a repetition penalty — the duplicate is kept if the model insists, since different sources can genuinely share a rendering. `possible_japanese_or_traditional_left` is a conservative review hint for kanji-only leftovers or non-Simplified characters; it does not filter subtitles automatically.
+Check the quality report, especially `suspicious_adjacent_duplicates`, `japanese_kana_left`, and `possible_japanese_or_traditional_left`. The ASR step already splits long internal word gaps and merges short adjacent fragments, while translation supplies context as chat history (the current turn carries only the current line), which avoids fusing the previous line into the output at the source. The default GalTransl translator (and Sakura) also self-corrects two failure modes per line: leaked Japanese kana triggers up to two standalone retries (the second with a sampling nudge), and a translation identical to the previous line's while the source differs triggers one standalone retry with a repetition penalty — the duplicate is kept if the model insists, since different sources can genuinely share a rendering. `possible_japanese_or_traditional_left` is a conservative review hint for kanji-only leftovers or non-Simplified characters; it does not filter subtitles automatically.
 
 ### Low-Confidence or Hallucinated Gap Fills
 

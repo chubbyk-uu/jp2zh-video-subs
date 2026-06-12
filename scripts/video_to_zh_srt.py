@@ -19,6 +19,7 @@ TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt.py"
 QWEN_TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt_qwen.py"
 TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_hymt.py"
 SAKURA_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_sakura.py"
+GALTRANSL_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_galtransl.py"
 QUALITY_REPORT_SCRIPT = SCRIPTS_DIR / "quality_report.py"
 FILL_GAPS_SCRIPT = SCRIPTS_DIR / "fill_ja_srt_gaps.py"
 BILINGUAL_SCRIPT = SCRIPTS_DIR / "make_bilingual_ass.py"
@@ -27,6 +28,7 @@ QWEN_ASR_MODEL = PROJECT_ROOT / "models" / "Qwen3-ASR-1.7B"
 QWEN_ALIGNER_MODEL = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 TRANSLATE_MODEL = PROJECT_ROOT / "models" / "HY-MT1.5-7B-GGUF" / "HY-MT1.5-7B-Q4_K_M.gguf"
 SAKURA_MODEL = PROJECT_ROOT / "models" / "Sakura-14B-Qwen2.5-v1.0-GGUF" / "sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
+GALTRANSL_MODEL = PROJECT_ROOT / "models" / "Sakura-GalTransl-7B-v3.7-GGUF" / "Sakura-Galtransl-7B-v3.7.gguf"
 VIDEO_EXTENSIONS = {
     ".mp4",
     ".mkv",
@@ -485,10 +487,12 @@ def process_video_stages(
             run(fill_command, log)
         translate_input_srt = filled_ja_srt
 
-    # Sakura and HY-MT share the same CLI (input, --output, --model-path,
+    # Sakura, GalTransl, and HY-MT share the same CLI (input, --output, --model-path,
     # --context-size, --lead-out/--min-display), so only the script and model differ.
     if args.translator == "sakura":
         translate_script, translate_model = SAKURA_TRANSLATE_SCRIPT, SAKURA_MODEL
+    elif args.translator == "galtransl":
+        translate_script, translate_model = GALTRANSL_TRANSLATE_SCRIPT, GALTRANSL_MODEL
     else:
         translate_script, translate_model = TRANSLATE_SCRIPT, TRANSLATE_MODEL
     translate_command = [
@@ -621,19 +625,22 @@ def main() -> None:
     parser.add_argument(
         "--context-size",
         type=int,
-        default=2,
-        help="Prior dialogue turns supplied to the translator as chat history (previous "
-        "source/translation pairs). 0 translates each line standalone.",
+        default=6,
+        help="Prior dialogue turns supplied to the translator as context (galtransl: a "
+        "历史翻译 block of prior translations; sakura/hymt: source/translation chat pairs). "
+        "0 translates each line standalone.",
     )
     parser.add_argument("--lead-out-seconds", type=float, default=0.5)
     parser.add_argument("--min-display-seconds", type=float, default=1.5)
     parser.add_argument("--language", default="ja")
     parser.add_argument(
         "--translator",
-        choices=("sakura", "hymt"),
-        default="sakura",
-        help="Translation backend (default sakura). 'sakura' uses SakuraLLM "
-        "(Japanese->Chinese light-novel/galgame model); 'hymt' uses HY-MT1.5-7B.",
+        choices=("sakura", "galtransl", "hymt"),
+        default="galtransl",
+        help="Translation backend (default galtransl). 'galtransl' uses "
+        "Sakura-GalTransl-7B-v3.7 (visual-novel dialogue, smaller/faster, more "
+        "colloquial); 'sakura' uses Sakura-14B-Qwen2.5-v1.0 (light-novel style); "
+        "'hymt' uses HY-MT1.5-7B.",
     )
     parser.add_argument(
         "--asr",
@@ -761,6 +768,9 @@ def main() -> None:
     if args.translator == "sakura":
         require_file(SAKURA_MODEL, "Sakura model")
         require_file(SAKURA_TRANSLATE_SCRIPT, "Sakura translation script")
+    elif args.translator == "galtransl":
+        require_file(GALTRANSL_MODEL, "GalTransl model")
+        require_file(GALTRANSL_TRANSLATE_SCRIPT, "GalTransl translation script")
     else:
         require_file(TRANSLATE_MODEL, "HY-MT model")
         require_file(TRANSLATE_SCRIPT, "translation script")
