@@ -273,27 +273,57 @@ def test_uncovered_gap_spans_zero_min_gap_short_timeline():
     assert uncovered_gap_spans([], duration=5.0, min_gap=10.0) == []
 
 
-def test_chain_only_filler_hai_run_is_dropped():
-    # A run of 3+ はい (the noise signature of breathy quiet labelled as 「はい」)
-    # is dropped by the chain rule even sitting next to speech.
-    hais = [SubtitleEntry(3.0 + 2.5 * i, 3.8 + 2.5 * i, "はい。") for i in range(4)]
-    entries = [SubtitleEntry(0.0, 1.0, "始めようか"), *hais, SubtitleEntry(20.0, 21.0, "次です")]
+def test_unanchored_hai_run_is_dropped():
+    # Metronomic はい far from any real line (breathy quiet labelled as 「はい」)
+    # is an ordinary filler run and goes.
+    hais = [SubtitleEntry(8.0 + 2.5 * i, 8.8 + 2.5 * i, "はい。") for i in range(4)]
+    entries = [SubtitleEntry(0.0, 1.0, "始めようか"), *hais, SubtitleEntry(30.0, 31.0, "次です")]
     kept, dropped = drop_isolated_interjections(entries, min_silence=3.0)
     assert [e.text for e in kept] == ["始めようか", "次です"]
     assert len(dropped) == 4
 
 
-def test_isolated_hai_reply_is_kept_even_walled_by_silence():
-    # A lone はい is a genuine reply ("yes"); unlike a bare vocalization it is NOT
-    # subject to the silence-bracket rule, so it survives between two distant lines.
+def test_anchored_hai_reply_is_kept_even_walled_by_silence():
+    # A はい answering a line that just ended is a genuine reply: exempt from the
+    # silence-bracket rule even with nothing else around it.
+    entries = [
+        SubtitleEntry(0.0, 1.0, "準備はいい？"),
+        SubtitleEntry(2.5, 3.3, "はい。"),
+        SubtitleEntry(20.0, 21.0, "では行こう"),
+    ]
+    kept, dropped = drop_isolated_interjections(entries, min_silence=3.0)
+    assert dropped == []
+    assert len(kept) == 3
+
+
+def test_unanchored_lone_hai_walled_by_silence_is_dropped():
+    # The same lone はい drifting 9s after the question is noise, not an answer.
     entries = [
         SubtitleEntry(0.0, 1.0, "準備はいい？"),
         SubtitleEntry(10.0, 10.8, "はい。"),
         SubtitleEntry(20.0, 21.0, "では行こう"),
     ]
     kept, dropped = drop_isolated_interjections(entries, min_silence=3.0)
-    assert dropped == []
-    assert len(kept) == 3
+    assert [e.text for e in dropped] == ["はい。"]
+    assert len(kept) == 2
+
+
+def test_anchored_hai_survives_while_following_noise_run_drops():
+    # Real pattern: a genuine answer right after the question, then a metronomic
+    # noise run. The anchored head is kept; only the unanchored tail goes, and the
+    # anchored reply does not chain with it.
+    entries = [
+        SubtitleEntry(0.0, 1.5, "できてますか。"),
+        SubtitleEntry(1.5, 2.3, "はい。"),
+        SubtitleEntry(9.5, 10.3, "はい。"),
+        SubtitleEntry(17.5, 18.3, "はい。"),
+        SubtitleEntry(24.5, 25.3, "はい。"),
+        SubtitleEntry(40.0, 41.0, "次です"),
+    ]
+    kept, dropped = drop_isolated_interjections(entries, min_silence=3.0)
+    assert [e.text for e in kept] == ["できてますか。", "はい。", "次です"]
+    assert kept[1].start == 1.5
+    assert len(dropped) == 3
 
 
 def test_hai_in_a_mixed_filler_chain_is_dropped():

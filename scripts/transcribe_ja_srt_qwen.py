@@ -64,12 +64,16 @@ ISOLATED_INTERJECTION_CORES = {
     "ひ", "ひん",
     "へ", "ほ",
 }
-# Real reply words (はい "yes") that are genuine dialogue when isolated, so they
-# are NOT subject to the silence-bracket rule, but become noise when ASR labels a
-# stretch of quiet breathing/moaning as a metronomic run of them. They are dropped
-# only by the chain rule (run_min+ in a row), never as a lone silence-walled blip.
-CHAIN_ONLY_INTERJECTION_CORES = {"はい"}
-ALL_FILLER_CORES = ISOLATED_INTERJECTION_CORES | CHAIN_ONLY_INTERJECTION_CORES
+# Reply words (はい "yes") are genuine dialogue exactly when they answer
+# something: in real recordings an answering はい starts within a couple of
+# seconds of the line it replies to. ASR also labels quiet rhythmic
+# breathing/kissing as metronomic はい runs (observed at 6-8s spacing, far from
+# any real line, making up ~half the cues of a quiet title), which the plain
+# chain rule misses. So a はい anchored to recent real speech
+# (reply_anchor_lag) is kept unconditionally; an unanchored はい is treated as
+# an ordinary filler, subject to the same silence/chain gates as うん.
+REPLY_INTERJECTION_CORES = {"はい"}
+ALL_FILLER_CORES = ISOLATED_INTERJECTION_CORES | REPLY_INTERJECTION_CORES
 
 
 @dataclass
@@ -244,7 +248,9 @@ def _split_segment(
 # is never touched.
 RUN_BOUNDARY_PUNCT = set("。、，．,.！？!?…・")
 # Longest-first so うんうん matches core うん rather than two ん with stray う.
-FILLER_COLLAPSE_CORES = sorted(ISOLATED_INTERJECTION_CORES, key=len, reverse=True)
+# Includes reply words so はい、はい。 collapses to a single はい before the
+# anchored-reply gate judges it.
+FILLER_COLLAPSE_CORES = sorted(ALL_FILLER_CORES, key=len, reverse=True)
 
 
 def _token_core_char(display: str) -> str:
@@ -469,6 +475,7 @@ def drop_isolated_interjections(
     min_silence: float,
     run_min: int = 3,
     run_gap: float = 5.0,
+    reply_anchor_lag: float = 3.0,
 ) -> tuple[list[SubtitleEntry], list[SubtitleEntry]]:
     """Drop filler morae (うん/ん/ねえ/あ …) that carry no dialogue.
 
@@ -486,14 +493,35 @@ def drop_isolated_interjections(
     The silence gate keeps genuine one-word replies — which sit next to other speech
     and never chain — safe. A missing neighbour (list edge) counts as infinite
     silence. ``min_silence``<=0 disables the isolated rule; ``run_min``<=0 the chain.
+
+    Reply words (REPLY_INTERJECTION_CORES, e.g. はい) get one extra gate first: one
+    anchored to real speech (a real-word cue ended within ``reply_anchor_lag``
+    seconds before it) is a genuine answer and is exempt from both rules; an
+    unanchored one is an ordinary filler. ``reply_anchor_lag``<=0 disables
+    anchoring (every はい is then a plain filler).
     """
     if not entries or (min_silence <= 0 and run_min <= 0):
         return entries, []
     ordered = sorted(entries, key=lambda e: (e.start, e.end))
     n = len(ordered)
     cores = [_interjection_core(e.text) for e in ordered]
-    is_filler = [c in ALL_FILLER_CORES for c in cores]
-    is_isolated_filler = [c in ISOLATED_INTERJECTION_CORES for c in cores]
+    # A reply word (はい) anchored to recent real speech is a genuine answer and
+    # is exempt from every drop rule; an unanchored one is an ordinary filler.
+    # Only real-word cues anchor — a はい cannot anchor the next はい, so a
+    # metronomic run decays after the one genuinely answering the line.
+    anchored = [False] * n
+    last_word_end: float | None = None
+    for k in range(n):
+        if cores[k] in REPLY_INTERJECTION_CORES:
+            if (
+                reply_anchor_lag > 0
+                and last_word_end is not None
+                and ordered[k].start - last_word_end <= reply_anchor_lag
+            ):
+                anchored[k] = True
+        elif cores[k] not in ALL_FILLER_CORES:
+            last_word_end = ordered[k].end
+    is_filler = [c in ALL_FILLER_CORES and not anchored[k] for k, c in enumerate(cores)]
     drop = [False] * n
     i = 0
     while i < n:
@@ -506,10 +534,7 @@ def drop_isolated_interjections(
             j += 1
         lead = ordered[i].start - ordered[i - 1].end if i > 0 else float("inf")
         trail = ordered[j + 1].start - ordered[j].end if j + 1 < n else float("inf")
-        # The silence-bracket rule only fires on a pure vocalization run; a run that
-        # includes a chain-only reply word (はい) is dropped only when it chains.
-        run_all_isolated = all(is_isolated_filler[k] for k in range(i, j + 1))
-        bracketed = min_silence > 0 and run_all_isolated and lead >= min_silence and trail >= min_silence
+        bracketed = min_silence > 0 and lead >= min_silence and trail >= min_silence
         chained = run_min > 0 and (j - i + 1) >= run_min
         if bracketed or chained:
             for k in range(i, j + 1):
@@ -535,6 +560,7 @@ def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace
         args.isolated_interjection_silence,
         args.isolated_interjection_run,
         args.isolated_interjection_run_gap,
+        args.interjection_reply_anchor_lag,
     )
     if dropped:
         samples = "、".join(e.text.strip() for e in dropped[:6])
@@ -997,6 +1023,9 @@ def main() -> None:
     parser.add_argument("--isolated-interjection-silence", type=float, default=3.0)
     parser.add_argument("--isolated-interjection-run", type=int, default=3)
     parser.add_argument("--isolated-interjection-run-gap", type=float, default=5.0)
+    # A reply word (はい) is kept only when a real-word cue ended within this many
+    # seconds before it (a genuine answer); otherwise it is an ordinary filler.
+    parser.add_argument("--interjection-reply-anchor-lag", type=float, default=3.0)
     # Recapture pass: after the main pass, gaps >= --recapture-min-gap with no cues
     # get a second VAD look at --recapture-vad-threshold (more sensitive than the
     # main --vad-threshold); spans whose detected speech totals at least
