@@ -64,6 +64,12 @@ ISOLATED_INTERJECTION_CORES = {
     "ひ", "ひん",
     "へ", "ほ",
 }
+# Real reply words (はい "yes") that are genuine dialogue when isolated, so they
+# are NOT subject to the silence-bracket rule, but become noise when ASR labels a
+# stretch of quiet breathing/moaning as a metronomic run of them. They are dropped
+# only by the chain rule (run_min+ in a row), never as a lone silence-walled blip.
+CHAIN_ONLY_INTERJECTION_CORES = {"はい"}
+ALL_FILLER_CORES = ISOLATED_INTERJECTION_CORES | CHAIN_ONLY_INTERJECTION_CORES
 
 
 @dataclass
@@ -485,7 +491,9 @@ def drop_isolated_interjections(
         return entries, []
     ordered = sorted(entries, key=lambda e: (e.start, e.end))
     n = len(ordered)
-    is_filler = [_interjection_core(e.text) in ISOLATED_INTERJECTION_CORES for e in ordered]
+    cores = [_interjection_core(e.text) for e in ordered]
+    is_filler = [c in ALL_FILLER_CORES for c in cores]
+    is_isolated_filler = [c in ISOLATED_INTERJECTION_CORES for c in cores]
     drop = [False] * n
     i = 0
     while i < n:
@@ -498,7 +506,10 @@ def drop_isolated_interjections(
             j += 1
         lead = ordered[i].start - ordered[i - 1].end if i > 0 else float("inf")
         trail = ordered[j + 1].start - ordered[j].end if j + 1 < n else float("inf")
-        bracketed = min_silence > 0 and lead >= min_silence and trail >= min_silence
+        # The silence-bracket rule only fires on a pure vocalization run; a run that
+        # includes a chain-only reply word (はい) is dropped only when it chains.
+        run_all_isolated = all(is_isolated_filler[k] for k in range(i, j + 1))
+        bracketed = min_silence > 0 and run_all_isolated and lead >= min_silence and trail >= min_silence
         chained = run_min > 0 and (j - i + 1) >= run_min
         if bracketed or chained:
             for k in range(i, j + 1):

@@ -273,6 +273,56 @@ def test_uncovered_gap_spans_zero_min_gap_short_timeline():
     assert uncovered_gap_spans([], duration=5.0, min_gap=10.0) == []
 
 
+def test_chain_only_filler_hai_run_is_dropped():
+    # A run of 3+ はい (the noise signature of breathy quiet labelled as 「はい」)
+    # is dropped by the chain rule even sitting next to speech.
+    hais = [SubtitleEntry(3.0 + 2.5 * i, 3.8 + 2.5 * i, "はい。") for i in range(4)]
+    entries = [SubtitleEntry(0.0, 1.0, "始めようか"), *hais, SubtitleEntry(20.0, 21.0, "次です")]
+    kept, dropped = drop_isolated_interjections(entries, min_silence=3.0)
+    assert [e.text for e in kept] == ["始めようか", "次です"]
+    assert len(dropped) == 4
+
+
+def test_isolated_hai_reply_is_kept_even_walled_by_silence():
+    # A lone はい is a genuine reply ("yes"); unlike a bare vocalization it is NOT
+    # subject to the silence-bracket rule, so it survives between two distant lines.
+    entries = [
+        SubtitleEntry(0.0, 1.0, "準備はいい？"),
+        SubtitleEntry(10.0, 10.8, "はい。"),
+        SubtitleEntry(20.0, 21.0, "では行こう"),
+    ]
+    kept, dropped = drop_isolated_interjections(entries, min_silence=3.0)
+    assert dropped == []
+    assert len(kept) == 3
+
+
+def test_hai_in_a_mixed_filler_chain_is_dropped():
+    # はい buried in a うん/あ moaning run joins the chain and goes with it.
+    entries = [
+        SubtitleEntry(0.0, 1.0, "始めようか"),
+        SubtitleEntry(5.0, 5.8, "うん。"),
+        SubtitleEntry(7.0, 7.8, "はい。"),
+        SubtitleEntry(9.0, 9.8, "あ。"),
+        SubtitleEntry(20.0, 21.0, "次です"),
+    ]
+    kept, dropped = drop_isolated_interjections(entries, min_silence=3.0)
+    assert [e.text for e in kept] == ["始めようか", "次です"]
+    assert [e.text for e in dropped] == ["うん。", "はい。", "あ。"]
+
+
+def test_pair_of_hai_is_kept():
+    # Two はい (below the 3-run threshold) are a plausible real double reply; kept.
+    entries = [
+        SubtitleEntry(0.0, 1.0, "いい？"),
+        SubtitleEntry(2.0, 2.8, "はい。"),
+        SubtitleEntry(3.0, 3.8, "はい。"),
+        SubtitleEntry(20.0, 21.0, "次です"),
+    ]
+    kept, dropped = drop_isolated_interjections(entries, min_silence=3.0)
+    assert dropped == []
+    assert len(kept) == 4
+
+
 def test_disabled_thresholds_keep_everything():
     entries = [
         SubtitleEntry(0.0, 0.5, "うん。"),
