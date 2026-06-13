@@ -1,12 +1,19 @@
 from argparse import Namespace
+from pathlib import Path
+
+import pytest
 
 from make_bilingual_ass import (
     AssEntry,
+    DEFAULT_GENDER_MODEL,
     ass_time,
     build_bilingual_ass,
     build_dialogue,
+    classify_gender,
     escape_ass_text,
+    gender_probabilities,
     parse_srt,
+    style_for_gender,
 )
 
 
@@ -17,6 +24,8 @@ def default_options():
         ja_font_size=24,
         zh_colour="&H0000FFFF",
         ja_colour="&H00B4B4B4",
+        male_colour="&H00FFBF00",
+        female_colour="&H00B478FF",
         play_res_x=1280,
         play_res_y=720,
     )
@@ -90,3 +99,59 @@ def test_parse_srt_ignores_timing_settings(tmp_path):
     entries = parse_srt(srt)
 
     assert [(e.index, e.start, e.end, e.text) for e in entries] == [("1", 1.0, 3.0, "你好")]
+
+
+def test_header_emits_speaker_styles():
+    content = build_bilingual_ass([], {}, default_options())
+    assert "Style: ZH_M,Arial,36,&H00FFBF00" in content
+    assert "Style: ZH_F,Arial,36,&H00B478FF" in content
+
+
+def test_style_for_gender_maps_to_styles():
+    assert style_for_gender("M") == "ZH_M"
+    assert style_for_gender("F") == "ZH_F"
+    assert style_for_gender(None) == "ZH"
+    assert style_for_gender("") == "ZH"
+
+
+def test_build_dialogue_uses_given_style():
+    entry = AssEntry("1", 1.0, 3.0, "你好")
+    line = build_dialogue(entry, "こんにちは", "ZH_F")
+    assert line.startswith("Dialogue: 0,0:00:01.00,0:00:03.00,ZH_F,,")
+
+
+def test_build_bilingual_ass_assigns_style_per_gender():
+    zh = [AssEntry("1", 0.0, 1.0, "他说"), AssEntry("2", 1.0, 2.0, "她说"), AssEntry("3", 2.0, 3.0, "谁")]
+    genders = {"1": "M", "2": "F"}  # index 3 missing -> default ZH
+    content = build_bilingual_ass(zh, {}, default_options(), genders)
+    lines = [ln for ln in content.splitlines() if ln.startswith("Dialogue:")]
+    assert ",ZH_M,," in lines[0]
+    assert ",ZH_F,," in lines[1]
+    assert ",ZH,," in lines[2]
+
+
+def test_classify_gender_thresholds_confidence():
+    assert classify_gender(0.99, 0.01, 0.65) == "M"
+    assert classify_gender(0.10, 0.90, 0.65) == "F"
+    assert classify_gender(0.55, 0.45, 0.65) is None  # below floor -> uncoloured
+    assert classify_gender(0.66, 0.34, 0.65) == "M"
+
+
+@pytest.mark.skipif(not DEFAULT_GENDER_MODEL.exists(), reason="ECAPA gender model not downloaded")
+def test_gender_probabilities_on_model_examples():
+    # The model ships example1.wav (female) and example2.wav (male); use them as ground truth.
+    sf = pytest.importorskip("soundfile")
+    pytest.importorskip("torch")
+    import numpy as np
+
+    probs = {}
+    for name, idx in [("example1.wav", "1"), ("example2.wav", "2")]:
+        audio, sr = sf.read(str(DEFAULT_GENDER_MODEL / name))
+        if getattr(audio, "ndim", 1) > 1:
+            audio = audio.mean(axis=1)
+        dur = len(audio) / float(sr)
+        entry = AssEntry(idx, 0.0, dur, "x")
+        p = gender_probabilities([entry], DEFAULT_GENDER_MODEL / name, DEFAULT_GENDER_MODEL)
+        probs[idx] = p[idx]
+    assert probs["1"][1] > probs["1"][0]  # example1 -> female
+    assert probs["2"][0] > probs["2"][1]  # example2 -> male

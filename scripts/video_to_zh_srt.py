@@ -522,7 +522,7 @@ def process_video_stages(
     bilingual_output: Path | None = None
     if args.bilingual:
         bilingual_output = output.with_suffix(".ass")
-        run([
+        bilingual_command = [
             sys.executable,
             str(BILINGUAL_SCRIPT),
             "--zh-srt",
@@ -539,7 +539,18 @@ def process_video_stages(
             args.bilingual_zh_colour,
             "--ja-colour",
             args.bilingual_ja_colour,
-        ], log)
+            "--male-colour",
+            args.bilingual_male_colour,
+            "--female-colour",
+            args.bilingual_female_colour,
+            "--gender-confidence",
+            str(args.gender_confidence),
+        ]
+        if args.colour_by_speaker:
+            bilingual_command.extend(["--audio", str(audio), "--colour-by-speaker"])
+        else:
+            bilingual_command.append("--no-colour-by-speaker")
+        run(bilingual_command, log)
 
     if not args.skip_quality_report:
         report_path = job_dir / f"{video.stem}.quality.txt"
@@ -619,13 +630,23 @@ def main() -> None:
     )
     parser.add_argument(
         "--bilingual",
-        action="store_true",
-        help="Also write a bilingual ASS (Chinese on top, Japanese below) next to the Chinese SRT",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write a bilingual ASS (Chinese on top, Japanese below) next to the Chinese SRT (default on; --no-bilingual writes only the Chinese SRT)",
     )
     parser.add_argument("--bilingual-zh-font-size", type=int, default=36)
     parser.add_argument("--bilingual-ja-font-size", type=int, default=24)
     parser.add_argument("--bilingual-zh-colour", default="&H0000FFFF", help="ASS colour &HAABBGGRR for the Chinese line")
     parser.add_argument("--bilingual-ja-colour", default="&H00B4B4B4", help="ASS colour &HAABBGGRR for the Japanese line")
+    parser.add_argument(
+        "--colour-by-speaker",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="In bilingual mode, recolour each cue's Chinese line by speaker gender (ECAPA, off by default)",
+    )
+    parser.add_argument("--bilingual-male-colour", default="&H00FFBF00", help="ASS colour for male-speaker Chinese line")
+    parser.add_argument("--bilingual-female-colour", default="&H00B478FF", help="ASS colour for female-speaker Chinese line")
+    parser.add_argument("--gender-confidence", type=float, default=0.6, help="Min confidence to colour a cue by gender")
     parser.add_argument(
         "--context-size",
         type=int,

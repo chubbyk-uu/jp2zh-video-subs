@@ -54,7 +54,8 @@ No online API is required for inference. Model files are not included in this re
 │   ├── Sakura-GalTransl-7B-v3.7-GGUF/ # Default translation model
 │   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # Alternate (larger) translation model
 │   ├── faster-whisper-large-v3/     # Legacy CTranslate2 Whisper ASR model
-│   └── Hy-MT2-7B-GGUF/              # Optional HY-MT translation model
+│   ├── Hy-MT2-7B-GGUF/              # Optional HY-MT translation model
+│   └── voice-gender-classifier/     # Optional ECAPA gender model (bilingual colouring)
 ├── outputs/                         # Final Chinese SRT files
 ├── scripts/
 │   ├── video_to_zh_srt.py           # One-command video-to-Chinese-SRT pipeline
@@ -66,7 +67,8 @@ No online API is required for inference. Model files are not included in this re
 │   ├── translate_srt_sakura.py      # Japanese SRT to Chinese SRT (Sakura-14B)
 │   ├── translate_srt_hymt.py        # Japanese SRT to Chinese SRT (HY-MT)
 │   ├── retime_existing_subtitles.py # Retiming + ASS refresh from existing outputs
-│   ├── make_bilingual_ass.py        # Bilingual ASS (Chinese on top, Japanese below)
+│   ├── make_bilingual_ass.py        # Bilingual ASS (Chinese on top, Japanese below) + speaker colouring
+│   ├── ecapa_gender.py              # Vendored ECAPA-TDNN voice gender classifier
 │   └── srt_utils.py                 # Shared SRT parsing, timing, and interval helpers
 ├── tests/                           # Pytest unit tests for the pure helpers and batch pipeline
 └── work/                            # Intermediate files (audio, intermediate SRTs)
@@ -200,6 +202,21 @@ models/faster-whisper-large-v3/config.json
 models/faster-whisper-large-v3/tokenizer.json
 models/faster-whisper-large-v3/vocabulary.json
 models/faster-whisper-large-v3/preprocessor_config.json
+```
+
+Bilingual speaker colouring (opt-in with `--colour-by-speaker`) needs the ECAPA voice
+gender model [`JaesungHuh/voice-gender-classifier`](https://huggingface.co/JaesungHuh/voice-gender-classifier)
+(~60 MB, torch-only). It is optional — without it the bilingual ASS is still written,
+just uncoloured:
+
+```bash
+hf download JaesungHuh/voice-gender-classifier \
+  --local-dir models/voice-gender-classifier
+```
+
+```text
+models/voice-gender-classifier/model.safetensors
+models/voice-gender-classifier/config.json
 ```
 
 ## One-Command Usage
@@ -413,9 +430,10 @@ For `path/to/input.mp4`, the default outputs are:
 - `work/input/input.quality.txt`: quality report.
 - `work/metrics.jsonl`: one JSON line of key quality metrics per processed video (entries, VAD coverage, kana residue, adjacent duplicates, recapture stats). Shared across videos and runs, for comparing tuning changes over time.
 - `outputs/input.zh.srt`: final Chinese SRT.
-- `path/to/input.zh.srt`: final Chinese SRT copied next to the input video. With
-  `--bilingual`, the bilingual `input.zh.ass` is copied next to the video instead
-  of the SRT (the SRT still stays in `outputs/`).
+- `path/to/input.zh.ass`: bilingual ASS copied next to the input video. Bilingual
+  output is on by default, so the ASS (not the SRT) is the artifact placed beside the
+  video; the Chinese SRT still stays in `outputs/`. With `--no-bilingual`, the Chinese
+  SRT is copied next to the video instead.
 
 With `--gap-fill`, the pipeline also writes:
 
@@ -499,16 +517,16 @@ The ASS and quality-report stages always rerun (fast, no GPU). `--resume` implie
 python scripts/video_to_zh_srt.py path/to/videos/ --bilingual --resume
 ```
 
-Do not copy the final subtitle file (the SRT, or the ASS with `--bilingual`) next to the input video:
+Do not copy the final subtitle file (the bilingual ASS by default, or the SRT with `--no-bilingual`) next to the input video:
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
 ```
 
-Also write a bilingual subtitle (Chinese on top, Japanese below):
+A bilingual ASS (Chinese on top, Japanese below) is written by default. To write only the Chinese SRT instead:
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --bilingual
+python scripts/video_to_zh_srt.py path/to/input.mp4 --no-bilingual
 ```
 
 This writes `outputs/input.zh.ass` and copies it next to the input video. In
@@ -522,6 +540,17 @@ coloured, the Japanese line is smaller and gray. Defaults can be changed with
 non-Windows players fall back via fontconfig). The Japanese line comes from the
 Japanese SRT used for translation (`.ja.srt` by default, `.filled.ja.srt` with
 `--gap-fill`), so the two lines stay aligned cue by cue.
+
+In bilingual mode the Chinese line can also be **coloured by speaker gender**
+(off by default; enable with `--colour-by-speaker`). Each cue's audio span is
+classified male/female by an ECAPA-TDNN voice gender model (VoxCeleb-trained; see
+[Download Models](#download-models)), which is far more robust on breathy/music-laden
+audio than raw pitch. Only cues classified above `--gender-confidence` (default 0.6)
+are recoloured — male deep sky blue, female pink; less certain cues keep the default
+colour rather than risk a wrong guess. Recolour with `--bilingual-male-colour` /
+`--bilingual-female-colour`. If the model is not downloaded, colouring is skipped and
+a plain bilingual ASS is written. Only the Chinese line is recoloured; the Japanese
+line stays gray.
 
 Adjust display timing padding for the final Chinese SRT and bilingual ASS:
 

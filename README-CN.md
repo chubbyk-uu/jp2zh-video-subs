@@ -44,7 +44,8 @@
 │   ├── Sakura-GalTransl-7B-v3.7-GGUF/ # 默认翻译模型
 │   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # 备选（更大）翻译模型
 │   ├── faster-whisper-large-v3/     # 旧版 CTranslate2 Whisper ASR 模型
-│   └── Hy-MT2-7B-GGUF/              # 可选 HY-MT 翻译模型
+│   ├── Hy-MT2-7B-GGUF/              # 可选 HY-MT 翻译模型
+│   └── voice-gender-classifier/     # 可选 ECAPA 性别模型（双语上色用）
 ├── outputs/                         # 最终中文字幕输出
 ├── scripts/
 │   ├── video_to_zh_srt.py           # 一键视频到中文字幕
@@ -56,7 +57,8 @@
 │   ├── translate_srt_sakura.py      # 日语 SRT 到中文字幕（Sakura-14B）
 │   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕（HY-MT）
 │   ├── retime_existing_subtitles.py # 基于已有产物批量重定时并刷新 ASS
-│   ├── make_bilingual_ass.py        # 双语 ASS（中文在上，日文在下）
+│   ├── make_bilingual_ass.py        # 双语 ASS（中文在上，日文在下）+ 说话人性别上色
+│   ├── ecapa_gender.py              # vendoring 的 ECAPA-TDNN 声纹性别分类器
 │   └── srt_utils.py                 # 共享的 SRT 解析、时间和区间工具
 ├── tests/                           # 纯函数与批处理流水线的 pytest 单元测试
 └── work/                            # 中间文件（音频、各阶段 SRT）
@@ -181,6 +183,19 @@ models/faster-whisper-large-v3/config.json
 models/faster-whisper-large-v3/tokenizer.json
 models/faster-whisper-large-v3/vocabulary.json
 models/faster-whisper-large-v3/preprocessor_config.json
+```
+
+双语字幕的说话人性别上色（加 `--colour-by-speaker` 开启）需要 ECAPA 声纹性别模型
+[`JaesungHuh/voice-gender-classifier`](https://huggingface.co/JaesungHuh/voice-gender-classifier)（约 60 MB，仅依赖 torch）。它是可选的——不下载也能正常输出双语 ASS，只是不上色：
+
+```bash
+hf download JaesungHuh/voice-gender-classifier \
+  --local-dir models/voice-gender-classifier
+```
+
+```text
+models/voice-gender-classifier/model.safetensors
+models/voice-gender-classifier/config.json
 ```
 
 ## 一条命令生成中文字幕
@@ -355,7 +370,7 @@ Whisper 窗口内以免被截断。`--main-local-vad-dry-run` 可只打印选区
 - `work/input/input.quality.txt`：质量报告。
 - `work/metrics.jsonl`：每处理一个视频追加一行 JSON 关键质量指标（条数、VAD 覆盖率、假名残留、相邻重复、补捞统计）。跨视频跨运行共用一个文件，方便对比调参前后的变化。
 - `outputs/input.zh.srt`：最终中文字幕。
-- `path/to/input.zh.srt`：自动拷贝到输入视频同目录的中文字幕。加 `--bilingual` 时，放到视频同目录的是双语 `input.zh.ass`，而**不是** SRT（SRT 仍保留在 `outputs/`）。
+- `path/to/input.zh.ass`：拷贝到输入视频同目录的双语 ASS。双语输出默认开启，所以放到视频同目录的是 ASS 而**不是** SRT（中文 SRT 仍保留在 `outputs/`）。加 `--no-bilingual` 时，改为把中文 SRT 拷到视频同目录。
 
 加 `--gap-fill` 时，还会额外输出：
 
@@ -439,13 +454,15 @@ python scripts/video_to_zh_srt.py path/to/videos/ --bilingual --resume
 python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
 ```
 
-同时输出双语字幕（中文在上，日文在下）：
+默认输出双语字幕（中文在上，日文在下）。若只想要中文 SRT，用 `--no-bilingual`：
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --bilingual
+python scripts/video_to_zh_srt.py path/to/input.mp4 --no-bilingual
 ```
 
-会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour`（颜色用 ASS 的 `&HAABBGGRR` 格式）和 `--font`（默认 `Microsoft YaHei`，在 Windows 上中日文行均有字形；非 Windows 播放器经 fontconfig 回退）调整。下面那行日文来自参与翻译的日语 SRT（默认 `.ja.srt`，加 `--gap-fill` 时为 `.filled.ja.srt`），因此中日两行逐条对齐。
+默认会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour`（颜色用 ASS 的 `&HAABBGGRR` 格式）和 `--font`（默认 `Microsoft YaHei`，在 Windows 上中日文行均有字形；非 Windows 播放器经 fontconfig 回退）调整。下面那行日文来自参与翻译的日语 SRT（默认 `.ja.srt`，加 `--gap-fill` 时为 `.filled.ja.srt`），因此中日两行逐条对齐。
+
+双语模式下还可**按说话人性别给中文那行上色**（默认关闭，加 `--colour-by-speaker` 开启）：对每条字幕从音频里取对应片段，用 ECAPA-TDNN 声纹性别模型（VoxCeleb 训练，见[下载模型](#下载模型)）判男/女——它在喘息/带背景音乐的真实音频上远比纯基频（F0）稳健，不会出现 F0 八度错误导致的男女互判。只有置信度高于 `--gender-confidence`（默认 0.6）的字幕才上色：男声深天蓝、女声粉；不够确定的保持默认黄色，宁可不上色也不上错色。用 `--bilingual-male-colour`、`--bilingual-female-colour` 改配色。未下载该模型时自动跳过上色、输出普通双语 ASS。注意只给中文那行上色，日文那行始终灰白。
 
 调整最终中文字幕和双语 ASS 的显示留白：
 
