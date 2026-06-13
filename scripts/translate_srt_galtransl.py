@@ -160,6 +160,51 @@ def translate_with_retry(
     return translated
 
 
+def union_terms(src_lines: list[str], glossary: tuple[GlossaryTerm, ...]) -> tuple[GlossaryTerm, ...]:
+    """Glossary terms relevant to any line in a block, deduplicated, order-preserved."""
+    terms: list[GlossaryTerm] = []
+    seen: set[str] = set()
+    for line in src_lines:
+        for term in relevant_terms(line, glossary):
+            if term.source not in seen:
+                seen.add(term.source)
+                terms.append(term)
+    return tuple(terms)
+
+
+def translate_block(
+    llm: Llama,
+    sources: list[str],
+    history: list[str],
+    glossary: tuple[GlossaryTerm, ...],
+) -> list[str] | None:
+    """Translate several source lines as one newline-joined turn.
+
+    Relies on the model card's "不要擅自增加或减少换行" contract to return the same
+    line count, so each output line maps 1:1 back to its cue. Returns one cleaned
+    translation per input line, or None when the line count, emptiness, kana-leak, or
+    degeneration check fails — the caller then falls back to per-line for the block.
+    """
+    src_lines = [normalize_source(s).replace("\n", " ") for s in sources]
+    result = llm.create_chat_completion(
+        messages=build_messages("\n".join(src_lines), history, union_terms(src_lines, glossary)),
+        max_tokens=min(1536, 160 * len(src_lines) + 256),
+        temperature=0.3,
+        top_p=0.8,
+        top_k=40,
+        repeat_penalty=1.0,
+    )
+    raw = result["choices"][0]["message"]["content"].strip()
+    lines = [ln for ln in (clean_translation(x) for x in raw.split("\n")) if ln]
+    if len(lines) != len(src_lines):
+        return None
+    if any(KANA_RE.search(ln) for ln in lines):
+        return None
+    if any(looks_degenerate(s, ln) for s, ln in zip(src_lines, lines)):
+        return None
+    return lines
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Translate a Japanese SRT to Chinese with Sakura-GalTransl.")
     parser.add_argument("input", type=Path)
@@ -172,6 +217,17 @@ def main() -> None:
         default=2,
         help="Number of prior translations supplied as the 历史翻译 block. 0 disables context.",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help=(
+            "Translate up to N consecutive cues as one turn so the model sees whole "
+            "sentences split across cues (fixes omitted-subject/person errors). The model "
+            "card's 'do not add/remove line breaks' keeps output 1:1; a mismatch falls back "
+            "to per-line for that block. 0 or 1 disables batching (per-line only)."
+        ),
+    )
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
     parser.add_argument("--lead-out-seconds", type=float, default=0.0)
     parser.add_argument("--min-display-seconds", type=float, default=0.0)
@@ -181,6 +237,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.context_size < 0:
         raise SystemExit("--context-size must be >= 0")
+    if args.batch_size < 0:
+        raise SystemExit("--batch-size must be >= 0")
     if args.lead_out_seconds < 0 or args.min_display_seconds < 0:
         raise SystemExit("--lead-out-seconds and --min-display-seconds must be >= 0")
     if not args.model_path.exists():
@@ -213,21 +271,33 @@ def main() -> None:
         prev_translated: str | None = None
         duplicate_retries = 0
         duplicate_resolved = 0
-        for index, entry in enumerate(entries):
-            next_entry = entries[index + 1] if index + 1 < len(entries) else None
-            if previous_end is not None and entry.start - previous_end > HISTORY_RESET_SECONDS:
-                history = []
+        batch_blocks = 0
+        batch_accepted = 0
+
+        def emit(entry: Entry, translated: str, next_entry: Entry | None) -> None:
+            """Write one cue, record glossary issues, and advance history/dedup state."""
+            nonlocal prev_source, prev_translated
+            issues = glossary_issues(entry.text, translated, glossary)
+            if issues:
+                term_issue_rows.append((entry, translated, issues))
+            write_entry(f, entry, translated, next_entry, args.lead_out_seconds, args.min_display_seconds)
+            history.append(translated)
+            prev_source, prev_translated = normalize_source(entry.text), translated
+            print(f"{entry.index}: {translated}", flush=True)
+
+        def translate_line(entry: Entry) -> str:
+            """Per-line translation with cache, empty retry, and adjacent-duplicate nudge."""
+            nonlocal cache_hits, duplicate_retries, duplicate_resolved
             turns = history[-args.context_size :] if args.context_size > 0 else []
             source = normalize_source(entry.text)
             standalone = not turns or is_context_sensitive_short_text(source)
             cached = translation_cache.get(source) if standalone else None
             if cached is not None:
-                translated = cached
                 cache_hits += 1
-            else:
-                translated = translate_with_retry(llm, entry.text, turns, glossary)
-                if standalone and translated:
-                    translation_cache[source] = translated
+                return cached
+            translated = translate_with_retry(llm, entry.text, turns, glossary)
+            if standalone and translated:
+                translation_cache[source] = translated
             if not translated:
                 translated = translate_one(llm, entry.text, [], glossary, frequency_penalty=0.2, temperature=0.7)
             if not translated:
@@ -248,17 +318,43 @@ def main() -> None:
                     duplicate_resolved += 1
                     if standalone:
                         translation_cache[source] = retried
-            issues = glossary_issues(entry.text, translated, glossary)
-            if issues:
-                term_issue_rows.append((entry, translated, issues))
-            write_entry(f, entry, translated, next_entry, args.lead_out_seconds, args.min_display_seconds)
-            history.append(translated)
-            prev_source, prev_translated = source, translated
-            previous_end = entry.end
-            print(f"{entry.index}: {translated}", flush=True)
+            return translated
+
+        idx = 0
+        while idx < len(entries):
+            if previous_end is not None and entries[idx].start - previous_end > HISTORY_RESET_SECONDS:
+                history = []
+            # Group consecutive cues into a block, never crossing a >RESET gap (which is
+            # a scene/turn boundary and also where history resets).
+            block = [entries[idx]]
+            k = idx + 1
+            while (
+                args.batch_size > 1
+                and len(block) < args.batch_size
+                and k < len(entries)
+                and entries[k].start - entries[k - 1].end <= HISTORY_RESET_SECONDS
+            ):
+                block.append(entries[k])
+                k += 1
+            translated_block: list[str] | None = None
+            if len(block) > 1:
+                batch_blocks += 1
+                turns = history[-args.context_size :] if args.context_size > 0 else []
+                translated_block = translate_block(llm, [e.text for e in block], turns, glossary)
+                if translated_block is not None:
+                    batch_accepted += 1
+            for bi, entry in enumerate(block):
+                next_entry = entries[idx + bi + 1] if idx + bi + 1 < len(entries) else None
+                # Batch-accepted: use the aligned line; else per-line (also the fallback).
+                translated = translated_block[bi] if translated_block is not None else translate_line(entry)
+                emit(entry, translated, next_entry)
+            previous_end = block[-1].end
+            idx = k
 
     print(f"Translation cache hits: {cache_hits}/{len(entries)}")
     print(f"Adjacent duplicate retries resolved: {duplicate_resolved}/{duplicate_retries}")
+    if batch_blocks:
+        print(f"Batch blocks accepted: {batch_accepted}/{batch_blocks} (rest fell back to per-line)")
     print(f"Wrote {args.output}")
     if not args.no_terms_report and glossary:
         write_terms_report(terms_report_path, term_issue_rows)

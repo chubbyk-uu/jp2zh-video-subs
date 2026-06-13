@@ -301,6 +301,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt     # HY-M
 - 翻译后端：`galtransl`（`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`）；用 `--translator sakura` 切 Sakura-14B、`--translator hymt` 切 HY-MT
 - 识别语言：日语 `ja`
 - 翻译上下文：按后端使用不同默认值（galtransl/sakura 默认前 6 轮；hymt 默认前 2 条中文译文作为 Hy-MT2 背景信息）；设为 0 则逐句独立翻译
+- 批量翻译（仅 GalTransl，`--translate-batch-size`，默认 8）：把至多 N 条连续字幕（不跨越 >10 秒间隔）作为一轮一起翻译，让被切成多条 cue 的整句能被完整看到，从而纠正省略主语/人称错误——例如跨多条 cue 的第三人称旁白此前会被误译成第一人称。它依赖 GalTransl「不要擅自增减换行」的契约保证输出与输入逐行 1:1；行数不匹配则该块回退逐条翻译（通常 3–12% 的块，多为短叹词）。设为 `0` 或 `1` 关闭批量。
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
 - 二阶段补漏：Qwen 后端不使用（需要对比时用 `--no-qwen-vad-chunks` 做固定平铺 Qwen 识别，或用 `--asr whisper --gap-fill` 走旧版补漏）
 - 质量报告：默认开启

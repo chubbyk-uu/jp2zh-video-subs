@@ -347,6 +347,7 @@ The one-command pipeline uses:
 - Translation backend: `galtransl` (`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`); use `--translator sakura` for Sakura-14B or `--translator hymt` for HY-MT
 - Source language: Japanese, `ja`
 - Translation context: backend-specific default context (galtransl/sakura: previous 6 turns; hymt: previous 2 Chinese translations as Hy-MT2 background information). `--context-size 0` translates each line standalone
+- Batch translation (GalTransl only, `--translate-batch-size`, default 8): up to N consecutive cues (never crossing a >10 s gap) are translated as one turn, so a sentence split across cues is seen whole. This fixes omitted-subject/person errors — e.g. third-person narration spread over several cues was otherwise mistranslated as first-person. It leans on GalTransl's "do not add/remove line breaks" contract to keep output 1:1 with input; any line-count mismatch falls back to per-line for that block (typically 3–12% of blocks, mostly short interjections). `0` or `1` disables batching.
 - Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
 - Gap fill: not used by the Qwen backend (use `--no-qwen-vad-chunks` for a fixed-tiling Qwen comparison, or `--asr whisper --gap-fill` for the legacy recall pass)
 - Quality report: enabled by default

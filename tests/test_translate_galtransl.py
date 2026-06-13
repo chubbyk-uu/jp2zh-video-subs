@@ -5,6 +5,8 @@ from translate_srt_galtransl import (
     glossary_block,
     looks_degenerate,
     relevant_terms,
+    translate_block,
+    union_terms,
 )
 from translate_srt_hymt import GlossaryTerm
 
@@ -13,6 +15,49 @@ TEST_GLOSSARY = (
     GlossaryTerm(source="ご主人様", target="主人", note="主仆/角色尊称", forbidden=("老公",)),
     GlossaryTerm(source="主人", target="老公", note="妻子称自己丈夫", forbidden=("主人",)),
 )
+
+
+class _StubLlm:
+    """Returns a fixed completion so translate_block's validation can be tested offline."""
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+        self.last_messages = None
+
+    def create_chat_completion(self, *, messages, **_):
+        self.last_messages = messages
+        return {"choices": [{"message": {"content": self._content}}]}
+
+
+def test_translate_block_accepts_matching_line_count():
+    assert translate_block(_StubLlm("甲\n乙\n丙"), ["a", "b", "c"], [], ()) == ["甲", "乙", "丙"]
+
+
+def test_translate_block_drops_blank_lines_before_counting():
+    # A stray blank line must not be mistaken for a real cue.
+    assert translate_block(_StubLlm("甲\n\n乙\n丙"), ["a", "b", "c"], [], ()) == ["甲", "乙", "丙"]
+
+
+def test_translate_block_rejects_line_count_mismatch():
+    assert translate_block(_StubLlm("甲\n乙"), ["a", "b", "c"], [], ()) is None
+    assert translate_block(_StubLlm("甲\n乙\n丙\n丁"), ["a", "b", "c"], [], ()) is None
+
+
+def test_translate_block_rejects_kana_leak():
+    assert translate_block(_StubLlm("甲\nです\n丙"), ["a", "b", "c"], [], ()) is None
+
+
+def test_translate_block_feeds_one_newline_joined_turn():
+    llm = _StubLlm("甲\n乙")
+    translate_block(llm, ["x", "y"], [], ())
+    user = llm.last_messages[-1]["content"]
+    assert "x\ny" in user  # both sources in a single user turn
+
+
+def test_union_terms_dedupes_across_lines():
+    terms = union_terms(["ご主人様だ", "また主人と", "ご主人様ね"], TEST_GLOSSARY)
+    sources = [t.source for t in terms]
+    assert sources.count("ご主人様") == 1
 
 
 def test_system_prompt_is_the_official_v3_text():

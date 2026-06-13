@@ -514,6 +514,10 @@ def process_video_stages(
         "--min-display-seconds",
         str(args.min_display_seconds),
     ]
+    # Batch translation is GalTransl-only (relies on its line-break-preservation
+    # contract); Sakura/HY-MT do not take --batch-size.
+    if args.translator == "galtransl":
+        translate_command.extend(["--batch-size", str(args.translate_batch_size)])
     if args.resume and translation_is_complete(output, translate_input_srt):
         log.print(f"Resume: skipping translation, reusing {output}")
     else:
@@ -656,6 +660,14 @@ def main() -> None:
         "hymt: previous Chinese translations as Hy-MT2 background information). Defaults: "
         "6 for galtransl/sakura, 2 for hymt. "
         "0 translates each line standalone.",
+    )
+    parser.add_argument(
+        "--translate-batch-size",
+        type=int,
+        default=8,
+        help="GalTransl only: translate up to N consecutive cues as one turn so whole "
+        "sentences split across cues resolve correctly (e.g. omitted subjects/person). "
+        "Line-count mismatch falls back to per-line. 0 or 1 disables batching.",
     )
     parser.add_argument("--lead-out-seconds", type=float, default=0.5)
     parser.add_argument("--min-display-seconds", type=float, default=1.5)
