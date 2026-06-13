@@ -6,6 +6,8 @@ from translate_srt_galtransl import (
     looks_degenerate,
     relevant_terms,
     translate_block,
+    translate_block_adaptive,
+    translate_block_checked,
     union_terms,
 )
 from translate_srt_hymt import GlossaryTerm
@@ -29,6 +31,18 @@ class _StubLlm:
         return {"choices": [{"message": {"content": self._content}}]}
 
 
+class _QueueLlm:
+    def __init__(self, contents: list[str]) -> None:
+        self._contents = contents
+        self.calls = 0
+
+    def create_chat_completion(self, *, messages, **_):
+        del messages
+        content = self._contents[self.calls]
+        self.calls += 1
+        return {"choices": [{"message": {"content": content}}]}
+
+
 def test_translate_block_accepts_matching_line_count():
     assert translate_block(_StubLlm("甲\n乙\n丙"), ["a", "b", "c"], [], ()) == ["甲", "乙", "丙"]
 
@@ -41,6 +55,60 @@ def test_translate_block_drops_blank_lines_before_counting():
 def test_translate_block_rejects_line_count_mismatch():
     assert translate_block(_StubLlm("甲\n乙"), ["a", "b", "c"], [], ()) is None
     assert translate_block(_StubLlm("甲\n乙\n丙\n丁"), ["a", "b", "c"], [], ()) is None
+
+
+def test_translate_block_checked_rescues_two_to_three_split():
+    result = translate_block_checked(_StubLlm("甲\n乙\n丙"), ["a", "b"], [], ())
+    assert result.lines == ["甲", "乙丙"]
+    assert result.reason == "accepted-2to3"
+
+
+def test_translate_block_checked_rejects_three_to_two_mismatch():
+    result = translate_block_checked(_StubLlm("甲\n乙"), ["a", "b", "c"], [], ())
+    assert result.lines is None
+    assert result.reason == "line-count:3->2"
+
+
+def test_translate_block_adaptive_splits_line_count_mismatch():
+    llm = _QueueLlm([
+        "甲\n乙\n丙",  # 4->3 mismatch, split and retry.
+        "甲\n乙",
+        "丙\n丁",
+    ])
+    lines, rescued = translate_block_adaptive(llm, ["a", "b", "c", "d"], [], (), context_size=2)
+    assert lines == ["甲", "乙", "丙", "丁"]
+    assert rescued is True
+    assert llm.calls == 3
+
+
+def test_translate_block_checked_rejects_only_degenerate_slots():
+    result = translate_block_checked(_StubLlm("甲\n" + "行" * 80 + "\n丙"), ["a", "b", "c"], [], ())
+    assert result.lines == ["甲", None, "丙"]
+    assert result.reason == "partial-degenerate"
+
+
+def test_translate_block_keeps_all_or_none_compatibility_for_partial_output():
+    assert translate_block(_StubLlm("甲\n" + "行" * 80 + "\n丙"), ["a", "b", "c"], [], ()) is None
+
+
+def test_translate_block_adaptive_returns_partial_for_degenerate_output():
+    llm = _QueueLlm(["好" * 80 + "\n" + "行" * 80 + "\n" + "字" * 80])
+    lines, rescued = translate_block_adaptive(llm, ["a", "b", "c"], [], (), context_size=2)
+    assert lines == [None, None, None]
+    assert rescued is True
+    assert llm.calls == 1
+
+
+def test_translate_block_adaptive_keeps_successful_half_when_other_half_falls_back():
+    llm = _QueueLlm([
+        "甲\n乙\n丙",  # 4->3 mismatch, split and retry.
+        "甲\n乙",
+        "坏" * 80 + "\n" + "坏" * 80,
+    ])
+    lines, rescued = translate_block_adaptive(llm, ["a", "b", "c", "d"], [], (), context_size=2)
+    assert lines == ["甲", "乙", None, None]
+    assert rescued is True
+    assert llm.calls == 3
 
 
 def test_translate_block_rejects_kana_leak():

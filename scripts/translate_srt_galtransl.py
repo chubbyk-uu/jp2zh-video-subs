@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 from llama_cpp import Llama
 
@@ -39,6 +40,12 @@ GLOSSARY_HEADER = "参考以下术语表（可为空，格式为src->dst #备注
 TRANSLATE_INSTRUCTION = "根据以上术语表的对应关系和备注，结合历史剧情和上下文，将下面的文本从日文翻译成简体中文："
 
 KANA_RE = re.compile(r"[ぁ-ゟ゠-ヿ]")
+
+
+class BlockTranslation(NamedTuple):
+    lines: list[str | None] | None
+    reason: str
+    raw: str = ""
 
 
 def relevant_terms(text: str, glossary: tuple[GlossaryTerm, ...]) -> list[GlossaryTerm]:
@@ -172,18 +179,50 @@ def union_terms(src_lines: list[str], glossary: tuple[GlossaryTerm, ...]) -> tup
     return tuple(terms)
 
 
-def translate_block(
+def merge_two_line_overflow(lines: list[str], src_lines: list[str]) -> list[str] | None:
+    """Rescue the common 2->3 split by folding extra output into the second cue."""
+    if len(src_lines) != 2 or len(lines) != 3:
+        return None
+    return [lines[0], "".join(lines[1:])]
+
+
+def validate_block_lines(src_lines: list[str], lines: list[str]) -> BlockTranslation:
+    if len(lines) != len(src_lines):
+        merged = merge_two_line_overflow(lines, src_lines)
+        if merged is None:
+            return BlockTranslation(None, f"line-count:{len(src_lines)}->{len(lines)}")
+        merged_result = validate_block_lines(src_lines, merged)
+        if merged_result.lines is not None:
+            return BlockTranslation(merged_result.lines, "accepted-2to3")
+        return merged_result
+    checked: list[str | None] = []
+    rejected_reasons: list[str] = []
+    for source, line in zip(src_lines, lines):
+        if KANA_RE.search(line):
+            checked.append(None)
+            rejected_reasons.append("kana-leak")
+        elif looks_degenerate(source, line):
+            checked.append(None)
+            rejected_reasons.append("degenerate")
+        else:
+            checked.append(line)
+    if rejected_reasons:
+        return BlockTranslation(checked, "partial-" + "+".join(sorted(set(rejected_reasons))))
+    return BlockTranslation(checked, "accepted")
+
+
+def translate_block_checked(
     llm: Llama,
     sources: list[str],
     history: list[str],
     glossary: tuple[GlossaryTerm, ...],
-) -> list[str] | None:
+) -> BlockTranslation:
     """Translate several source lines as one newline-joined turn.
 
     Relies on the model card's "不要擅自增加或减少换行" contract to return the same
     line count, so each output line maps 1:1 back to its cue. Returns one cleaned
-    translation per input line, or None when the line count, emptiness, kana-leak, or
-    degeneration check fails — the caller then falls back to per-line for the block.
+    translation per input line. Individual unsafe lines are returned as None so the
+    caller can keep good batch slots while falling back per-line only for bad slots.
     """
     src_lines = [normalize_source(s).replace("\n", " ") for s in sources]
     result = llm.create_chat_completion(
@@ -196,13 +235,52 @@ def translate_block(
     )
     raw = result["choices"][0]["message"]["content"].strip()
     lines = [ln for ln in (clean_translation(x) for x in raw.split("\n")) if ln]
-    if len(lines) != len(src_lines):
+    checked = validate_block_lines(src_lines, lines)
+    return BlockTranslation(checked.lines, checked.reason, raw)
+
+
+def translate_block(
+    llm: Llama,
+    sources: list[str],
+    history: list[str],
+    glossary: tuple[GlossaryTerm, ...],
+) -> list[str] | None:
+    lines = translate_block_checked(llm, sources, history, glossary).lines
+    if lines is None or any(line is None for line in lines):
         return None
-    if any(KANA_RE.search(ln) for ln in lines):
-        return None
-    if any(looks_degenerate(s, ln) for s, ln in zip(src_lines, lines)):
-        return None
-    return lines
+    return [line for line in lines if line is not None]
+
+
+def translate_block_adaptive(
+    llm: Llama,
+    sources: list[str],
+    history: list[str],
+    glossary: tuple[GlossaryTerm, ...],
+    context_size: int,
+) -> tuple[list[str | None] | None, bool]:
+    """Strict batch translation with a conservative recursive retry.
+
+    Only line-count mismatches are split and retried. Kana leaks and degenerate output
+    stay unsafe and fall back to the existing per-line path.
+    """
+    checked = translate_block_checked(llm, sources, history, glossary)
+    if checked.lines is not None:
+        return checked.lines, checked.reason != "accepted"
+    if not checked.reason.startswith("line-count"):
+        return None, False
+    if len(sources) <= 2:
+        return [None] * len(sources), False
+
+    mid = len(sources) // 2
+    left, left_rescued = translate_block_adaptive(llm, sources[:mid], history, glossary, context_size)
+    left_history = [line for line in left or [] if line]
+    right_history = (history + left_history)[-context_size:] if context_size > 0 else []
+    right, right_rescued = translate_block_adaptive(llm, sources[mid:], right_history, glossary, context_size)
+    if left is None and right is None:
+        return None, False
+    left_slots = left if left is not None else [None] * mid
+    right_slots = right if right is not None else [None] * (len(sources) - mid)
+    return left_slots + right_slots, True
 
 
 def main() -> None:
@@ -224,8 +302,9 @@ def main() -> None:
         help=(
             "Translate up to N consecutive cues as one turn so the model sees whole "
             "sentences split across cues (fixes omitted-subject/person errors). The model "
-            "card's 'do not add/remove line breaks' keeps output 1:1; a mismatch falls back "
-            "to per-line for that block. 0 or 1 disables batching (per-line only)."
+            "card's 'do not add/remove line breaks' keeps output 1:1; mismatches are "
+            "retried as smaller strict batches, and remaining unsafe slots fall back "
+            "per-line. 0 or 1 disables batching (per-line only)."
         ),
     )
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
@@ -272,7 +351,10 @@ def main() -> None:
         duplicate_retries = 0
         duplicate_resolved = 0
         batch_blocks = 0
-        batch_accepted = 0
+        batch_full_blocks = 0
+        batch_partial_blocks = 0
+        batch_rescued = 0
+        batch_fallback_slots = 0
 
         def emit(entry: Entry, translated: str, next_entry: Entry | None) -> None:
             """Write one cue, record glossary issues, and advance history/dedup state."""
@@ -336,17 +418,34 @@ def main() -> None:
             ):
                 block.append(entries[k])
                 k += 1
-            translated_block: list[str] | None = None
+            translated_block: list[str | None] | None = None
             if len(block) > 1:
                 batch_blocks += 1
                 turns = history[-args.context_size :] if args.context_size > 0 else []
-                translated_block = translate_block(llm, [e.text for e in block], turns, glossary)
+                translated_block, rescued = translate_block_adaptive(
+                    llm,
+                    [e.text for e in block],
+                    turns,
+                    glossary,
+                    args.context_size,
+                )
                 if translated_block is not None:
-                    batch_accepted += 1
+                    rejected_slots = sum(1 for line in translated_block if line is None)
+                    if rejected_slots:
+                        batch_partial_blocks += 1
+                        batch_fallback_slots += rejected_slots
+                    else:
+                        batch_full_blocks += 1
+                    if rescued:
+                        batch_rescued += 1
             for bi, entry in enumerate(block):
                 next_entry = entries[idx + bi + 1] if idx + bi + 1 < len(entries) else None
-                # Batch-accepted: use the aligned line; else per-line (also the fallback).
-                translated = translated_block[bi] if translated_block is not None else translate_line(entry)
+                # Batch-accepted slots use the aligned line; rejected slots fall back to per-line.
+                translated = (
+                    translated_block[bi]
+                    if translated_block is not None and translated_block[bi] is not None
+                    else translate_line(entry)
+                )
                 emit(entry, translated, next_entry)
             previous_end = block[-1].end
             idx = k
@@ -354,7 +453,10 @@ def main() -> None:
     print(f"Translation cache hits: {cache_hits}/{len(entries)}")
     print(f"Adjacent duplicate retries resolved: {duplicate_resolved}/{duplicate_retries}")
     if batch_blocks:
-        print(f"Batch blocks accepted: {batch_accepted}/{batch_blocks} (rest fell back to per-line)")
+        print(f"Batch blocks fully accepted: {batch_full_blocks}/{batch_blocks}")
+        print(f"Batch blocks partially accepted: {batch_partial_blocks}/{batch_blocks}")
+        print(f"Batch blocks rescued by strict retry: {batch_rescued}")
+        print(f"Batch fallback slots: {batch_fallback_slots}")
     print(f"Wrote {args.output}")
     if not args.no_terms_report and glossary:
         write_terms_report(terms_report_path, term_issue_rows)

@@ -229,6 +229,82 @@ def test_collapse_can_be_disabled():
     assert entries[0].text == "うん、うん、一人。"
 
 
+def test_internal_gap_keeps_short_sentence_tail_fragment():
+    chars = [
+        ("何", 0.0, 0.1),
+        ("欲", 0.2, 0.3),
+        ("し", 0.3, 0.4),
+        ("い", 0.4, 0.5),
+        ("ん", 0.5, 0.6),
+        ("だ", 5.2, 5.2),
+    ]
+    entries = aligned_entries("何欲しいんだ。", chars)
+    assert [e.text for e in entries] == ["何欲しいんだ。"]
+
+
+def test_internal_gap_keeps_particle_prefix_fragment():
+    chars = [
+        ("会", 0.0, 0.1),
+        ("長", 0.1, 0.2),
+        ("の", 0.2, 0.3),
+        ("せ", 3.6, 3.7),
+        ("い", 3.7, 3.8),
+        ("で", 3.8, 3.9),
+        ("す", 3.9, 4.0),
+    ]
+    entries = aligned_entries("会長のせいです。", chars)
+    assert [e.text for e in entries] == ["会長のせいです。"]
+
+
+def test_internal_gap_keeps_verb_conjugation_fragment():
+    chars = [
+        ("出", 0.0, 0.1),
+        ("ち", 2.5, 2.6),
+        ("ゃ", 2.6, 2.7),
+        ("う", 2.7, 2.8),
+        ("か", 2.8, 2.9),
+        ("ら", 2.9, 3.0),
+    ]
+    entries = aligned_entries("出ちゃうから。", chars)
+    assert [e.text for e in entries] == ["出ちゃうから。"]
+
+
+def test_internal_gap_keeps_noda_sentence_tail():
+    chars = [
+        ("ど", 0.0, 0.1),
+        ("う", 0.1, 0.2),
+        ("し", 0.2, 0.3),
+        ("た", 0.3, 0.4),
+        ("ん", 4.4, 4.5),
+        ("だ", 4.5, 4.6),
+    ]
+    entries = aligned_entries("どうしたんだ？", chars)
+    assert [e.text for e in entries] == ["どうしたんだ？"]
+
+
+def test_internal_gap_keeps_masen_polite_tail():
+    chars = [
+        ("す", 0.0, 0.1),
+        ("み", 0.1, 0.2),
+        ("ま", 4.0, 4.1),
+        ("せ", 4.1, 4.2),
+        ("ん", 4.2, 4.3),
+    ]
+    entries = aligned_entries("すみません。", chars)
+    assert [e.text for e in entries] == ["すみません。"]
+
+
+def test_internal_gap_still_splits_non_fragment_pause():
+    chars = [
+        ("早", 0.0, 0.1),
+        ("く", 0.1, 0.2),
+        ("来", 4.0, 4.1),
+        ("て", 4.1, 4.2),
+    ]
+    entries = aligned_entries("早く来て。", chars)
+    assert [e.text for e in entries] == ["早く", "来て。"]
+
+
 def test_collapse_small_kana_rides_along():
     # んっ、んっ、んっ collapses to a single ん-instance (small kana ride along),
     # which the interjection core machinery then recognises.

@@ -42,6 +42,10 @@ BREAK_PUNCT = set("。、，,！？!?…．")
 # collapsed point — the aligner stamped all its characters on one instant rather
 # than localising them. See sentences_from_alignment / drop_same_start_piles.
 COLLAPSED_SPAN_SECONDS = 1e-3
+# The aligner can push a short sentence ending several seconds after the preceding
+# text ("何欲しいん" ... "だ。"). Keep only strongly fragmentary joins across this
+# wider window; normal utterance pauses still split at phrase_max_internal_gap.
+FRAGMENT_INTERNAL_GAP_MAX_SECONDS = 6.5
 
 # Punctuation / elongation / small kana stripped (everywhere, not just the ends)
 # before testing whether a cue is a bare interjection mora.
@@ -74,6 +78,18 @@ ISOLATED_INTERJECTION_CORES = {
 # an ordinary filler, subject to the same silence/chain gates as うん.
 REPLY_INTERJECTION_CORES = {"はい"}
 ALL_FILLER_CORES = ISOLATED_INTERJECTION_CORES | REPLY_INTERJECTION_CORES
+
+FRAGMENT_JOIN_SUFFIX_STARTS = (
+    "ん", "だ", "です", "でし", "ます", "ませ", "ました", "ない", "な",
+    "て", "た", "ちゃ", "じゃ", "の", "か", "から", "けど",
+    "という", "って", "に", "よ", "ね",
+)
+FRAGMENT_JOIN_PREFIX_ENDS = (
+    "の", "が", "を", "に", "へ", "と", "で", "から", "まで", "より", "も",
+)
+FRAGMENT_JOIN_UNFINISHED_ENDS = (
+    "し", "っ", "い", "ん", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "る",
+)
 
 
 @dataclass
@@ -196,6 +212,46 @@ def split_into_units(text: str, max_chars: int) -> list[str]:
         if sub:
             result.append(sub)
     return result
+
+
+def _fragment_text(text: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFKC", text).strip() if ch not in PUNCT_CHARS)
+
+
+def should_keep_across_internal_gap(left_text: str, right_text: str, gap: float, base_gap: float) -> bool:
+    """True when a large aligner gap most likely split one grammatical fragment.
+
+    This is deliberately narrower than raising phrase_max_internal_gap globally:
+    ordinary long pauses still split, but short sentence tails / particles that
+    the forced aligner stamped late stay attached to their host phrase.
+    """
+    if gap <= base_gap:
+        return True
+    if gap > FRAGMENT_INTERNAL_GAP_MAX_SECONDS:
+        return False
+    left = _fragment_text(left_text)
+    right = _fragment_text(right_text)
+    if not left or not right:
+        return False
+    if left in ALL_FILLER_CORES or right in ALL_FILLER_CORES:
+        return False
+
+    left_short = len(left) <= 4
+    right_short = len(right) <= 5
+    right_is_suffix = right_short and right.startswith(FRAGMENT_JOIN_SUFFIX_STARTS)
+    left_is_prefix = left_short and left.endswith(FRAGMENT_JOIN_PREFIX_ENDS)
+    left_is_unfinished = not left_text.rstrip().endswith(tuple(SENTENCE_END_CHARS)) and (
+        left.endswith(FRAGMENT_JOIN_UNFINISHED_ENDS) or left_is_prefix
+    )
+
+    if right_is_suffix and (left_is_unfinished or right.startswith(("ん", "ませ"))):
+        return True
+    if left_is_prefix and not right_text.lstrip().startswith(tuple(SENTENCE_END_CHARS)):
+        return True
+    # Half-words split around a conjugation boundary: 使っ + て, 働い + てる.
+    if len(left) <= 8 and right.startswith(("て", "た", "ちゃ", "という")) and not left_text.rstrip().endswith(tuple(SENTENCE_END_CHARS)):
+        return True
+    return False
 
 
 def _split_segment(
@@ -403,8 +459,11 @@ def sentences_from_alignment(
             continue
         # Break on large internal time gaps (pauses between merged utterances).
         segments: list[list[tuple[str, float, float, bool]]] = [[tokens[0]]]
-        for tok in tokens[1:]:
-            if tok[1] - segments[-1][-1][2] > max_internal_gap:
+        for idx, tok in enumerate(tokens[1:], start=1):
+            gap = tok[1] - segments[-1][-1][2]
+            left_text = "".join(t[0] for t in segments[-1])
+            right_text = "".join(t[0] for t in tokens[idx : min(len(tokens), idx + 8)])
+            if gap > max_internal_gap and not should_keep_across_internal_gap(left_text, right_text, gap, max_internal_gap):
                 segments.append([tok])
             else:
                 segments[-1].append(tok)
@@ -1030,7 +1089,7 @@ def main() -> None:
     # get a second VAD look at --recapture-vad-threshold (more sensitive than the
     # main --vad-threshold); spans whose detected speech totals at least
     # --recapture-min-speech are re-transcribed. 0 disables.
-    parser.add_argument("--recapture-min-gap", type=float, default=10.0)
+    parser.add_argument("--recapture-min-gap", type=float, default=0.0)
     parser.add_argument("--recapture-min-speech", type=float, default=2.0)
     parser.add_argument("--recapture-vad-threshold", type=float, default=0.05)
     # Collapse a same-core filler repetition run inside one cue (うんうんうん。 or

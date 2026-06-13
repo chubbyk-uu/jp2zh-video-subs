@@ -667,7 +667,8 @@ def main() -> None:
         default=8,
         help="GalTransl only: translate up to N consecutive cues as one turn so whole "
         "sentences split across cues resolve correctly (e.g. omitted subjects/person). "
-        "Line-count mismatch falls back to per-line. 0 or 1 disables batching.",
+        "Line-count mismatches are retried as smaller strict batches; any remaining "
+        "unsafe slots fall back per-line. 0 or 1 disables batching.",
     )
     parser.add_argument("--lead-out-seconds", type=float, default=0.5)
     parser.add_argument("--min-display-seconds", type=float, default=1.5)
@@ -709,7 +710,7 @@ def main() -> None:
     parser.add_argument("--qwen-isolated-interjection-silence", type=float, default=3.0)
     # Recapture: a second, more sensitive VAD+ASR look inside subtitle gaps at least
     # this long, run while the ASR model is still loaded (0 disables).
-    parser.add_argument("--qwen-recapture-min-gap", type=float, default=10.0)
+    parser.add_argument("--qwen-recapture-min-gap", type=float, default=0.0)
     parser.add_argument("--qwen-recapture-min-speech", type=float, default=2.0)
     parser.add_argument("--qwen-recapture-vad-threshold", type=float, default=0.05)
     parser.add_argument(

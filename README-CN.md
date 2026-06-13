@@ -294,14 +294,14 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt     # HY-M
 - Qwen VAD 切片：开启（`--qwen-vad-chunks`；用 `--no-qwen-vad-chunks` 关闭）
 - Qwen VAD 阈值：`--qwen-vad-threshold 0.1`（用于定位语音切片；调低可能捞回轻声，但切片数会增加）
 - Qwen 切片长度/重叠：`--qwen-chunk-seconds 30`、`--qwen-chunk-overlap-seconds 3`
-- 空窗补捞：开启。主识别结束后，对长度不小于 `--qwen-recapture-min-gap 10` 秒的字幕空窗，用更灵敏的 `--qwen-recapture-vad-threshold 0.05` 再做一遍 VAD；检出语音合计不少于 `--qwen-recapture-min-speech 2` 秒的空窗会趁模型还在显存里二次识别，捞回主 VAD 漏掉的轻声。补捞回来的纯语气词会被同一套语气词过滤删掉。用 `--qwen-recapture-min-gap 0` 关闭
+- 空窗补捞：默认关闭（`--qwen-recapture-min-gap 0`）。需要高覆盖率时，可设为正数，例如 `--qwen-recapture-min-gap 10`：主识别结束后，对满足长度的字幕空窗用更灵敏的 `--qwen-recapture-vad-threshold 0.05` 再做一遍 VAD；检出语音合计不少于 `--qwen-recapture-min-speech 2` 秒的空窗会趁模型还在显存里二次识别。它可能捞回主 VAD 漏掉的轻声，但会明显增加耗时，也更容易加入低价值语气词或幻觉台词。补捞回来的纯语气词会被同一套语气词过滤删掉。
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--qwen-filter-hallucinations` 开启）
 - 对 Qwen 输出的纯语气词过滤：开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——要么是两侧各有 `--qwen-isolated-interjection-silence 3.0` 秒静默的孤立单条，要么是连续 3 条及以上的语气词链（VAD 把背景音乐切成碎片的典型特征）。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）
 - 语气词重复拼接折叠：开启。同一条 cue 里同一语气词的连续重复（「うんうんうん。」，或「うん、うん、うん、一人。」这种包着真实台词的）在逐字对齐 token 层折叠成一个，保留部分直接用对齐器的逐字时间，时间轴零重算。重复 run 两端必须落在标点或 cue 边界才折叠，所以真词内部的重复（ああいう）绝不会被碰；整条都是重复的 cue 折叠成单语气词后，交给上面的静默/成链门控正常判定。识别脚本可用 `--no-collapse-filler-repetition` 做 A/B 对比
 - 翻译后端：`galtransl`（`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`）；用 `--translator sakura` 切 Sakura-14B、`--translator hymt` 切 HY-MT
 - 识别语言：日语 `ja`
 - 翻译上下文：按后端使用不同默认值（galtransl/sakura 默认前 6 轮；hymt 默认前 2 条中文译文作为 Hy-MT2 背景信息）；设为 0 则逐句独立翻译
-- 批量翻译（仅 GalTransl，`--translate-batch-size`，默认 8）：把至多 N 条连续字幕（不跨越 >10 秒间隔）作为一轮一起翻译，让被切成多条 cue 的整句能被完整看到，从而纠正省略主语/人称错误——例如跨多条 cue 的第三人称旁白此前会被误译成第一人称。它依赖 GalTransl「不要擅自增减换行」的契约保证输出与输入逐行 1:1；行数不匹配则该块回退逐条翻译（通常 3–12% 的块，多为短叹词）。设为 `0` 或 `1` 关闭批量。
+- 批量翻译（仅 GalTransl，`--translate-batch-size`，默认 8）：把至多 N 条连续字幕（不跨越 >10 秒间隔）作为一轮一起翻译，让被切成多条 cue 的整句能被完整看到，从而纠正省略主语/人称错误——例如跨多条 cue 的第三人称旁白此前会被误译成第一人称。它依赖 GalTransl「不要擅自增减换行」的契约保证输出与输入逐行 1:1；行数不匹配会先拆成更小的严格批量重试，仍不可靠的输出槽位才逐条回退，不会丢掉同块里已经可靠的译文。设为 `0` 或 `1` 关闭批量。
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
 - 二阶段补漏：Qwen 后端不使用（需要对比时用 `--no-qwen-vad-chunks` 做固定平铺 Qwen 识别，或用 `--asr whisper --gap-fill` 走旧版补漏）
 - 质量报告：默认开启
@@ -463,7 +463,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --no-bilingual
 
 默认会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour`（颜色用 ASS 的 `&HAABBGGRR` 格式）和 `--font`（默认 `Microsoft YaHei`，在 Windows 上中日文行均有字形；非 Windows 播放器经 fontconfig 回退）调整。下面那行日文来自参与翻译的日语 SRT（默认 `.ja.srt`，加 `--gap-fill` 时为 `.filled.ja.srt`），因此中日两行逐条对齐。
 
-双语模式下还可**按说话人性别给中文那行上色**（默认关闭，加 `--colour-by-speaker` 开启）：对每条字幕从音频里取对应片段，用 ECAPA-TDNN 声纹性别模型（VoxCeleb 训练，见[下载模型](#下载模型)）判男/女——它在喘息/带背景音乐的真实音频上远比纯基频（F0）稳健，不会出现 F0 八度错误导致的男女互判。只有置信度高于 `--gender-confidence`（默认 0.6）的字幕才上色：男声深天蓝、女声粉；不够确定的保持默认黄色，宁可不上色也不上错色。用 `--bilingual-male-colour`、`--bilingual-female-colour` 改配色。未下载该模型时自动跳过上色、输出普通双语 ASS。注意只给中文那行上色，日文那行始终灰白。
+双语模式下还可**按说话人性别给中文那行上色**（默认关闭，加 `--colour-by-speaker` 开启）：对每条字幕从音频里取对应片段，用 ECAPA-TDNN 声纹性别模型（VoxCeleb 训练，见[下载模型](#下载模型)）判男/女——它在嘈杂/带背景音乐的真实音频上远比纯基频（F0）稳健，不会出现 F0 八度错误导致的男女互判。只有置信度高于 `--gender-confidence`（默认 0.6）的字幕才上色：男声深天蓝、女声粉；不够确定的保持默认黄色，宁可不上色也不上错色。用 `--bilingual-male-colour`、`--bilingual-female-colour` 改配色。未下载该模型时自动跳过上色、输出普通双语 ASS。注意只给中文那行上色，日文那行始终灰白。
 
 调整最终中文字幕和双语 ASS 的显示留白：
 
