@@ -6,6 +6,7 @@ from translate_srt_hymt import (
     glossary_issues,
     glossary_instruction,
     is_context_sensitive_short_text,
+    matched_glossary_terms,
     normalize_source,
     padded_time,
     parse_srt,
@@ -47,16 +48,27 @@ def test_normalize_source_leaves_text_unchanged_without_replacements():
 def test_glossary_instruction_is_in_prompt():
     instruction = glossary_instruction(TEST_GLOSSARY)
 
-    assert "中央公園=中央公园" in instruction
-    assert "不要输出规则本身" in instruction
+    assert "参考下面的翻译" in instruction
+    assert "中央公園 翻译成 中央公园" in instruction
+
+
+def test_matched_glossary_terms_uses_current_source_only():
+    terms = (
+        GlossaryTerm("ご主人様", "主人", ""),
+        GlossaryTerm("主人", "老公", ""),
+        GlossaryTerm("中央公園", "中央公园", ""),
+    )
+
+    assert [term.source for term in matched_glossary_terms("ご主人様です", terms)] == ["ご主人様"]
+    assert matched_glossary_terms("書類にサインをもらいたいのですが。", terms) == ()
 
 
 def test_build_messages_includes_default_glossary():
     msgs = build_messages("中央公園", [], glossary=TEST_GLOSSARY)
 
-    assert msgs[0]["role"] == "system"
-    assert "中央公園=中央公园" in msgs[0]["content"]
-    assert msgs[1] == {"role": "user", "content": "中央公園"}
+    assert [msg["role"] for msg in msgs] == ["user"]
+    assert "中央公園 翻译成 中央公园" in msgs[0]["content"]
+    assert msgs[0]["content"].endswith("中央公園")
 
 
 def test_glossary_issues_reports_forbidden_translation_without_fixing():
@@ -81,18 +93,37 @@ def test_write_terms_report(tmp_path):
 
 def test_build_messages_without_history_is_single_instructed_turn():
     msgs = build_messages("こんにちは", [])
-    assert len(msgs) == 2
-    assert msgs[0]["role"] == "system"
-    assert "翻译" in msgs[0]["content"]
-    assert msgs[1] == {"role": "user", "content": "こんにちは"}
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "user"
+    assert "只需要输出翻译后的结果" in msgs[0]["content"]
+    assert msgs[0]["content"].endswith("こんにちは")
 
 
-def test_build_messages_with_history_keeps_current_turn_source_only():
-    # Prior pair becomes user/assistant turns; the current turn carries only the current
-    # source, so the model has no previous-line text to fuse into the output.
+def test_build_messages_with_history_uses_chinese_background_only():
     msgs = build_messages("今のセリフ", [("前のセリフ", "上一句译文")])
+    assert [m["role"] for m in msgs] == ["user"]
+    content = msgs[0]["content"]
+    assert "前文译文" in content
+    assert "上一句译文" in content
+    assert "前のセリフ" not in content
+    assert content.endswith("今のセリフ")
+
+
+def test_build_messages_background_mode_keeps_history_as_reference():
+    msgs = build_messages("今のセリフ", [("前のセリフ", "上一句译文")], prompt_mode="background")
+
+    assert [m["role"] for m in msgs] == ["user"]
+    content = msgs[0]["content"]
+    assert "历史翻译仅用于理解语境" in content
+    assert "日文：前のセリフ" in content
+    assert "中文：上一句译文" in content
+    assert "待翻译日文：\n今のセリフ" in content
+
+
+def test_build_messages_chat_mode_keeps_legacy_chat_turns():
+    msgs = build_messages("今のセリフ", [("前のセリフ", "上一句译文")], prompt_mode="chat")
+
     assert [m["role"] for m in msgs] == ["system", "user", "assistant", "user"]
-    assert "翻译" in msgs[0]["content"]
     assert msgs[1] == {"role": "user", "content": "前のセリフ"}
     assert msgs[2] == {"role": "assistant", "content": "上一句译文"}
     assert msgs[3] == {"role": "user", "content": "今のセリフ"}

@@ -13,7 +13,7 @@
 
 - **`galtransl`（默认）**——`Sakura-GalTransl-7B-v3.7`，针对视觉小说台词做了 GRPO 强化训练的日译中模型。比 Sakura-14B 更小更快、译文更口语，原生支持 `src->dst #备注` 格式的术语表。
 - **`sakura`**——`Sakura-14B-Qwen2.5-v1.0`，更大的轻小说/galgame 模型，更重，但在长难句上可作第二意见。
-- **`hymt`**——`HY-MT1.5-7B`，通用翻译模型。
+- **`hymt`**——`Hy-MT2-7B`，通用翻译模型。
 
 逐项对比见 [识别后端：Qwen vs Whisper](#识别后端qwen-vs-whisper) 和 [翻译后端：GalTransl vs Sakura vs HY-MT](#翻译后端galtransl-vs-sakura-vs-hy-mt)。
 
@@ -44,7 +44,7 @@
 │   ├── Sakura-GalTransl-7B-v3.7-GGUF/ # 默认翻译模型
 │   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # 备选（更大）翻译模型
 │   ├── faster-whisper-large-v3/     # 旧版 CTranslate2 Whisper ASR 模型
-│   └── HY-MT1.5-7B-GGUF/            # 旧版 GGUF 翻译模型
+│   └── Hy-MT2-7B-GGUF/              # 可选 HY-MT 翻译模型
 ├── outputs/                         # 最终中文字幕输出
 ├── scripts/
 │   ├── video_to_zh_srt.py           # 一键视频到中文字幕
@@ -54,7 +54,7 @@
 │   ├── quality_report.py            # 字幕质量报告
 │   ├── translate_srt_galtransl.py   # 日语 SRT 到中文字幕（默认 Sakura-GalTransl）
 │   ├── translate_srt_sakura.py      # 日语 SRT 到中文字幕（Sakura-14B）
-│   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕（旧版 HY-MT）
+│   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕（HY-MT）
 │   ├── retime_existing_subtitles.py # 基于已有产物批量重定时并刷新 ASS
 │   ├── make_bilingual_ass.py        # 双语 ASS（中文在上，日文在下）
 │   └── srt_utils.py                 # 共享的 SRT 解析、时间和区间工具
@@ -157,12 +157,14 @@ hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
   --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
-旧版 `hymt` 翻译（`--translator hymt`）改用
-[`tencent/HY-MT1.5-7B-GGUF`](https://huggingface.co/tencent/HY-MT1.5-7B-GGUF)：
+可选 `hymt` 翻译（`--translator hymt`）改用
+[`tencent/Hy-MT2-7B-GGUF`](https://huggingface.co/tencent/Hy-MT2-7B-GGUF)。
+默认建议下载 `HY-MT2-7B-Q6_K.gguf`，效果优先；显存/内存紧张时可换
+`Q4_K_M`，想试更大的量化文件可换 `Q8_0`：
 
 ```bash
-hf download tencent/HY-MT1.5-7B-GGUF HY-MT1.5-7B-Q4_K_M.gguf \
-  --local-dir models/HY-MT1.5-7B-GGUF
+hf download tencent/Hy-MT2-7B-GGUF HY-MT2-7B-Q6_K.gguf \
+  --local-dir models/Hy-MT2-7B-GGUF
 ```
 
 旧版 Whisper 后端（`--asr whisper`）还需要
@@ -251,17 +253,17 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4                       # GalTransl（默认）
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura   # Sakura-14B
-python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt     # 旧版 HY-MT
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt     # HY-MT
 ```
 
-三者都是 GGUF 模型，通过 `llama-cpp-python` 在和 ASR 独立的进程里运行，共用同一套 SRT 解析、上下文处理、术语表和显示时序逻辑——只有模型和 prompt 模板不同。GalTransl 和 Sakura 还共用翻译缓存与假名/空译文/相邻重复三类重试；GalTransl 用 `历史翻译` 块承载上文译文（它原生的 v3 格式），Sakura 和 HY-MT 用 source/译文 对话配对。
+三者都是 GGUF 模型，通过 `llama-cpp-python` 在和 ASR 独立的进程里运行，共用同一套 SRT 解析、上下文处理、术语表和显示时序逻辑——只有模型和 prompt 模板不同。GalTransl 和 Sakura 还共用翻译缓存与假名/空译文/相邻重复三类重试；GalTransl 用 `历史翻译` 块承载上文译文（它原生的 v3 格式），Sakura 用 source/译文 对话配对，HY-MT2 按官方单 user prompt 组织，当前句命中的术语才注入，前文中文译文作为背景信息。
 
 | | **GalTransl（默认）** | **Sakura（`--translator sakura`）** | **HY-MT（`--translator hymt`）** |
 |---|---|---|---|
-| 模型 | `Sakura-GalTransl-7B-v3.7`（视觉小说日译中，GRPO 强化） | `Sakura-14B-Qwen2.5-v1.0`（轻小说/galgame 日译中） | `HY-MT1.5-7B`（通用翻译） |
+| 模型 | `Sakura-GalTransl-7B-v3.7`（视觉小说日译中，GRPO 强化） | `Sakura-14B-Qwen2.5-v1.0`（轻小说/galgame 日译中） | `Hy-MT2-7B`（通用翻译） |
 | 风格 | 最自然、口语化的台词 | 自然，略偏书面 | 偏直译，偶尔生硬 |
-| 术语表 | 原生 `src->dst #备注` 格式，按句注入 | 原生 GPT 字典格式，按句注入 | 作为 system 指令给出，靠重试强制 |
-| 体量 | 7B（约 6.25 GB Q6） | 14B（约 8–9 GB iq4xs） | 7B（约 5 GB Q4_K_M） |
+| 术语表 | 原生 `src->dst #备注` 格式，按句注入 | 原生 GPT 字典格式，按句注入 | 只注入当前句命中的术语，使用 Hy-MT2 官方参考翻译格式 |
+| 体量 | 7B（约 6.25 GB Q6） | 14B（约 8–9 GB iq4xs） | 7B（约 6.16 GB Q6） |
 
 在一部两小时片源上（1491 条 cue，同一日语 SRT，RTX 5080），GalTransl 翻译约 1 分 36 秒，Sakura-14B 约 2 分 32 秒（约快 1.6 倍），进程内存更低、相邻重复译文更少，逐条抽样里台词读起来至少同样自然。GalTransl（约 6 GB）和 Qwen 识别栈（约 6 GB）都能塞进 16 GB，原则上可以同时常驻。
 
@@ -283,7 +285,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt     # 旧�
 - 语气词重复拼接折叠：开启。同一条 cue 里同一语气词的连续重复（「うんうんうん。」，或「うん、うん、うん、一人。」这种包着真实台词的）在逐字对齐 token 层折叠成一个，保留部分直接用对齐器的逐字时间，时间轴零重算。重复 run 两端必须落在标点或 cue 边界才折叠，所以真词内部的重复（ああいう）绝不会被碰；整条都是重复的 cue 折叠成单语气词后，交给上面的静默/成链门控正常判定。识别脚本可用 `--no-collapse-filler-repetition` 做 A/B 对比
 - 翻译后端：`galtransl`（`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`）；用 `--translator sakura` 切 Sakura-14B、`--translator hymt` 切 HY-MT
 - 识别语言：日语 `ja`
-- 翻译上下文：默认带前 6 轮上文（galtransl 用 `历史翻译` 块放上文译文；sakura/hymt 用 source/译文 对话配对，当前轮只翻当前句）；设为 0 则逐句独立翻译
+- 翻译上下文：按后端使用不同默认值（galtransl/sakura 默认前 6 轮；hymt 默认前 2 条中文译文作为 Hy-MT2 背景信息）；设为 0 则逐句独立翻译
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
 - 二阶段补漏：Qwen 后端不使用（需要对比时用 `--no-qwen-vad-chunks` 做固定平铺 Qwen 识别，或用 `--asr whisper --gap-fill` 走旧版补漏）
 - 质量报告：默认开启
@@ -454,8 +456,8 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 \
 ```
 
 这些参数只影响 `outputs/input.zh.srt` 和生成的 ASS。日语 SRT 仍保持真实
-语音时间，所以补漏和质量分析不受影响。单独运行 `translate_srt_hymt.py`
-时默认是 `0/0`，保持向后兼容；一键流程默认是 `0.5/1.5`。
+语音时间，所以补漏和质量分析不受影响。单独运行翻译脚本时默认是 `0/0`，
+保持向后兼容；一键流程默认是 `0.5/1.5`。
 
 对已经跑完的一批视频，只基于现有产物刷新时间轴和 ASS，不重新识别、不重新翻译：
 
@@ -536,7 +538,7 @@ python scripts/translate_srt_galtransl.py work/input/input.ja.srt \
   --min-display-seconds 1.5
 ```
 
-或用 Sakura-14B / 旧版 HY-MT 翻译（CLI 相同，只换模型）：
+或用 Sakura-14B / HY-MT 翻译（CLI 相同，只换模型）：
 
 ```bash
 python scripts/translate_srt_sakura.py work/input/input.ja.srt \
@@ -547,8 +549,8 @@ python scripts/translate_srt_sakura.py work/input/input.ja.srt \
 
 python scripts/translate_srt_hymt.py work/input/input.ja.srt \
   --output outputs/input.zh.srt \
-  --model-path models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf \
-  --context-size 6 \
+  --model-path models/Hy-MT2-7B-GGUF/HY-MT2-7B-Q6_K.gguf \
+  --context-size 2 \
   --lead-out-seconds 0.5 \
   --min-display-seconds 1.5
 ```
@@ -618,7 +620,7 @@ Missing Qwen ASR model: .../models/Qwen3-ASR-1.7B
 Missing Qwen forced aligner: .../models/Qwen3-ForcedAligner-0.6B
 Missing GalTransl model: .../models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 Missing Whisper model: .../models/faster-whisper-large-v3/model.bin
-Missing HY-MT model: .../models/HY-MT1.5-7B-GGUF/HY-MT1.5-7B-Q4_K_M.gguf
+Missing HY-MT model: .../models/Hy-MT2-7B-GGUF/HY-MT2-7B-Q6_K.gguf
 ```
 
 按"下载模型"一节重新下载，并确认目录名和文件名没有改动。Qwen 和 GalTransl 模型只在默认后端

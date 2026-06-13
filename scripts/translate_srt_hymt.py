@@ -11,15 +11,12 @@ from srt_utils import padded_end, parse_time, srt_time
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
-DEFAULT_MODEL = PROJECT_ROOT / "models" / "HY-MT1.5-7B-GGUF" / "HY-MT1.5-7B-Q4_K_M.gguf"
+DEFAULT_MODEL = PROJECT_ROOT / "models" / "Hy-MT2-7B-GGUF" / "HY-MT2-7B-Q6_K.gguf"
 
-# HY-MT is a translation-specialised model: it translates whatever source it is shown, so
-# any "reference context" placed in the same request gets fused into the output (it bleeds
-# the previous line and drops the current one). Context is therefore supplied as prior chat
-# turns (previous source -> previous translation); the current turn carries only the line to
-# translate, which the model has no reason to merge.
-TRANSLATE_INSTRUCTION = "将以下日语字幕翻译为自然、口语化的简体中文。"
-TRANSLATE_SUFFIX = "只输出译文，不要解释，不要保留日文："
+# Hy-MT2's model card recommends a single user prompt with task instructions, optional
+# terminology references, and optional background information. The default path follows
+# that shape; the old chat-history layout is kept only as an explicit fallback.
+TRANSLATE_INSTRUCTION = "将以下文本翻译为简体中文，注意只需要输出翻译后的结果，不要额外解释："
 # Drop carried history across a long silence: lines that far apart are usually different
 # scenes, so the previous line is misleading rather than helpful context.
 HISTORY_RESET_SECONDS = 10.0
@@ -43,9 +40,8 @@ class GlossaryTerm:
     forbidden: tuple[str, ...] = ()
 
 
-# 带 様/さん 尊称的「ご主人様」是主仆/角色称呼，译「主人」；不带尊称的「主人」(しゅじん)
-# 是妻子指自己丈夫，译「老公」。两条源词有子串重叠，匹配按最长优先（様 形式先匹配，
-# 裸「主人」跳过），所以尊称形式必须排在裸词前面。
+# 带 様/さん 尊称的「ご主人様」是主仆/角色称呼，译「主人」。不带尊称的
+# 「主人」在不同语境可译为丈夫/老公等，不默认强制术语。
 DEFAULT_GLOSSARY = (
     GlossaryTerm(
         source="ご主人様",
@@ -64,12 +60,6 @@ DEFAULT_GLOSSARY = (
         target="主人",
         note="主仆/角色尊称",
         forbidden=("老公", "丈夫"),
-    ),
-    GlossaryTerm(
-        source="主人",
-        target="老公",
-        note="妻子称自己丈夫",
-        forbidden=("主人", "师傅"),
     ),
     # 契約結ぶ／契約: realistic-drama "sign a contract". Steer away from Sakura's stiff
     # literary "缔结契约" toward the colloquial "签合同/合同" (phrase form first so the
@@ -137,25 +127,31 @@ def normalize_source(text: str) -> str:
     return text
 
 
-def glossary_instruction(glossary: tuple[GlossaryTerm, ...]) -> str:
-    if not glossary:
-        return ""
-    lines = ["术语规则，不要输出规则本身："]
-    for term in glossary:
-        note = f"（{term.note}）" if term.note else ""
-        lines.append(f"- {term.source}={term.target}{note}")
-    return "\n" + "\n".join(lines) + "\n"
-
-
-def glossary_issues(source: str, translated: str, glossary: tuple[GlossaryTerm, ...]) -> list[GlossaryTerm]:
-    issues: list[GlossaryTerm] = []
+def matched_glossary_terms(source: str, glossary: tuple[GlossaryTerm, ...]) -> tuple[GlossaryTerm, ...]:
+    matched_terms: list[GlossaryTerm] = []
     matched_sources: list[str] = []
     for term in sorted(glossary, key=lambda item: len(item.source), reverse=True):
         if term.source not in source:
             continue
         if any(term.source in matched or matched in term.source for matched in matched_sources):
             continue
+        matched_terms.append(term)
         matched_sources.append(term.source)
+    return tuple(matched_terms)
+
+
+def glossary_instruction(glossary: tuple[GlossaryTerm, ...]) -> str:
+    if not glossary:
+        return ""
+    lines = ["参考下面的翻译："]
+    for term in glossary:
+        lines.append(f"{term.source} 翻译成 {term.target}")
+    return "\n".join(lines)
+
+
+def glossary_issues(source: str, translated: str, glossary: tuple[GlossaryTerm, ...]) -> list[GlossaryTerm]:
+    issues: list[GlossaryTerm] = []
+    for term in matched_glossary_terms(source, glossary):
         if any(item in translated for item in term.forbidden):
             issues.append(term)
     return issues
@@ -210,10 +206,55 @@ def build_messages(
     history: list[tuple[str, str]],
     extra_instruction: str = "",
     glossary: tuple[GlossaryTerm, ...] = DEFAULT_GLOSSARY,
+    prompt_mode: str = "hymt2",
 ) -> list[dict]:
-    """Chat turns for one translation: prior (source -> translation) pairs as history,
-    then the current source as its own user turn so only it gets translated."""
-    instruction = TRANSLATE_INSTRUCTION + glossary_instruction(glossary) + extra_instruction + TRANSLATE_SUFFIX
+    """Build one Hy-MT request.
+
+    The default prompt follows Hy-MT2's documented single-user-message style. Context is
+    previous Chinese translations only; current-source terminology is injected only when
+    the current line actually contains the source term.
+    """
+    current_terms = matched_glossary_terms(text, glossary)
+    if prompt_mode == "hymt2":
+        lines: list[str] = []
+        terms_text = glossary_instruction(current_terms)
+        if terms_text:
+            lines.append(terms_text)
+            lines.append("")
+        if history:
+            lines.append("〖背景信息〗")
+            lines.append("前文译文：")
+            for _, translation in history:
+                lines.append(translation)
+            lines.append("")
+        if extra_instruction:
+            lines.append(extra_instruction)
+            lines.append("")
+        lines.extend([TRANSLATE_INSTRUCTION, "", text])
+        return [{"role": "user", "content": "\n".join(lines)}]
+    if prompt_mode == "background":
+        lines = [
+            TRANSLATE_INSTRUCTION,
+            "历史翻译仅用于理解语境，不要翻译历史翻译内容。",
+        ]
+        terms_text = glossary_instruction(current_terms)
+        if terms_text:
+            lines.extend(["", terms_text])
+        if extra_instruction:
+            lines.extend(["", extra_instruction])
+        if history:
+            lines.append("历史翻译：")
+            for source, translation in history:
+                lines.append(f"- 日文：{source}")
+                lines.append(f"  中文：{translation}")
+        lines.extend(["待翻译日文：", text])
+        return [{"role": "user", "content": "\n".join(lines)}]
+    instruction = TRANSLATE_INSTRUCTION
+    terms_text = glossary_instruction(current_terms)
+    if terms_text:
+        instruction += "\n" + terms_text
+    if extra_instruction:
+        instruction += "\n" + extra_instruction
     messages: list[dict] = [{"role": "system", "content": instruction}]
     for position, (prev_source, prev_translation) in enumerate(history):
         messages.append({"role": "user", "content": prev_source})
@@ -228,6 +269,9 @@ def translate_one(
     history: list[tuple[str, str]] | None = None,
     extra_instruction: str = "",
     glossary: tuple[GlossaryTerm, ...] = DEFAULT_GLOSSARY,
+    prompt_mode: str = "hymt2",
+    temperature: float = 0.6,
+    max_tokens: int = 512,
 ) -> str:
     text = normalize_source(text)
     # Short, context-sensitive fillers translate better standalone than swayed by a prior
@@ -235,9 +279,9 @@ def translate_one(
     if history is None or is_context_sensitive_short_text(text):
         history = []
     result = llm.create_chat_completion(
-        messages=build_messages(text, history, extra_instruction, glossary),
-        max_tokens=160,
-        temperature=0.2,
+        messages=build_messages(text, history, extra_instruction, glossary, prompt_mode),
+        max_tokens=max_tokens,
+        temperature=temperature,
         top_k=20,
         top_p=0.6,
         repeat_penalty=1.05,
@@ -250,8 +294,11 @@ def translate_with_retry(
     text: str,
     history: list[tuple[str, str]] | None = None,
     glossary: tuple[GlossaryTerm, ...] = DEFAULT_GLOSSARY,
+    prompt_mode: str = "hymt2",
+    temperature: float = 0.6,
+    max_tokens: int = 512,
 ) -> str:
-    translated = translate_one(llm, text, history, glossary=glossary)
+    translated = translate_one(llm, text, history, glossary=glossary, prompt_mode=prompt_mode, temperature=temperature, max_tokens=max_tokens)
     # If Japanese kana leaked into the output, retry once standalone with a stronger note.
     if re.search(r"[ぁ-ゟ゠-ヿ]", translated):
         translated = translate_one(
@@ -260,6 +307,9 @@ def translate_with_retry(
             [],
             "译文中不能出现任何日文假名或片假名；人名请音译成中文。",
             glossary,
+            prompt_mode,
+            temperature,
+            max_tokens,
         )
     # The glossary listing alone does not always overrule the model (e.g. it keeps
     # rendering bare 主人 as "主人" instead of "老公"). When a forbidden rendering
@@ -274,7 +324,16 @@ def translate_with_retry(
         # Retry with only the violated terms as glossary so the competing rule
         # (e.g. ご主人様=主人) is dropped from the prompt and cannot pull the bare
         # 主人=老公 case back to the wrong rendering.
-        retried = translate_one(llm, text, history, f"严格遵守以下术语：{rules}。", tuple(issues))
+        retried = translate_one(
+            llm,
+            text,
+            history,
+            f"严格遵守以下术语：{rules}。",
+            tuple(issues),
+            prompt_mode,
+            temperature,
+            max_tokens,
+        )
         if retried and not glossary_issues(text, retried, glossary):
             translated = retried
     return translated
@@ -310,12 +369,15 @@ def main() -> None:
         "--context-size",
         type=int,
         default=2,
-        help="Number of prior dialogue turns (previous source/translation pairs) supplied "
-        "as chat history for context. 0 disables context (translate each line standalone).",
+        help="Number of prior translated Chinese lines supplied as Hy-MT2 background "
+        "context. 0 translates each line standalone.",
     )
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
     parser.add_argument("--lead-out-seconds", type=float, default=0.0)
     parser.add_argument("--min-display-seconds", type=float, default=0.0)
+    parser.add_argument("--prompt-mode", choices=("hymt2", "chat", "background"), default="hymt2")
+    parser.add_argument("--temperature", type=float, default=0.6)
+    parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--terms-report", type=Path, help="Terminology review report path")
     parser.add_argument("--no-glossary", action="store_true", help="Disable default glossary prompt and report")
     parser.add_argument("--no-terms-report", action="store_true", help="Do not write a terminology review report")
@@ -326,6 +388,10 @@ def main() -> None:
         raise SystemExit("--lead-out-seconds must be >= 0")
     if args.min_display_seconds < 0:
         raise SystemExit("--min-display-seconds must be >= 0")
+    if args.temperature < 0:
+        raise SystemExit("--temperature must be >= 0")
+    if args.max_tokens <= 0:
+        raise SystemExit("--max-tokens must be > 0")
 
     entries = parse_srt(args.input)
     if args.limit:
@@ -351,7 +417,15 @@ def main() -> None:
             if previous_end is not None and entry.start - previous_end > HISTORY_RESET_SECONDS:
                 history = []
             turns = history[-args.context_size :] if args.context_size > 0 else []
-            translated = translate_with_retry(llm, entry.text, turns, glossary)
+            translated = translate_with_retry(
+                llm,
+                entry.text,
+                turns,
+                glossary,
+                args.prompt_mode,
+                args.temperature,
+                args.max_tokens,
+            )
             if not translated:
                 translated = entry.text
             issues = glossary_issues(entry.text, translated, glossary)

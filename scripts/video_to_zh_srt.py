@@ -26,7 +26,7 @@ BILINGUAL_SCRIPT = SCRIPTS_DIR / "make_bilingual_ass.py"
 WHISPER_MODEL = PROJECT_ROOT / "models" / "faster-whisper-large-v3"
 QWEN_ASR_MODEL = PROJECT_ROOT / "models" / "Qwen3-ASR-1.7B"
 QWEN_ALIGNER_MODEL = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
-TRANSLATE_MODEL = PROJECT_ROOT / "models" / "HY-MT1.5-7B-GGUF" / "HY-MT1.5-7B-Q4_K_M.gguf"
+TRANSLATE_MODEL = PROJECT_ROOT / "models" / "Hy-MT2-7B-GGUF" / "HY-MT2-7B-Q6_K.gguf"
 SAKURA_MODEL = PROJECT_ROOT / "models" / "Sakura-14B-Qwen2.5-v1.0-GGUF" / "sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
 GALTRANSL_MODEL = PROJECT_ROOT / "models" / "Sakura-GalTransl-7B-v3.7-GGUF" / "Sakura-Galtransl-7B-v3.7.gguf"
 VIDEO_EXTENSIONS = {
@@ -487,14 +487,18 @@ def process_video_stages(
             run(fill_command, log)
         translate_input_srt = filled_ja_srt
 
-    # Sakura, GalTransl, and HY-MT share the same CLI (input, --output, --model-path,
-    # --context-size, --lead-out/--min-display), so only the script and model differ.
+    # Sakura, GalTransl, and HY-MT share the same core CLI (input, --output,
+    # --model-path, --context-size, --lead-out/--min-display), so only the script and
+    # model differ. Each translator decides how to render context in its own prompt.
     if args.translator == "sakura":
         translate_script, translate_model = SAKURA_TRANSLATE_SCRIPT, SAKURA_MODEL
     elif args.translator == "galtransl":
         translate_script, translate_model = GALTRANSL_TRANSLATE_SCRIPT, GALTRANSL_MODEL
     else:
         translate_script, translate_model = TRANSLATE_SCRIPT, TRANSLATE_MODEL
+    translate_context_size = args.context_size
+    if translate_context_size is None:
+        translate_context_size = 2 if args.translator == "hymt" else 6
     translate_command = [
         sys.executable,
         str(translate_script),
@@ -504,7 +508,7 @@ def process_video_stages(
         "--model-path",
         str(translate_model),
         "--context-size",
-        str(args.context_size),
+        str(translate_context_size),
         "--lead-out-seconds",
         str(args.lead_out_seconds),
         "--min-display-seconds",
@@ -625,9 +629,11 @@ def main() -> None:
     parser.add_argument(
         "--context-size",
         type=int,
-        default=6,
+        default=None,
         help="Prior dialogue turns supplied to the translator as context (galtransl: a "
-        "历史翻译 block of prior translations; sakura/hymt: source/translation chat pairs). "
+        "历史翻译 block of prior translations; sakura: source/translation chat pairs; "
+        "hymt: previous Chinese translations as Hy-MT2 background information). Defaults: "
+        "6 for galtransl/sakura, 2 for hymt. "
         "0 translates each line standalone.",
     )
     parser.add_argument("--lead-out-seconds", type=float, default=0.5)
@@ -640,7 +646,7 @@ def main() -> None:
         help="Translation backend (default galtransl). 'galtransl' uses "
         "Sakura-GalTransl-7B-v3.7 (visual-novel dialogue, smaller/faster, more "
         "colloquial); 'sakura' uses Sakura-14B-Qwen2.5-v1.0 (light-novel style); "
-        "'hymt' uses HY-MT1.5-7B.",
+        "'hymt' uses Hy-MT2-7B.",
     )
     parser.add_argument(
         "--asr",
@@ -748,6 +754,8 @@ def main() -> None:
         raise SystemExit("--lead-out-seconds must be >= 0")
     if args.min_display_seconds < 0:
         raise SystemExit("--min-display-seconds must be >= 0")
+    if args.context_size is not None and args.context_size < 0:
+        raise SystemExit("--context-size must be >= 0")
     if args.main_local_vad_window_overlap_seconds >= args.main_local_vad_window_seconds:
         raise SystemExit("--main-local-vad-window-overlap-seconds must be smaller than --main-local-vad-window-seconds")
     if args.main_local_asr_overlap_seconds >= min(args.main_local_asr_max_clip_seconds, 30.0):
