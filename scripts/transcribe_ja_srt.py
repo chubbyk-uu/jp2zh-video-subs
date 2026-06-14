@@ -8,6 +8,8 @@ from pathlib import Path
 from faster_whisper.audio import decode_audio
 from faster_whisper import BatchedInferencePipeline, WhisperModel
 
+from cli_config import add_dataclass_arguments
+from pipeline_configs import WhisperAsrConfig
 from hallucination_filters import (
     exceeds_compression_ratio,
     is_duplicate_of_nearby,
@@ -765,45 +767,18 @@ def transcribe_audio(model, audio_path: Path, args: argparse.Namespace) -> list[
     return entries
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Tuning knobs come from WhisperAsrConfig (single source of truth, shared with the
+    orchestrator); only IO/structural args and the two opt-out flags are declared here."""
     parser = argparse.ArgumentParser()
     parser.add_argument("audio", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", default=str(DEFAULT_MODEL))
-    parser.add_argument("--language", default="ja")
-    parser.add_argument("--min-duration", type=float, default=1.0)
-    parser.add_argument("--max-duration", type=float, default=10.0)
-    parser.add_argument("--max-chars", type=int, default=42)
-    parser.add_argument("--vad-min-silence-ms", type=int, default=500)
-    parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
     parser.add_argument(
         "--main-local-vad-dry-run",
         action="store_true",
         help="Run sliding VAD selection only, print coverage stats, and exit (no Whisper)",
     )
-    parser.add_argument("--main-local-vad-threshold", type=float, default=0.6)
-    parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
-    parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
-    parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=2.0)
-    parser.add_argument("--main-local-asr-pad-seconds", type=float, default=0.3)
-    parser.add_argument("--main-local-asr-max-clip-seconds", type=float, default=30.0)
-    parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
-    parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
-    parser.add_argument("--main-local-batch-size", type=int, default=24)
-    # Consolidated main-pass cleaning (so the sliding pass can replace main+gap-fill).
-    parser.add_argument("--main-min-chars", type=int, default=1)
-    parser.add_argument("--main-max-compression-ratio", type=float, default=25.0)
-    parser.add_argument("--main-duplicate-window-seconds", type=float, default=2.0)
-    parser.add_argument("--hallucination-min-repeats", type=int, default=10)
-    parser.add_argument("--hallucination-repeat-no-speech-prob", type=float, default=0.75)
-    parser.add_argument("--hallucination-repeat-avg-logprob", type=float, default=-0.80)
-    parser.add_argument("--hallucination-high-risk-max-repeats", type=int, default=3)
-    parser.add_argument("--min-cue-seconds", type=float, default=0.3)
-    parser.add_argument("--near-dup-max-gap", type=float, default=0.5)
-    parser.add_argument("--near-dup-similarity", type=float, default=0.6)
-    parser.add_argument("--near-dup-squeeze-seconds", type=float, default=0.8)
-    parser.add_argument("--max-word-gap", type=float, default=6.0)
-    parser.add_argument("--max-merge-gap", type=float, default=1.0)
     parser.add_argument(
         "--no-hallucination-filter",
         dest="filter_hallucinations",
@@ -811,7 +786,12 @@ def main() -> None:
         help="Disable first-pass ASR filtering for clear platform/symbol hallucinations.",
     )
     parser.set_defaults(filter_hallucinations=True)
-    args = parser.parse_args()
+    add_dataclass_arguments(parser, WhisperAsrConfig)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     if args.main_local_vad_window_overlap_seconds >= args.main_local_vad_window_seconds:
         raise SystemExit("--main-local-vad-window-overlap-seconds must be smaller than --main-local-vad-window-seconds")
     if args.main_local_asr_overlap_seconds >= min(args.main_local_asr_max_clip_seconds, 30.0):

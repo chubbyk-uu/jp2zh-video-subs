@@ -14,16 +14,27 @@ from cli_config import (
 from pipeline_configs import QwenAsrConfig
 from pipeline_configs import (
     BilingualAssConfig,
+    FillConfig,
     GalTranslTranslateConfig,
     HymtTranslateConfig,
+    QualityReportConfig,
     SakuraTranslateConfig,
+    WhisperAsrConfig,
 )
 from make_bilingual_ass import build_parser as bilingual_build_parser
+from quality_report import build_parser as quality_build_parser
 from translate_srt_galtransl import build_parser as galtransl_build_parser
 from translate_srt_hymt import build_parser as hymt_build_parser
 from translate_srt_sakura import build_parser as sakura_build_parser
+from transcribe_ja_srt import build_parser as whisper_build_parser
+from fill_ja_srt_gaps import build_parser as fill_build_parser
 from transcribe_ja_srt_qwen import build_parser as qwen_build_parser
-from video_to_zh_srt import build_bilingual_command, build_translate_command
+from video_to_zh_srt import (
+    build_bilingual_command,
+    build_fill_command,
+    build_translate_command,
+    build_whisper_command,
+)
 
 
 @dataclass
@@ -195,3 +206,72 @@ def test_pipeline_bilingual_command_uses_bilingual_config():
     assert cfg.colour_by_speaker is True
     assert cfg.gender_confidence == 0.7
     assert ns.audio == Path("audio.wav")
+
+
+def test_quality_config_round_trips_through_subscript_parser():
+    cfg = QualityReportConfig(vad_min_silence_ms=500, vad_speech_pad_ms=400, max_samples=15)
+    ns = quality_build_parser().parse_args(["--ja-srt", "in.ja.srt", *config_to_cli_args(cfg)])
+    assert config_from_namespace(ns, QualityReportConfig) == cfg
+
+
+def test_whisper_config_round_trips_through_subscript_parser():
+    cfg = WhisperAsrConfig(max_chars=30, main_local_batch_size=12, hallucination_min_repeats=8)
+    ns = whisper_build_parser().parse_args(["a.wav", "--output", "out.srt", *config_to_cli_args(cfg)])
+    assert config_from_namespace(ns, WhisperAsrConfig) == cfg
+
+
+def test_fill_config_round_trips_through_subscript_parser():
+    cfg = FillConfig(max_chars=30, min_gap_seconds=3.5, max_fill_compression_ratio=18.0,
+                     fill_support_min_chars=5)
+    ns = fill_build_parser().parse_args(["--audio", "a.wav", "--output", "out.srt", *config_to_cli_args(cfg)])
+    assert config_from_namespace(ns, FillConfig) == cfg
+
+
+def _whisper_fill_pipeline_args(**over) -> argparse.Namespace:
+    base = dict(
+        language="ja", min_duration=1.0, max_duration=10.0, max_chars=42,
+        vad_min_silence_ms=500, vad_speech_pad_ms=400,
+        main_local_vad_threshold=0.6, main_local_vad_window_seconds=8.0,
+        main_local_vad_window_overlap_seconds=4.0, main_local_vad_max_cluster_gap=2.0,
+        main_local_asr_pad_seconds=0.3, main_local_asr_max_clip_seconds=30.0,
+        main_local_asr_overlap_seconds=5.0, main_local_min_clip_seconds=0.6,
+        main_local_batch_size=24, main_min_chars=1, main_duplicate_window_seconds=2.0,
+        max_fill_compression_ratio=25.0, min_cue_seconds=0.3,
+        near_dup_max_gap=0.5, near_dup_similarity=0.6, near_dup_squeeze_seconds=0.8,
+        hallucination_min_repeats=10, hallucination_repeat_no_speech_prob=0.75,
+        hallucination_repeat_avg_logprob=-0.80, hallucination_high_risk_max_repeats=3,
+        max_word_gap=6.0, max_merge_gap=1.0,
+        fill_min_gap_seconds=2.0, fill_min_speech_seconds=1.0, fill_min_clip_seconds=0.6,
+        fill_min_chars=1, fill_max_cluster_gap=2.0, fill_existing_pad_seconds=0.1,
+        fill_max_existing_overlap_seconds=1.0, fill_duplicate_window_seconds=8.0,
+        gap_local_vad_threshold=0.60, gap_local_vad_window_min_gap_seconds=6.0,
+        gap_local_vad_window_seconds=5.0, gap_local_vad_window_overlap_seconds=3.0,
+        gap_local_asr_pad_seconds=1.0, gap_local_asr_max_clip_seconds=30.0,
+        gap_local_asr_overlap_seconds=5.0,
+        fill_support_min_chars=8, fill_support_avg_logprob=-0.95,
+        fill_support_no_speech_prob=0.45, fill_support_vad_threshold=0.5,
+        fill_support_pad_seconds=0.2, fill_support_max_ratio=0.45,
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_pipeline_whisper_command_maps_compression_rename():
+    # The orchestrator's single compression knob feeds --main-max-compression-ratio.
+    args = _whisper_fill_pipeline_args(max_fill_compression_ratio=18.0)
+    cmd = build_whisper_command(args, Path("a.wav"), Path("out.ja.srt"))
+    ns = whisper_build_parser().parse_args(cmd[2:])
+    assert ns.main_max_compression_ratio == 18.0
+    assert ns.language == "ja"
+
+
+def test_pipeline_fill_command_maps_renamed_gate_knobs():
+    args = _whisper_fill_pipeline_args(fill_min_gap_seconds=3.5, max_fill_compression_ratio=18.0)
+    cmd = build_fill_command(args, Path("a.wav"), Path("in.ja.srt"), Path("filled.srt"),
+                             Path("fills.srt"), Path("fills.tsv"))
+    ns = fill_build_parser().parse_args(cmd[2:])
+    # fill_* orchestrator knob -> unprefixed sub-script flag
+    assert ns.min_gap_seconds == 3.5
+    # one value feeds both compression flags
+    assert ns.main_max_compression_ratio == 18.0
+    assert ns.max_fill_compression_ratio == 18.0

@@ -15,10 +15,13 @@ from typing import Callable, Iterable
 from cli_config import config_from_prefixed, config_to_cli_args
 from pipeline_configs import (
     BilingualAssConfig,
+    FillConfig,
     GalTranslTranslateConfig,
     HymtTranslateConfig,
+    QualityReportConfig,
     QwenAsrConfig,
     SakuraTranslateConfig,
+    WhisperAsrConfig,
 )
 
 
@@ -333,6 +336,155 @@ def build_bilingual_command(args: argparse.Namespace, zh_srt: Path, ja_srt: Path
     return command
 
 
+def build_quality_command(
+    args: argparse.Namespace,
+    ja_srt: Path,
+    zh_srt: Path,
+    audio: Path,
+    output: Path,
+    metrics_jsonl: Path,
+    metrics_label: str,
+    fills_metadata: Path | None,
+    qwen_metadata: Path | None,
+) -> list[str]:
+    # Only the two shared VAD knobs are forwarded; the rest of QualityReportConfig sits at
+    # its canonical defaults (serialized explicitly, equivalent to the sub-script defaults).
+    cfg = QualityReportConfig(
+        vad_min_silence_ms=args.vad_min_silence_ms,
+        vad_speech_pad_ms=args.vad_speech_pad_ms,
+    )
+    command = [
+        sys.executable,
+        str(QUALITY_REPORT_SCRIPT),
+        "--ja-srt",
+        str(ja_srt),
+        "--zh-srt",
+        str(zh_srt),
+        "--audio",
+        str(audio),
+        "--output",
+        str(output),
+        # Shared history file across videos and runs, for comparing tuning changes.
+        "--metrics-jsonl",
+        str(metrics_jsonl),
+        "--metrics-label",
+        metrics_label,
+        *config_to_cli_args(cfg),
+    ]
+    if fills_metadata is not None:
+        command.extend(["--fills-metadata", str(fills_metadata)])
+    if qwen_metadata is not None:
+        command.extend(["--qwen-metadata", str(qwen_metadata)])
+    return command
+
+
+def _whisper_local_kwargs(args: argparse.Namespace) -> dict:
+    """Shared Whisper main-pass knobs, mapped from the orchestrator's args.
+
+    The one name that differs: the orchestrator exposes a single compression knob
+    (--max-fill-compression-ratio) that feeds the sub-scripts' --main-max-compression-ratio.
+    Everything else maps by identical name. Reused by both the whisper and fill builders.
+    """
+    return dict(
+        language=args.language,
+        min_duration=args.min_duration,
+        max_duration=args.max_duration,
+        max_chars=args.max_chars,
+        vad_min_silence_ms=args.vad_min_silence_ms,
+        vad_speech_pad_ms=args.vad_speech_pad_ms,
+        main_local_vad_threshold=args.main_local_vad_threshold,
+        main_local_vad_window_seconds=args.main_local_vad_window_seconds,
+        main_local_vad_window_overlap_seconds=args.main_local_vad_window_overlap_seconds,
+        main_local_vad_max_cluster_gap=args.main_local_vad_max_cluster_gap,
+        main_local_asr_pad_seconds=args.main_local_asr_pad_seconds,
+        main_local_asr_max_clip_seconds=args.main_local_asr_max_clip_seconds,
+        main_local_asr_overlap_seconds=args.main_local_asr_overlap_seconds,
+        main_local_min_clip_seconds=args.main_local_min_clip_seconds,
+        main_local_batch_size=args.main_local_batch_size,
+        main_min_chars=args.main_min_chars,
+        main_max_compression_ratio=args.max_fill_compression_ratio,
+        main_duplicate_window_seconds=args.main_duplicate_window_seconds,
+        hallucination_min_repeats=args.hallucination_min_repeats,
+        hallucination_repeat_no_speech_prob=args.hallucination_repeat_no_speech_prob,
+        hallucination_repeat_avg_logprob=args.hallucination_repeat_avg_logprob,
+        hallucination_high_risk_max_repeats=args.hallucination_high_risk_max_repeats,
+        min_cue_seconds=args.min_cue_seconds,
+        near_dup_max_gap=args.near_dup_max_gap,
+        near_dup_similarity=args.near_dup_similarity,
+        near_dup_squeeze_seconds=args.near_dup_squeeze_seconds,
+        max_word_gap=args.max_word_gap,
+        max_merge_gap=args.max_merge_gap,
+    )
+
+
+def build_whisper_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> list[str]:
+    cfg = WhisperAsrConfig(**_whisper_local_kwargs(args))
+    return [
+        sys.executable,
+        str(TRANSCRIBE_SCRIPT),
+        str(audio),
+        "--output",
+        str(ja_srt),
+        "--model",
+        str(WHISPER_MODEL),
+        *config_to_cli_args(cfg),
+    ]
+
+
+def build_fill_command(
+    args: argparse.Namespace,
+    audio: Path,
+    ja_srt: Path,
+    filled_ja_srt: Path,
+    fills_srt: Path,
+    fills_metadata: Path,
+) -> list[str]:
+    # The orchestrator's fill_*-prefixed gate knobs map onto the sub-script's unprefixed
+    # flags; the rest (incl. gap_local_*/fill_support_*) map by identical name.
+    cfg = FillConfig(
+        **_whisper_local_kwargs(args),
+        gap_local_vad_threshold=args.gap_local_vad_threshold,
+        gap_local_vad_window_min_gap_seconds=args.gap_local_vad_window_min_gap_seconds,
+        gap_local_vad_window_seconds=args.gap_local_vad_window_seconds,
+        gap_local_vad_window_overlap_seconds=args.gap_local_vad_window_overlap_seconds,
+        gap_local_asr_pad_seconds=args.gap_local_asr_pad_seconds,
+        gap_local_asr_max_clip_seconds=args.gap_local_asr_max_clip_seconds,
+        gap_local_asr_overlap_seconds=args.gap_local_asr_overlap_seconds,
+        min_gap_seconds=args.fill_min_gap_seconds,
+        min_speech_seconds=args.fill_min_speech_seconds,
+        min_clip_seconds=args.fill_min_clip_seconds,
+        min_fill_chars=args.fill_min_chars,
+        max_fill_compression_ratio=args.max_fill_compression_ratio,
+        max_cluster_gap=args.fill_max_cluster_gap,
+        existing_pad_seconds=args.fill_existing_pad_seconds,
+        max_existing_overlap_seconds=args.fill_max_existing_overlap_seconds,
+        duplicate_window_seconds=args.fill_duplicate_window_seconds,
+        fill_support_min_chars=args.fill_support_min_chars,
+        fill_support_avg_logprob=args.fill_support_avg_logprob,
+        fill_support_no_speech_prob=args.fill_support_no_speech_prob,
+        fill_support_vad_threshold=args.fill_support_vad_threshold,
+        fill_support_pad_seconds=args.fill_support_pad_seconds,
+        fill_support_max_ratio=args.fill_support_max_ratio,
+    )
+    return [
+        sys.executable,
+        str(FILL_GAPS_SCRIPT),
+        "--audio",
+        str(audio),
+        "--transcribe-output",
+        str(ja_srt),
+        "--output",
+        str(filled_ja_srt),
+        "--fills-output",
+        str(fills_srt),
+        "--fills-metadata-output",
+        str(fills_metadata),
+        "--model",
+        str(WHISPER_MODEL),
+        *config_to_cli_args(cfg),
+    ]
+
+
 def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: Path, audio: Path) -> None:
     job_dir.mkdir(parents=True, exist_ok=True)
     log = JobLog(job_dir / "pipeline.log")
@@ -360,71 +512,7 @@ def process_video_stages(
         if not resume_skip(args, ja_srt, log, "transcription"):
             run(transcribe_command, log)
     elif not args.gap_fill:
-        transcribe_command = [
-            sys.executable,
-            str(TRANSCRIBE_SCRIPT),
-            str(audio),
-            "--output",
-            str(ja_srt),
-            "--model",
-            str(WHISPER_MODEL),
-            "--language",
-            args.language,
-            "--min-duration",
-            str(args.min_duration),
-            "--max-duration",
-            str(args.max_duration),
-            "--max-chars",
-            str(args.max_chars),
-            "--vad-min-silence-ms",
-            str(args.vad_min_silence_ms),
-            "--vad-speech-pad-ms",
-            str(args.vad_speech_pad_ms),
-            "--main-local-vad-threshold",
-            str(args.main_local_vad_threshold),
-            "--main-local-vad-window-seconds",
-            str(args.main_local_vad_window_seconds),
-            "--main-local-vad-window-overlap-seconds",
-            str(args.main_local_vad_window_overlap_seconds),
-            "--main-local-vad-max-cluster-gap",
-            str(args.main_local_vad_max_cluster_gap),
-            "--main-local-asr-pad-seconds",
-            str(args.main_local_asr_pad_seconds),
-            "--main-local-asr-max-clip-seconds",
-            str(args.main_local_asr_max_clip_seconds),
-            "--main-local-asr-overlap-seconds",
-            str(args.main_local_asr_overlap_seconds),
-            "--main-local-min-clip-seconds",
-            str(args.main_local_min_clip_seconds),
-            "--main-local-batch-size",
-            str(args.main_local_batch_size),
-            "--main-min-chars",
-            str(args.main_min_chars),
-            "--main-max-compression-ratio",
-            str(args.max_fill_compression_ratio),
-            "--main-duplicate-window-seconds",
-            str(args.main_duplicate_window_seconds),
-            "--min-cue-seconds",
-            str(args.min_cue_seconds),
-            "--near-dup-max-gap",
-            str(args.near_dup_max_gap),
-            "--near-dup-similarity",
-            str(args.near_dup_similarity),
-            "--near-dup-squeeze-seconds",
-            str(args.near_dup_squeeze_seconds),
-            "--hallucination-min-repeats",
-            str(args.hallucination_min_repeats),
-            "--hallucination-repeat-no-speech-prob",
-            str(args.hallucination_repeat_no_speech_prob),
-            "--hallucination-repeat-avg-logprob",
-            str(args.hallucination_repeat_avg_logprob),
-            "--hallucination-high-risk-max-repeats",
-            str(args.hallucination_high_risk_max_repeats),
-            "--max-word-gap",
-            str(args.max_word_gap),
-            "--max-merge-gap",
-            str(args.max_merge_gap),
-        ]
+        transcribe_command = build_whisper_command(args, audio, ja_srt)
         if not resume_skip(args, ja_srt, log, "transcription"):
             run(transcribe_command, log)
     else:
@@ -432,122 +520,7 @@ def process_video_stages(
         filled_ja_srt = job_dir / f"{video.stem}.filled.ja.srt"
         fills_srt = job_dir / f"{video.stem}.fills.ja.srt"
         fills_metadata = job_dir / f"{video.stem}.fills.tsv"
-        fill_command = [
-            sys.executable,
-            str(FILL_GAPS_SCRIPT),
-            "--audio",
-            str(audio),
-            "--transcribe-output",
-            str(ja_srt),
-            "--output",
-            str(filled_ja_srt),
-            "--fills-output",
-            str(fills_srt),
-            "--fills-metadata-output",
-            str(fills_metadata),
-            "--model",
-            str(WHISPER_MODEL),
-            "--language",
-            args.language,
-            "--min-duration",
-            str(args.min_duration),
-            "--max-duration",
-            str(args.max_duration),
-            "--max-chars",
-            str(args.max_chars),
-            "--max-word-gap",
-            str(args.max_word_gap),
-            "--max-merge-gap",
-            str(args.max_merge_gap),
-            "--vad-min-silence-ms",
-            str(args.vad_min_silence_ms),
-            "--vad-speech-pad-ms",
-            str(args.vad_speech_pad_ms),
-            "--main-local-vad-threshold",
-            str(args.main_local_vad_threshold),
-            "--main-local-vad-window-seconds",
-            str(args.main_local_vad_window_seconds),
-            "--main-local-vad-window-overlap-seconds",
-            str(args.main_local_vad_window_overlap_seconds),
-            "--main-local-vad-max-cluster-gap",
-            str(args.main_local_vad_max_cluster_gap),
-            "--main-local-asr-pad-seconds",
-            str(args.main_local_asr_pad_seconds),
-            "--main-local-asr-max-clip-seconds",
-            str(args.main_local_asr_max_clip_seconds),
-            "--main-local-asr-overlap-seconds",
-            str(args.main_local_asr_overlap_seconds),
-            "--main-local-min-clip-seconds",
-            str(args.main_local_min_clip_seconds),
-            "--main-local-batch-size",
-            str(args.main_local_batch_size),
-            "--main-min-chars",
-            str(args.main_min_chars),
-            "--main-max-compression-ratio",
-            str(args.max_fill_compression_ratio),
-            "--main-duplicate-window-seconds",
-            str(args.main_duplicate_window_seconds),
-            "--min-cue-seconds",
-            str(args.min_cue_seconds),
-            "--near-dup-max-gap",
-            str(args.near_dup_max_gap),
-            "--near-dup-similarity",
-            str(args.near_dup_similarity),
-            "--near-dup-squeeze-seconds",
-            str(args.near_dup_squeeze_seconds),
-            "--min-gap-seconds",
-            str(args.fill_min_gap_seconds),
-            "--min-speech-seconds",
-            str(args.fill_min_speech_seconds),
-            "--min-clip-seconds",
-            str(args.fill_min_clip_seconds),
-            "--max-cluster-gap",
-            str(args.fill_max_cluster_gap),
-            "--existing-pad-seconds",
-            str(args.fill_existing_pad_seconds),
-            "--max-existing-overlap-seconds",
-            str(args.fill_max_existing_overlap_seconds),
-            "--duplicate-window-seconds",
-            str(args.fill_duplicate_window_seconds),
-            "--min-fill-chars",
-            str(args.fill_min_chars),
-            "--hallucination-min-repeats",
-            str(args.hallucination_min_repeats),
-            "--hallucination-repeat-no-speech-prob",
-            str(args.hallucination_repeat_no_speech_prob),
-            "--hallucination-repeat-avg-logprob",
-            str(args.hallucination_repeat_avg_logprob),
-            "--hallucination-high-risk-max-repeats",
-            str(args.hallucination_high_risk_max_repeats),
-            "--gap-local-vad-threshold",
-            str(args.gap_local_vad_threshold),
-            "--gap-local-vad-window-min-gap-seconds",
-            str(args.gap_local_vad_window_min_gap_seconds),
-            "--gap-local-vad-window-seconds",
-            str(args.gap_local_vad_window_seconds),
-            "--gap-local-vad-window-overlap-seconds",
-            str(args.gap_local_vad_window_overlap_seconds),
-            "--gap-local-asr-pad-seconds",
-            str(args.gap_local_asr_pad_seconds),
-            "--gap-local-asr-max-clip-seconds",
-            str(args.gap_local_asr_max_clip_seconds),
-            "--gap-local-asr-overlap-seconds",
-            str(args.gap_local_asr_overlap_seconds),
-            "--max-fill-compression-ratio",
-            str(args.max_fill_compression_ratio),
-            "--fill-support-min-chars",
-            str(args.fill_support_min_chars),
-            "--fill-support-avg-logprob",
-            str(args.fill_support_avg_logprob),
-            "--fill-support-no-speech-prob",
-            str(args.fill_support_no_speech_prob),
-            "--fill-support-vad-threshold",
-            str(args.fill_support_vad_threshold),
-            "--fill-support-pad-seconds",
-            str(args.fill_support_pad_seconds),
-            "--fill-support-max-ratio",
-            str(args.fill_support_max_ratio),
-        ]
+        fill_command = build_fill_command(args, audio, ja_srt, filled_ja_srt, fills_srt, fills_metadata)
         # The fill stage writes the filled SRT and the fills metadata together at
         # the end, so resuming needs both present.
         if not (fills_metadata.exists() and resume_skip(args, filled_ja_srt, log, "transcription + gap fill")):
@@ -568,31 +541,19 @@ def process_video_stages(
 
     if not args.skip_quality_report:
         report_path = job_dir / f"{video.stem}.quality.txt"
-        quality_command = [
-            sys.executable,
-            str(QUALITY_REPORT_SCRIPT),
-            "--ja-srt",
-            str(translate_input_srt),
-            "--zh-srt",
-            str(output),
-            "--audio",
-            str(audio),
-            "--output",
-            str(report_path),
-            "--vad-min-silence-ms",
-            str(args.vad_min_silence_ms),
-            "--vad-speech-pad-ms",
-            str(args.vad_speech_pad_ms),
-            # Shared history file across videos and runs, for comparing tuning changes.
-            "--metrics-jsonl",
-            str(args.work_dir / "metrics.jsonl"),
-            "--metrics-label",
+        fills_metadata = (job_dir / f"{video.stem}.fills.tsv") if args.gap_fill else None
+        qwen_metadata = ja_srt.with_suffix(ja_srt.suffix + ".meta.json") if args.asr == "qwen" else None
+        quality_command = build_quality_command(
+            args,
+            translate_input_srt,
+            output,
+            audio,
+            report_path,
+            args.work_dir / "metrics.jsonl",
             video.stem,
-        ]
-        if args.gap_fill:
-            quality_command.extend(["--fills-metadata", str(job_dir / f"{video.stem}.fills.tsv")])
-        if args.asr == "qwen":
-            quality_command.extend(["--qwen-metadata", str(ja_srt.with_suffix(ja_srt.suffix + ".meta.json"))])
+            fills_metadata,
+            qwen_metadata,
+        )
         run(quality_command, log)
         log.print(f"Quality report: {report_path}")
 

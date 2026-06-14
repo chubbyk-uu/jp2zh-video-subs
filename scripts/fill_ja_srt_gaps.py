@@ -9,6 +9,8 @@ from pathlib import Path
 
 from faster_whisper.audio import decode_audio
 
+from cli_config import add_dataclass_arguments
+from pipeline_configs import FillConfig
 from hallucination_filters import (
     exceeds_compression_ratio,
     is_duplicate_of_nearby,
@@ -594,7 +596,9 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
     return stats
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Tuning knobs come from FillConfig (single source of truth, shared with the
+    orchestrator); only IO/structural args and the two opt-in flags are declared here."""
     parser = argparse.ArgumentParser(description="Fill likely missed Japanese SRT gaps using audio-aware VAD clips.")
     parser.add_argument("input", type=Path, nargs="?", help="Input Japanese SRT (omit when using --transcribe-output)")
     parser.add_argument("--audio", type=Path, required=True)
@@ -609,86 +613,12 @@ def main() -> None:
     parser.add_argument("--condition-on-previous-text", action="store_true")
     parser.add_argument("--no-vad", action="store_true")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
-    parser.add_argument("--language", default="ja")
-    parser.add_argument("--min-duration", type=float, default=1.0)
-    parser.add_argument("--max-duration", type=float, default=10.0)
-    parser.add_argument("--max-chars", type=int, default=42)
-    parser.add_argument("--max-word-gap", type=float, default=6.0)
-    parser.add_argument("--max-merge-gap", type=float, default=1.0)
-    parser.add_argument("--vad-min-silence-ms", type=int, default=500)
-    parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    parser.add_argument("--main-local-vad-threshold", type=float, default=0.6)
-    parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
-    parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
-    parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=2.0)
-    parser.add_argument("--main-local-asr-pad-seconds", type=float, default=0.3)
-    parser.add_argument("--main-local-asr-max-clip-seconds", type=float, default=30.0)
-    parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
-    parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
-    parser.add_argument("--main-local-batch-size", type=int, default=24)
-    parser.add_argument("--main-min-chars", type=int, default=1)
-    parser.add_argument("--main-max-compression-ratio", type=float, default=25.0)
-    parser.add_argument("--main-duplicate-window-seconds", type=float, default=2.0)
-    parser.add_argument("--min-cue-seconds", type=float, default=0.3)
-    parser.add_argument("--near-dup-max-gap", type=float, default=0.5)
-    parser.add_argument("--near-dup-similarity", type=float, default=0.6)
-    parser.add_argument("--near-dup-squeeze-seconds", type=float, default=0.8)
-    parser.add_argument("--gap-local-vad-threshold", type=float, default=0.60)
-    parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=6.0)
-    parser.add_argument("--gap-local-vad-window-seconds", type=float, default=5.0)
-    parser.add_argument("--gap-local-vad-window-overlap-seconds", type=float, default=3.0)
-    parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=1.0)
-    parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=30.0)
-    parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)
-    # Gap-fill gates default to an aggressive setting validated on local sample runs,
-    # so the stage actually recovers the short, low-energy reactions VAD@0.05 still
-    # misses; the hallucination filters below keep the extra reach clean.
-    parser.add_argument("--min-gap-seconds", type=float, default=2.0)
-    parser.add_argument("--min-speech-seconds", type=float, default=1.0)
-    parser.add_argument("--min-clip-seconds", type=float, default=0.6)
-    parser.add_argument("--min-fill-chars", type=int, default=1)
-    parser.add_argument("--max-fill-compression-ratio", type=float, default=25.0)
-    parser.add_argument("--max-cluster-gap", type=float, default=2.0)
-    parser.add_argument("--existing-pad-seconds", type=float, default=0.1)
-    parser.add_argument("--max-existing-overlap-seconds", type=float, default=1.0)
-    parser.add_argument("--duplicate-window-seconds", type=float, default=8.0)
-    parser.add_argument("--fill-support-min-chars", type=int, default=8)
-    parser.add_argument("--fill-support-avg-logprob", type=float, default=-0.95)
-    parser.add_argument("--fill-support-no-speech-prob", type=float, default=0.45)
-    parser.add_argument("--fill-support-vad-threshold", type=float, default=0.5)
-    parser.add_argument("--fill-support-pad-seconds", type=float, default=0.2)
-    parser.add_argument("--fill-support-max-ratio", type=float, default=0.45)
-    parser.add_argument(
-        "--hallucination-min-repeats",
-        type=int,
-        default=10,
-        help="Consider a fill phrase repeated at least this many times across all gap "
-        "fills for one video as a repeat-hallucination candidate.",
-    )
-    parser.add_argument(
-        "--hallucination-repeat-no-speech-prob",
-        type=float,
-        default=0.75,
-        help="Drop a repeated fill phrase only when its median no_speech_prob is at "
-        "least this value.",
-    )
-    parser.add_argument(
-        "--hallucination-repeat-avg-logprob",
-        type=float,
-        default=-0.80,
-        help="Drop a repeated fill phrase only when its median avg_logprob is at most "
-        "this value.",
-    )
-    parser.add_argument(
-        "--hallucination-high-risk-max-repeats",
-        type=int,
-        default=3,
-        help="Always drop high-risk fixed greeting/thanks phrases repeated at least "
-        "this many times across all gap fills for one video (a fixed greeting recurring "
-        "in several near-silent gaps is almost always hallucination; a real one-off "
-        "greeting appears once and survives). Set 0 to disable.",
-    )
-    args = parser.parse_args()
+    add_dataclass_arguments(parser, FillConfig)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     if args.gap_local_vad_window_min_gap_seconds < 0:
         raise SystemExit("--gap-local-vad-window-min-gap-seconds must be >= 0")
     if args.gap_local_vad_window_seconds <= 0:

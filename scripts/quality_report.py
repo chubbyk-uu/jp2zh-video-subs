@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from cli_config import add_dataclass_arguments
+from pipeline_configs import QualityReportConfig
 from srt_utils import (
     Interval,
     compact_text,
@@ -470,7 +472,9 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Tuning knobs come from QualityReportConfig (single source of truth, shared with the
+    orchestrator); only IO/per-run args are declared here."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--ja-srt", type=Path, required=True)
     parser.add_argument("--zh-srt", type=Path)
@@ -478,17 +482,6 @@ def main() -> None:
     parser.add_argument("--fills-metadata", type=Path)
     parser.add_argument("--qwen-metadata", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--vad-threshold", type=float, default=0.05)
-    parser.add_argument("--vad-min-silence-ms", type=int, default=500)
-    parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    parser.add_argument("--min-gap-seconds", type=float, default=10.0)
-    parser.add_argument("--min-speech-seconds", type=float, default=2.0)
-    parser.add_argument("--subtitle-pad-seconds", type=float, default=0.5)
-    parser.add_argument("--warn-avg-logprob-below", type=float, default=-0.80)
-    parser.add_argument("--warn-no-speech-prob-above", type=float, default=0.50)
-    parser.add_argument("--warn-compression-ratio-above", type=float, default=2.20)
-    parser.add_argument("--warn-repeated-fill-phrase-count", type=int, default=3)
-    parser.add_argument("--max-samples", type=int, default=20)
     parser.add_argument(
         "--metrics-jsonl",
         type=Path,
@@ -499,7 +492,12 @@ def main() -> None:
         default="",
         help="Label for the metrics record; defaults to the ja SRT stem without .ja/.filled.ja",
     )
-    args = parser.parse_args()
+    add_dataclass_arguments(parser, QualityReportConfig)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     metrics: dict = {}
     report = build_report(args, metrics)
