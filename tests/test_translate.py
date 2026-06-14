@@ -38,6 +38,7 @@ def test_clean_translation_keeps_first_line_only():
 def test_is_context_sensitive_short_text():
     assert is_context_sensitive_short_text("はい") is True
     assert is_context_sensitive_short_text("……") is True
+    assert is_context_sensitive_short_text("え？") is True
     assert is_context_sensitive_short_text("今日はいい天気ですね") is False
 
 

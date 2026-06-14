@@ -73,7 +73,7 @@
 - FFmpeg：6.1.1
 - `qwen-asr`：0.0.6（默认识别后端；会带入 `torch`、`transformers`、`librosa`、`soundfile`）
 - `torch`：2.10，CUDA 12.8（`cu128`），在 RTX 50 系（Blackwell）显卡上验证
-- `faster-whisper`：1.2.1（旧版识别后端）
+- `faster-whisper`：1.2.1（旧版识别后端；质量报告里的音频/VAD 覆盖率分析也会使用它）
 - `llama-cpp-python`：0.3.23
 - `huggingface-hub`：0.36.2
 
@@ -591,6 +591,9 @@ python scripts/quality_report.py \
   --audio work/input/input.wav \
   --output work/input/input.quality.txt
 ```
+
+默认识别后端是 Qwen，但质量报告中的音频覆盖率检查仍使用 `faster-whisper` 的
+VAD 实现。只想生成识别、翻译和 ASS 时，可以用 `--skip-quality-report` 跳过质量报告。
 
 如果已经运行过 `fill_ja_srt_gaps.py`，翻译、ASS 和质量报告都改用
 `work/input/input.filled.ja.srt`；质量报告可额外传入

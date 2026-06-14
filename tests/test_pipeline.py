@@ -2,7 +2,7 @@ import threading
 
 import pytest
 
-from video_to_zh_srt import run_pipeline, srt_cue_count, translation_is_complete
+from video_to_zh_srt import output_path_for, run_pipeline, srt_cue_count, translation_is_complete
 
 
 def test_run_pipeline_processes_all_jobs_in_order():
@@ -73,6 +73,18 @@ def test_run_pipeline_continues_after_extraction_error():
     assert [job for job, _ in failures] == [1]
 
 
+def test_run_pipeline_sends_done_after_extraction_base_exception():
+    processed = []
+
+    def extract(_job):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_pipeline([0, 1, 2], extract, lambda job: processed.append(job), continue_on_error=True)
+
+    assert processed == []
+
+
 def test_run_pipeline_raises_without_continue_on_error():
     def process(job):
         if job == 1:
@@ -116,3 +128,21 @@ def test_translation_is_complete_requires_matching_cue_counts(tmp_path):
     # One cue per source cue: complete.
     zh.write_text(SRT_TWO_CUES.replace("こんにちは", "你好").replace("さようなら", "再见"), encoding="utf-8")
     assert translation_is_complete(zh, ja)
+
+
+def test_output_path_for_includes_relative_parent_when_present(tmp_path):
+    input_dir = tmp_path / "videos"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    video = input_dir / "set-a" / "sample.mp4"
+
+    assert output_path_for(video, input_dir, output_dir, recursive=False) == (output_dir / "set-a__sample.zh.srt").resolve()
+
+
+def test_output_path_for_keeps_flat_directory_names(tmp_path):
+    input_dir = tmp_path / "videos"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    video = input_dir / "sample.mp4"
+
+    assert output_path_for(video, input_dir, output_dir, recursive=False) == (output_dir / "sample.zh.srt").resolve()

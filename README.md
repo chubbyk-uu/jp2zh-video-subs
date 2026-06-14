@@ -83,7 +83,8 @@ Verified environment:
 - FFmpeg: 6.1.1
 - `qwen-asr`: 0.0.6 (default ASR backend; pulls in `torch`, `transformers`, `librosa`, `soundfile`)
 - `torch`: 2.10 with CUDA 12.8 (`cu128`) on an RTX 50-series (Blackwell) GPU
-- `faster-whisper`: 1.2.1 (legacy ASR backend)
+- `faster-whisper`: 1.2.1 (legacy ASR backend; also used by the quality report's
+  optional audio/VAD coverage analysis)
 - `llama-cpp-python`: 0.3.23
 - `huggingface-hub`: 0.36.2
 
@@ -495,6 +496,10 @@ Disable quality report generation:
 python scripts/video_to_zh_srt.py path/to/input.mp4 --skip-quality-report
 ```
 
+The default ASR backend is Qwen, but the quality report's audio-aware coverage checks
+use `faster-whisper`'s VAD implementation. Use `--skip-quality-report` when you only
+want the recognition, translation, and ASS outputs.
+
 Delete extracted WAV audio after processing:
 
 ```bash
@@ -691,6 +696,9 @@ python scripts/quality_report.py \
   --audio work/input/input.wav \
   --output work/input/input.quality.txt
 ```
+
+Audio-aware coverage metrics in this report use the same `faster-whisper` VAD helper
+as the legacy Whisper path, even when the subtitles were generated with Qwen.
 
 If you ran `fill_ja_srt_gaps.py`, use `work/input/input.filled.ja.srt` for
 translation, ASS, and quality reporting, and pass

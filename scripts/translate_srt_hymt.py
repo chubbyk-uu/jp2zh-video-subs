@@ -121,9 +121,6 @@ def clean_translation(text: str) -> str:
 
 
 def normalize_source(text: str) -> str:
-    replacements: dict[str, str] = {}
-    for source, target in replacements.items():
-        text = text.replace(source, target)
     return text
 
 
@@ -183,6 +180,7 @@ def write_terms_report(
 
 def is_context_sensitive_short_text(text: str) -> bool:
     compact = re.sub(r"\s+", "", text)
+    compact = compact.translate(str.maketrans({"？": "?", "！": "!"}))
     if len(compact) <= 2:
         return True
     if re.fullmatch(r"[、。！？!?…ー〜・\-.]+", compact):

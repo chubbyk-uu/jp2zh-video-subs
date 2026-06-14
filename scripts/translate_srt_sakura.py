@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import re
 from pathlib import Path
 
 from llama_cpp import Llama
 
+from translation_common import KANA_RE, looks_degenerate, relevant_terms
 from translate_srt_hymt import (
     DEFAULT_GLOSSARY,
     Entry,
@@ -33,25 +33,6 @@ SAKURA_SYSTEM = (
 )
 PLAIN_USER = "将下面的日文文本翻译成中文："
 
-KANA_RE = re.compile(r"[ぁ-ゟ゠-ヿ]")
-
-
-def relevant_terms(text: str, glossary: tuple[GlossaryTerm, ...]) -> list[GlossaryTerm]:
-    """Glossary terms whose source occurs in `text`, longest-match deduplicated.
-
-    Skips a term whose source is a substring of an already-kept longer source, so a
-    line containing 「ご主人様」 injects only ``ご主人様->主人`` and not the competing
-    bare ``主人->老公`` rule. This mirrors glossary_issues' matching.
-    """
-    kept: list[GlossaryTerm] = []
-    for term in sorted(glossary, key=lambda t: len(t.source), reverse=True):
-        if term.source not in text:
-            continue
-        if any(term.source in k.source or k.source in term.source for k in kept):
-            continue
-        kept.append(term)
-    return kept
-
 
 def sakura_user_prompt(text: str, glossary: tuple[GlossaryTerm, ...]) -> str:
     """Current-line user turn, with a Sakura GPT dictionary only when terms apply."""
@@ -76,19 +57,6 @@ def build_messages(text: str, history: list[tuple[str, str]], glossary: tuple[Gl
         messages.append({"role": "assistant", "content": prev_translation})
     messages.append({"role": "user", "content": sakura_user_prompt(text, glossary)})
     return messages
-
-
-def looks_degenerate(source: str, text: str) -> bool:
-    """Detect the runaway/looping output Sakura can produce, which the model card says
-    to fix by raising frequency_penalty."""
-    if not text:
-        return False
-    if len(text) > max(40, 3 * len(source) + 10):
-        return True
-    for unit in range(1, 6):
-        if re.search(r"(.{%d})\1{5,}" % unit, text):
-            return True
-    return False
 
 
 def translate_one(

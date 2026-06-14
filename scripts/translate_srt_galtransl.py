@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import re
 from pathlib import Path
 from typing import NamedTuple
 
 from llama_cpp import Llama
 
+from translation_common import KANA_RE, looks_degenerate, relevant_terms
 from translate_srt_hymt import (
     DEFAULT_GLOSSARY,
     Entry,
@@ -39,30 +39,11 @@ GALTRANSL_SYSTEM = (
 GLOSSARY_HEADER = "参考以下术语表（可为空，格式为src->dst #备注）："
 TRANSLATE_INSTRUCTION = "根据以上术语表的对应关系和备注，结合历史剧情和上下文，将下面的文本从日文翻译成简体中文："
 
-KANA_RE = re.compile(r"[ぁ-ゟ゠-ヿ]")
-
 
 class BlockTranslation(NamedTuple):
     lines: list[str | None] | None
     reason: str
     raw: str = ""
-
-
-def relevant_terms(text: str, glossary: tuple[GlossaryTerm, ...]) -> list[GlossaryTerm]:
-    """Glossary terms whose source occurs in `text`, longest-match deduplicated.
-
-    Skips a term whose source is a substring of an already-kept longer source, so a
-    line containing 「ご主人様」 injects only ``ご主人様->主人`` and not the competing
-    bare ``主人->老公`` rule. Mirrors glossary_issues' matching and the Sakura backend.
-    """
-    kept: list[GlossaryTerm] = []
-    for term in sorted(glossary, key=lambda t: len(t.source), reverse=True):
-        if term.source not in text:
-            continue
-        if any(term.source in k.source or k.source in term.source for k in kept):
-            continue
-        kept.append(term)
-    return kept
 
 
 def glossary_block(text: str, glossary: tuple[GlossaryTerm, ...]) -> str:
@@ -101,19 +82,6 @@ def build_messages(text: str, history: list[str], glossary: tuple[GlossaryTerm, 
         {"role": "system", "content": GALTRANSL_SYSTEM},
         {"role": "user", "content": build_user_prompt(text, history, glossary)},
     ]
-
-
-def looks_degenerate(source: str, text: str) -> bool:
-    """Detect runaway/looping output; the Sakura family fixes this by raising
-    frequency_penalty."""
-    if not text:
-        return False
-    if len(text) > max(40, 3 * len(source) + 10):
-        return True
-    for unit in range(1, 6):
-        if re.search(r"(.{%d})\1{5,}" % unit, text):
-            return True
-    return False
 
 
 def translate_one(

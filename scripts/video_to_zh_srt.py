@@ -153,13 +153,17 @@ def run_pipeline(
     done = object()
 
     def producer() -> None:
-        for job in jobs:
-            try:
-                extract(job)
-                work_queue.put((job, None))
-            except Exception as exc:  # noqa: BLE001 - reported to the consumer
-                work_queue.put((job, exc))
-        work_queue.put(done)
+        try:
+            for job in jobs:
+                try:
+                    extract(job)
+                    work_queue.put((job, None))
+                except BaseException as exc:
+                    work_queue.put((job, exc))
+                    if not isinstance(exc, Exception):
+                        break
+        finally:
+            work_queue.put(done)
 
     thread = threading.Thread(target=producer, daemon=True)
     thread.start()
@@ -171,6 +175,8 @@ def run_pipeline(
             break
         job, exc = item
         if exc is not None:
+            if not isinstance(exc, Exception):
+                raise exc
             if not continue_on_error:
                 raise exc
             failures.append((job, exc))
@@ -206,7 +212,14 @@ def output_path_for(video: Path, input_path: Path, output_dir: Path, recursive: 
         if recursive:
             relative = video.relative_to(input_path).with_suffix(".zh.srt")
             return (output_dir / relative).resolve()
-        return (output_dir / f"{video.stem}.zh.srt").resolve()
+        try:
+            relative_parent = video.parent.relative_to(input_path)
+        except ValueError:
+            relative_parent = Path()
+        if relative_parent == Path():
+            return (output_dir / f"{video.stem}.zh.srt").resolve()
+        safe_parent = "__".join(relative_parent.parts)
+        return (output_dir / f"{safe_parent}__{video.stem}.zh.srt").resolve()
     return (output_dir / f"{video.stem}.zh.srt").resolve()
 
 
@@ -255,6 +268,8 @@ def process_video_stages(
             "Japanese" if args.language == "ja" else args.language,
             "--batch-size",
             str(args.qwen_batch_size),
+            "--max-new-tokens",
+            str(args.qwen_max_new_tokens),
             "--chunk-seconds",
             str(args.qwen_chunk_seconds),
             "--chunk-overlap-seconds",
@@ -267,17 +282,56 @@ def process_video_stages(
             str(args.qwen_phrase_max_internal_gap),
             "--phrase-max-char-seconds",
             str(args.qwen_phrase_max_char_seconds),
+            "--min-duration",
+            str(args.qwen_min_duration),
             "--min-cue-seconds",
             str(args.min_cue_seconds),
             "--isolated-interjection-silence",
             str(args.qwen_isolated_interjection_silence),
+            "--isolated-interjection-run",
+            str(args.qwen_isolated_interjection_run),
+            "--isolated-interjection-run-gap",
+            str(args.qwen_isolated_interjection_run_gap),
+            "--interjection-reply-anchor-lag",
+            str(args.qwen_interjection_reply_anchor_lag),
             "--recapture-min-gap",
             str(args.qwen_recapture_min_gap),
             "--recapture-min-speech",
             str(args.qwen_recapture_min_speech),
             "--recapture-vad-threshold",
             str(args.qwen_recapture_vad_threshold),
+            "--near-dup-max-gap",
+            str(args.qwen_near_dup_max_gap),
+            "--near-dup-similarity",
+            str(args.qwen_near_dup_similarity),
+            "--near-dup-squeeze-seconds",
+            str(args.qwen_near_dup_squeeze_seconds),
+            "--main-min-chars",
+            str(args.qwen_main_min_chars),
+            "--main-max-compression-ratio",
+            str(args.qwen_main_max_compression_ratio),
+            "--main-duplicate-window-seconds",
+            str(args.qwen_main_duplicate_window_seconds),
+            "--hallucination-min-repeats",
+            str(args.qwen_hallucination_min_repeats),
+            "--hallucination-repeat-no-speech-prob",
+            str(args.qwen_hallucination_repeat_no_speech_prob),
+            "--hallucination-repeat-avg-logprob",
+            str(args.qwen_hallucination_repeat_avg_logprob),
+            "--hallucination-high-risk-max-repeats",
+            str(args.qwen_hallucination_high_risk_max_repeats),
         ]
+        if args.qwen_device:
+            transcribe_command += ["--device", args.qwen_device]
+        if args.qwen_dtype:
+            transcribe_command += ["--dtype", args.qwen_dtype]
+        if args.qwen_no_default_context:
+            transcribe_command.append("--no-default-context")
+        transcribe_command.append(
+            "--collapse-filler-repetition"
+            if args.qwen_collapse_filler_repetition
+            else "--no-collapse-filler-repetition"
+        )
         if args.qwen_filter_hallucinations:
             transcribe_command.append("--filter-hallucinations")
         if args.qwen_vad_chunks:
@@ -285,8 +339,30 @@ def process_video_stages(
                 "--vad-chunks",
                 "--vad-threshold",
                 str(args.qwen_vad_threshold),
+                "--vad-window-seconds",
+                str(args.qwen_vad_window_seconds),
+                "--vad-window-overlap-seconds",
+                str(args.qwen_vad_window_overlap_seconds),
+                "--vad-min-silence-ms",
+                str(args.qwen_vad_min_silence_ms),
+                "--vad-speech-pad-ms",
+                str(args.qwen_vad_speech_pad_ms),
                 "--vad-max-cluster-gap",
                 str(args.qwen_vad_max_cluster_gap),
+                "--vad-pad-seconds",
+                str(args.qwen_vad_pad_seconds),
+                "--vad-min-clip-seconds",
+                str(args.qwen_vad_min_clip_seconds),
+                "--vad-pre-context-seconds",
+                str(args.qwen_vad_pre_context_seconds),
+                "--vad-post-context-seconds",
+                str(args.qwen_vad_post_context_seconds),
+                "--vad-max-leading-silence",
+                str(args.qwen_vad_max_leading_silence),
+                "--vad-context-merge-gap",
+                str(args.qwen_vad_context_merge_gap),
+                "--vad-target-context-seconds",
+                str(args.qwen_vad_target_context_seconds),
             ]
         if args.qwen_context:
             transcribe_command += ["--context", args.qwen_context]
@@ -691,28 +767,61 @@ def main() -> None:
         "Downstream translate/bilingual/quality are shared.",
     )
     parser.add_argument("--qwen-batch-size", type=int, default=24)
+    parser.add_argument("--qwen-device", default="cuda:0")
+    parser.add_argument("--qwen-dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16")
+    parser.add_argument("--qwen-max-new-tokens", type=int, default=256)
     parser.add_argument("--qwen-chunk-seconds", type=float, default=30.0)
     parser.add_argument("--qwen-chunk-overlap-seconds", type=float, default=3.0)
     parser.add_argument("--qwen-phrase-max-chars", type=int, default=26)
     parser.add_argument("--qwen-phrase-max-duration", type=float, default=8.0)
     parser.add_argument("--qwen-phrase-max-internal-gap", type=float, default=2.0)
     parser.add_argument("--qwen-phrase-max-char-seconds", type=float, default=0.5)
+    parser.add_argument("--qwen-min-duration", type=float, default=0.8)
     parser.add_argument("--qwen-context", default="",
                         help="Extra Qwen ASR hotwords/context appended to the built-in list "
                              "(e.g. per-title character names) to fix homophone/name errors.")
+    parser.add_argument("--qwen-no-default-context", action="store_true",
+                        help="Disable Qwen's built-in ASR hotword/context prompt.")
     parser.add_argument("--qwen-vad-chunks", dest="qwen_vad_chunks",
                         action=argparse.BooleanOptionalAction, default=True,
                         help="Cut Qwen clips on silence (VAD) so each clip's first token "
                              "sits where speech starts, reducing leading-anchor drift "
                              "(default on; use --no-qwen-vad-chunks for fixed tiling).")
     parser.add_argument("--qwen-vad-threshold", type=float, default=0.1)
+    parser.add_argument("--qwen-vad-window-seconds", type=float, default=8.0)
+    parser.add_argument("--qwen-vad-window-overlap-seconds", type=float, default=4.0)
+    parser.add_argument("--qwen-vad-min-silence-ms", type=int, default=500)
+    parser.add_argument("--qwen-vad-speech-pad-ms", type=int, default=200)
     parser.add_argument("--qwen-vad-max-cluster-gap", type=float, default=2.0)
+    parser.add_argument("--qwen-vad-pad-seconds", type=float, default=0.2)
+    parser.add_argument("--qwen-vad-min-clip-seconds", type=float, default=0.3)
+    parser.add_argument("--qwen-vad-pre-context-seconds", type=float, default=0.0)
+    parser.add_argument("--qwen-vad-post-context-seconds", type=float, default=0.5)
+    parser.add_argument("--qwen-vad-max-leading-silence", type=float, default=0.5)
+    parser.add_argument("--qwen-vad-context-merge-gap", type=float, default=0.0)
+    parser.add_argument("--qwen-vad-target-context-seconds", type=float, default=24.0)
     parser.add_argument("--qwen-isolated-interjection-silence", type=float, default=3.0)
+    parser.add_argument("--qwen-isolated-interjection-run", type=int, default=3)
+    parser.add_argument("--qwen-isolated-interjection-run-gap", type=float, default=5.0)
+    parser.add_argument("--qwen-interjection-reply-anchor-lag", type=float, default=3.0)
     # Recapture: a second, more sensitive VAD+ASR look inside subtitle gaps at least
     # this long, run while the ASR model is still loaded (0 disables).
     parser.add_argument("--qwen-recapture-min-gap", type=float, default=0.0)
     parser.add_argument("--qwen-recapture-min-speech", type=float, default=2.0)
     parser.add_argument("--qwen-recapture-vad-threshold", type=float, default=0.05)
+    parser.add_argument("--qwen-collapse-filler-repetition", dest="qwen_collapse_filler_repetition",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="Collapse repeated filler runs inside one Qwen cue (default on).")
+    parser.add_argument("--qwen-near-dup-max-gap", type=float, default=0.25)
+    parser.add_argument("--qwen-near-dup-similarity", type=float, default=0.90)
+    parser.add_argument("--qwen-near-dup-squeeze-seconds", type=float, default=0.5)
+    parser.add_argument("--qwen-main-min-chars", type=int, default=1)
+    parser.add_argument("--qwen-main-max-compression-ratio", type=float, default=25.0)
+    parser.add_argument("--qwen-main-duplicate-window-seconds", type=float, default=8.0)
+    parser.add_argument("--qwen-hallucination-min-repeats", type=int, default=3)
+    parser.add_argument("--qwen-hallucination-repeat-no-speech-prob", type=float, default=0.75)
+    parser.add_argument("--qwen-hallucination-repeat-avg-logprob", type=float, default=-1.0)
+    parser.add_argument("--qwen-hallucination-high-risk-max-repeats", type=int, default=2)
     parser.add_argument(
         "--qwen-filter-hallucinations",
         action="store_true",
