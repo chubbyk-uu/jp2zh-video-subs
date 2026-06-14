@@ -8,6 +8,8 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from cli_config import add_dataclass_arguments
+from pipeline_configs import QwenAsrConfig
 from srt_utils import Interval
 from transcribe_ja_srt import (
     SubtitleEntry,
@@ -1030,87 +1032,14 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
     return entries, chunk_results, raw
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Tuning knobs come from QwenAsrConfig (single source of truth, shared with the
+    orchestrator); only IO/positional args are declared here."""
     parser = argparse.ArgumentParser(description="Experimental Qwen3-ASR Japanese SRT transcription.")
     parser.add_argument("audio", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--forced-aligner", type=Path, default=DEFAULT_ALIGNER)
-    parser.add_argument("--language", default="Japanese")
-    parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16")
-    parser.add_argument("--batch-size", type=int, default=24)
-    parser.add_argument("--max-new-tokens", type=int, default=256)
-    parser.add_argument("--chunk-seconds", type=float, default=30.0)
-    parser.add_argument("--chunk-overlap-seconds", type=float, default=3.0)
-    # Qwen3-ASR biasing context (system prompt). --context appends to the built-in
-    # hotword list; --no-default-context drops the built-in list entirely.
-    parser.add_argument("--context", default="", help="Extra ASR context/hotwords appended to the built-in list (e.g. character names).")
-    parser.add_argument("--no-default-context", dest="no_default_context", action="store_true")
-    parser.set_defaults(no_default_context=False)
-    # VAD chunking: cut clips on silence so each clip's first token sits where
-    # speech starts (removes leading-anchor drift). Opt-in; default is fixed tiling.
-    parser.add_argument("--vad-chunks", dest="vad_chunks", action="store_true")
-    parser.set_defaults(vad_chunks=False)
-    parser.add_argument("--vad-threshold", type=float, default=0.1)
-    parser.add_argument("--vad-window-seconds", type=float, default=8.0)
-    parser.add_argument("--vad-window-overlap-seconds", type=float, default=4.0)
-    parser.add_argument("--vad-min-silence-ms", type=int, default=500)
-    parser.add_argument("--vad-speech-pad-ms", type=int, default=200)
-    parser.add_argument("--vad-max-cluster-gap", type=float, default=2.0)
-    parser.add_argument("--vad-pad-seconds", type=float, default=0.2)
-    parser.add_argument("--vad-min-clip-seconds", type=float, default=0.3)
-    # Small audio context fed to Qwen (does not change cue ownership). Total leading
-    # expansion incl. vad_pad_seconds is capped at --vad-max-leading-silence.
-    parser.add_argument("--vad-pre-context-seconds", type=float, default=0.0)
-    parser.add_argument("--vad-post-context-seconds", type=float, default=0.5)
-    parser.add_argument("--vad-max-leading-silence", type=float, default=0.5)
-    # Optional second-level merge of speech clusters into context groups. Off by
-    # default (0.0): the first-level speech_clusters(vad_max_cluster_gap) merge stands.
-    parser.add_argument("--vad-context-merge-gap", type=float, default=0.0)
-    parser.add_argument("--vad-target-context-seconds", type=float, default=24.0)
-    parser.add_argument("--phrase-max-chars", type=int, default=26)
-    parser.add_argument("--phrase-max-duration", type=float, default=8.0)
-    parser.add_argument("--phrase-max-internal-gap", type=float, default=2.0)
-    parser.add_argument("--phrase-max-char-seconds", type=float, default=0.5)
-    parser.add_argument("--min-duration", type=float, default=0.8)
-    parser.add_argument("--min-cue-seconds", type=float, default=0.2)
-    # Drop bare filler morae (うん/ん/ねえ/あ …) that carry no dialogue. Two rules
-    # (drop_isolated_interjections): an isolated blip needs this much silence on both
-    # sides (0 disables); a chain of --isolated-interjection-run+ consecutive fillers
-    # within --isolated-interjection-run-gap is dropped outright (run<=0 disables).
-    parser.add_argument("--isolated-interjection-silence", type=float, default=3.0)
-    parser.add_argument("--isolated-interjection-run", type=int, default=3)
-    parser.add_argument("--isolated-interjection-run-gap", type=float, default=5.0)
-    # A reply word (はい) is kept only when a real-word cue ended within this many
-    # seconds before it (a genuine answer); otherwise it is an ordinary filler.
-    parser.add_argument("--interjection-reply-anchor-lag", type=float, default=3.0)
-    # Recapture pass: after the main pass, gaps >= --recapture-min-gap with no cues
-    # get a second VAD look at --recapture-vad-threshold (more sensitive than the
-    # main --vad-threshold); spans whose detected speech totals at least
-    # --recapture-min-speech are re-transcribed. 0 disables.
-    parser.add_argument("--recapture-min-gap", type=float, default=0.0)
-    parser.add_argument("--recapture-min-speech", type=float, default=2.0)
-    parser.add_argument("--recapture-vad-threshold", type=float, default=0.05)
-    # Collapse a same-core filler repetition run inside one cue (うんうんうん。 or
-    # うん、うん、うん、一人。) to a single instance, keeping aligner-exact timing.
-    # The --no form is for A/B comparison via --from-raw replay.
-    parser.add_argument("--collapse-filler-repetition", dest="collapse_filler_repetition",
-                        action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--near-dup-max-gap", type=float, default=0.25)
-    parser.add_argument("--near-dup-similarity", type=float, default=0.90)
-    parser.add_argument("--near-dup-squeeze-seconds", type=float, default=0.5)
-    parser.add_argument("--main-min-chars", type=int, default=1)
-    parser.add_argument("--main-max-compression-ratio", type=float, default=25.0)
-    parser.add_argument("--main-duplicate-window-seconds", type=float, default=8.0)
-    parser.add_argument("--hallucination-min-repeats", type=int, default=3)
-    parser.add_argument("--hallucination-repeat-no-speech-prob", type=float, default=0.75)
-    parser.add_argument("--hallucination-repeat-avg-logprob", type=float, default=-1.0)
-    parser.add_argument("--hallucination-high-risk-max-repeats", type=int, default=2)
-    # Whisper-style hallucination/near-duplicate filtering is opt-in: Qwen rarely
-    # fabricates content, so the default keeps the transcript faithful.
-    parser.add_argument("--filter-hallucinations", dest="filter_hallucinations", action="store_true")
-    parser.set_defaults(filter_hallucinations=False)
     parser.add_argument("--meta-output", type=Path)
     parser.add_argument(
         "--raw-output",
@@ -1122,7 +1051,12 @@ def main() -> None:
         type=Path,
         help="Rebuild the SRT from a --raw-output dump, skipping the model (fast post-processing tuning).",
     )
-    args = parser.parse_args()
+    add_dataclass_arguments(parser, QwenAsrConfig)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     if args.from_raw is None:
         if not args.model.exists():

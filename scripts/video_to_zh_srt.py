@@ -12,6 +12,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
+from cli_config import config_from_prefixed, config_to_cli_args
+from pipeline_configs import QwenAsrConfig
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
@@ -230,6 +233,36 @@ def work_dir_for(video: Path, input_path: Path, work_dir: Path, recursive: bool)
     return (work_dir / video.stem).resolve()
 
 
+def build_qwen_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> list[str]:
+    """Assemble the Qwen transcription sub-command.
+
+    Every tuning knob is forwarded generically from a QwenAsrConfig, so a new sub-script
+    knob (a new QwenAsrConfig field + a matching --qwen-<field> arg) reaches the sub-script
+    without editing this function. The orchestrator's --qwen-* args map onto config fields
+    by name; the two unprefixed exceptions are supplied as overrides.
+    """
+    cfg = config_from_prefixed(
+        args,
+        QwenAsrConfig,
+        prefix="qwen_",
+        overrides={
+            "language": "Japanese" if args.language == "ja" else args.language,
+            "min_cue_seconds": args.min_cue_seconds,
+        },
+    )
+    return [
+        sys.executable,
+        str(QWEN_TRANSCRIBE_SCRIPT),
+        str(audio),
+        str(ja_srt),
+        "--model",
+        str(QWEN_ASR_MODEL),
+        "--forced-aligner",
+        str(QWEN_ALIGNER_MODEL),
+        *config_to_cli_args(cfg),
+    ]
+
+
 def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: Path, audio: Path) -> None:
     job_dir.mkdir(parents=True, exist_ok=True)
     log = JobLog(job_dir / "pipeline.log")
@@ -253,119 +286,7 @@ def process_video_stages(
     translate_input_srt = ja_srt
 
     if args.asr == "qwen":
-        # Qwen3-ASR uses VAD-cut clips by default to reduce leading-anchor drift.
-        # Use --no-qwen-vad-chunks for fixed uniform tiling when VAD boundaries are suspect.
-        transcribe_command = [
-            sys.executable,
-            str(QWEN_TRANSCRIBE_SCRIPT),
-            str(audio),
-            str(ja_srt),
-            "--model",
-            str(QWEN_ASR_MODEL),
-            "--forced-aligner",
-            str(QWEN_ALIGNER_MODEL),
-            "--language",
-            "Japanese" if args.language == "ja" else args.language,
-            "--batch-size",
-            str(args.qwen_batch_size),
-            "--max-new-tokens",
-            str(args.qwen_max_new_tokens),
-            "--chunk-seconds",
-            str(args.qwen_chunk_seconds),
-            "--chunk-overlap-seconds",
-            str(args.qwen_chunk_overlap_seconds),
-            "--phrase-max-chars",
-            str(args.qwen_phrase_max_chars),
-            "--phrase-max-duration",
-            str(args.qwen_phrase_max_duration),
-            "--phrase-max-internal-gap",
-            str(args.qwen_phrase_max_internal_gap),
-            "--phrase-max-char-seconds",
-            str(args.qwen_phrase_max_char_seconds),
-            "--min-duration",
-            str(args.qwen_min_duration),
-            "--min-cue-seconds",
-            str(args.min_cue_seconds),
-            "--isolated-interjection-silence",
-            str(args.qwen_isolated_interjection_silence),
-            "--isolated-interjection-run",
-            str(args.qwen_isolated_interjection_run),
-            "--isolated-interjection-run-gap",
-            str(args.qwen_isolated_interjection_run_gap),
-            "--interjection-reply-anchor-lag",
-            str(args.qwen_interjection_reply_anchor_lag),
-            "--recapture-min-gap",
-            str(args.qwen_recapture_min_gap),
-            "--recapture-min-speech",
-            str(args.qwen_recapture_min_speech),
-            "--recapture-vad-threshold",
-            str(args.qwen_recapture_vad_threshold),
-            "--near-dup-max-gap",
-            str(args.qwen_near_dup_max_gap),
-            "--near-dup-similarity",
-            str(args.qwen_near_dup_similarity),
-            "--near-dup-squeeze-seconds",
-            str(args.qwen_near_dup_squeeze_seconds),
-            "--main-min-chars",
-            str(args.qwen_main_min_chars),
-            "--main-max-compression-ratio",
-            str(args.qwen_main_max_compression_ratio),
-            "--main-duplicate-window-seconds",
-            str(args.qwen_main_duplicate_window_seconds),
-            "--hallucination-min-repeats",
-            str(args.qwen_hallucination_min_repeats),
-            "--hallucination-repeat-no-speech-prob",
-            str(args.qwen_hallucination_repeat_no_speech_prob),
-            "--hallucination-repeat-avg-logprob",
-            str(args.qwen_hallucination_repeat_avg_logprob),
-            "--hallucination-high-risk-max-repeats",
-            str(args.qwen_hallucination_high_risk_max_repeats),
-        ]
-        if args.qwen_device:
-            transcribe_command += ["--device", args.qwen_device]
-        if args.qwen_dtype:
-            transcribe_command += ["--dtype", args.qwen_dtype]
-        if args.qwen_no_default_context:
-            transcribe_command.append("--no-default-context")
-        transcribe_command.append(
-            "--collapse-filler-repetition"
-            if args.qwen_collapse_filler_repetition
-            else "--no-collapse-filler-repetition"
-        )
-        if args.qwen_filter_hallucinations:
-            transcribe_command.append("--filter-hallucinations")
-        if args.qwen_vad_chunks:
-            transcribe_command += [
-                "--vad-chunks",
-                "--vad-threshold",
-                str(args.qwen_vad_threshold),
-                "--vad-window-seconds",
-                str(args.qwen_vad_window_seconds),
-                "--vad-window-overlap-seconds",
-                str(args.qwen_vad_window_overlap_seconds),
-                "--vad-min-silence-ms",
-                str(args.qwen_vad_min_silence_ms),
-                "--vad-speech-pad-ms",
-                str(args.qwen_vad_speech_pad_ms),
-                "--vad-max-cluster-gap",
-                str(args.qwen_vad_max_cluster_gap),
-                "--vad-pad-seconds",
-                str(args.qwen_vad_pad_seconds),
-                "--vad-min-clip-seconds",
-                str(args.qwen_vad_min_clip_seconds),
-                "--vad-pre-context-seconds",
-                str(args.qwen_vad_pre_context_seconds),
-                "--vad-post-context-seconds",
-                str(args.qwen_vad_post_context_seconds),
-                "--vad-max-leading-silence",
-                str(args.qwen_vad_max_leading_silence),
-                "--vad-context-merge-gap",
-                str(args.qwen_vad_context_merge_gap),
-                "--vad-target-context-seconds",
-                str(args.qwen_vad_target_context_seconds),
-            ]
-        if args.qwen_context:
-            transcribe_command += ["--context", args.qwen_context]
+        transcribe_command = build_qwen_command(args, audio, ja_srt)
         if not resume_skip(args, ja_srt, log, "transcription"):
             run(transcribe_command, log)
     elif not args.gap_fill:
