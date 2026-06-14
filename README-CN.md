@@ -228,6 +228,34 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 
 公开文档、Issue 或日志里不要写入真实本机路径。
 
+## 配置文件
+
+一键命令的用法不变：输入视频或目录仍然写在命令行里。TOML 配置文件是可选功能，主要用来保存一套可复用的调参组合，避免每次输入很长的命令。
+
+打印当前完整生效配置，作为可复用的扁平 TOML 模板：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --print-config > pipeline.toml
+```
+
+修改需要固定的值后，用配置文件运行：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --config pipeline.toml
+```
+
+配置 key 使用 argparse 的目标名，也就是下划线形式。例如：
+
+```toml
+asr = "qwen"
+translator = "galtransl"
+qwen_batch_size = 16
+lead_out_seconds = 0.8
+min_display_seconds = 1.5
+```
+
+TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒绝。输入路径仍然必须在命令行传入，即使 `--print-config` 会显示 `input` key。命令行传入的普通取值参数会覆盖 TOML。`gap_fill = true`、`resume = true` 这类单向开关一旦在 TOML 里设为 `true`，同一条命令无法用 `--no-*` 关掉；需要修改 TOML，或为不同模式准备不同配置文件。
+
 ## 识别后端：Qwen vs Whisper
 
 用 `--asr` 选择后端（默认 `qwen`）：

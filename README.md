@@ -253,6 +253,41 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 
 Do not put private local paths in public documentation or issue reports.
 
+## Configuration Files
+
+The one-command interface is unchanged: pass the input video or directory on the
+command line as usual. TOML config files are optional and are meant for saving a
+repeatable set of tuning flags, so long commands do not need to be typed every run.
+
+Print the effective defaults as a reusable flat TOML template:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --print-config > pipeline.toml
+```
+
+Edit the values you want to keep, then run with:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --config pipeline.toml
+```
+
+Config keys are the argparse destination names, using underscores. For example:
+
+```toml
+asr = "qwen"
+translator = "galtransl"
+qwen_batch_size = 16
+lead_out_seconds = 0.8
+min_display_seconds = 1.5
+```
+
+The TOML file is flat; sections such as `[asr]` or `[translation]` are rejected.
+The input path is still required on the command line, even if `--print-config`
+shows an `input` key. Value flags given on the command line override the TOML
+file. Plain one-way switches such as `gap_fill = true` or `resume = true` cannot
+be turned back off from the same command line; edit the TOML file or use a
+separate config for those modes.
+
 ## ASR Backends: Qwen vs Whisper
 
 The backend is chosen with `--asr` (default `qwen`):

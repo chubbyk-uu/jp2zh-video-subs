@@ -4,6 +4,8 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from cli_config import (
     add_dataclass_arguments,
     arg_field,
@@ -275,3 +277,116 @@ def test_pipeline_fill_command_maps_renamed_gate_knobs():
     # one value feeds both compression flags
     assert ns.main_max_compression_ratio == 18.0
     assert ns.max_fill_compression_ratio == 18.0
+
+
+# --- TOML config file (apply_config_file / format_config_toml) ---
+import subprocess  # noqa: E402
+
+from cli_config import apply_config_file, format_config_toml  # noqa: E402
+
+
+def _config_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser()
+    p.add_argument("input")
+    p.add_argument("--count", type=int, default=3)
+    p.add_argument("--ratio", type=float, default=0.5)
+    p.add_argument("--name", default="x")
+    p.add_argument("--flag", action="store_true")
+    p.add_argument("--toggle", action=argparse.BooleanOptionalAction, default=True)
+    return p
+
+
+def test_apply_config_file_sets_defaults(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('count = 9\nratio = 1.5\nname = "hi"\nflag = true\ntoggle = false\n')
+    parser = _config_parser()
+    apply_config_file(parser, cfg)
+    args = parser.parse_args(["vid"])
+    assert (args.count, args.ratio, args.name, args.flag, args.toggle) == (9, 1.5, "hi", True, False)
+
+
+def test_apply_config_file_cli_overrides_file(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("count = 9\n")
+    parser = _config_parser()
+    apply_config_file(parser, cfg)
+    assert parser.parse_args(["vid", "--count", "1"]).count == 1  # CLI wins
+
+
+def test_apply_config_file_accepts_hyphen_keys_and_coerces(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('ratio = 2\n')  # int in TOML for a float option
+    parser = _config_parser()
+    apply_config_file(parser, cfg)
+    assert parser.parse_args(["vid"]).ratio == 2.0
+
+
+def test_apply_config_file_rejects_unknown_key(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("nope = 1\n")
+    with pytest.raises(SystemExit):
+        apply_config_file(_config_parser(), cfg)
+
+
+def test_apply_config_file_rejects_nested_table(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("[section]\ncount = 1\n")
+    with pytest.raises(SystemExit):
+        apply_config_file(_config_parser(), cfg)
+
+
+def test_format_config_toml_renders_types():
+    out = format_config_toml({"a": 1, "b": 2.5, "c": "x", "d": True, "e": None, "f": Path("/tmp/y")})
+    assert "a = 1" in out and "b = 2.5" in out and 'c = "x"' in out
+    assert "d = true" in out and "e =" not in out and 'f = "/tmp/y"' in out
+
+
+def test_pipeline_print_config_applies_file_and_cli(tmp_path):
+    cfg = tmp_path / "pipe.toml"
+    cfg.write_text('translator = "sakura"\nqwen_batch_size = 12\n')
+    script = Path(__file__).resolve().parents[1] / "scripts" / "video_to_zh_srt.py"
+    out = subprocess.run(
+        ["python", str(script), "dummy.mp4", "--config", str(cfg),
+         "--translator", "galtransl", "--print-config"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert 'translator = "galtransl"' in out   # CLI overrides file
+    assert "qwen_batch_size = 12" in out        # file overrides code default
+
+
+def _choices_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser()
+    p.add_argument("--mode", choices=("a", "b"), default="a")
+    p.add_argument("--count", type=int, default=1)
+    p.add_argument("--flag", action="store_true")
+    return p
+
+
+def test_apply_config_file_rejects_invalid_choice(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('mode = "bad"\n')
+    with pytest.raises(SystemExit):
+        apply_config_file(_choices_parser(), cfg)
+
+
+def test_apply_config_file_rejects_bool_for_value_option(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("count = true\n")
+    with pytest.raises(SystemExit):
+        apply_config_file(_choices_parser(), cfg)
+
+
+def test_apply_config_file_rejects_non_bool_for_switch(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('flag = "yes"\n')
+    with pytest.raises(SystemExit):
+        apply_config_file(_choices_parser(), cfg)
+
+
+def test_apply_config_file_accepts_valid_choice_and_switch(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('mode = "b"\nflag = true\n')
+    parser = _choices_parser()
+    apply_config_file(parser, cfg)
+    args = parser.parse_args([])
+    assert args.mode == "b" and args.flag is True

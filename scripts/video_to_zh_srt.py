@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from cli_config import config_from_prefixed, config_to_cli_args
+from cli_config import apply_config_file, config_from_prefixed, config_to_cli_args, format_config_toml
 from pipeline_configs import (
     BilingualAssConfig,
     FillConfig,
@@ -580,8 +580,36 @@ def process_video_stages(
         log.print(f"Gap-filled Japanese SRT: {translate_input_srt}")
 
 
+def _early_config_path(argv: list[str]) -> Path | None:
+    """Find --config PATH / --config=PATH before argparse runs.
+
+    Scanning argv directly (rather than a parse_known_args pre-pass) lets the file's
+    defaults be applied before the single real parse, without tripping over the required
+    `input` positional — which argparse still demands on the command line regardless of
+    any default a config file might set."""
+    for index, token in enumerate(argv):
+        if token == "--config" and index + 1 < len(argv):
+            return Path(argv[index + 1])
+        if token.startswith("--config="):
+            return Path(token.split("=", 1)[1])
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate Chinese SRT subtitles from Japanese videos.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="Flat TOML file of defaults for any option below (keys are flag names). A "
+        "value flag given on the command line overrides the file; plain on/off switches "
+        "(e.g. --gap-fill, --resume) can only be turned on, so once set true in the file "
+        "the command line cannot turn them back off. See --print-config.",
+    )
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help="Print the effective configuration as TOML (after applying --config and CLI flags) and exit.",
+    )
     parser.add_argument("input", type=Path, help="Input video path or directory")
     parser.add_argument("--output", type=Path, help="Output Chinese SRT path for a single input video")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "outputs", help="Output directory")
@@ -779,7 +807,19 @@ def main() -> None:
         action="store_true",
         help="Do not copy the final subtitle file (SRT, or ASS with --bilingual) next to the input video",
     )
+    # Apply --config before parse_args so the file sets defaults for every option while
+    # explicit command-line flags still win (precedence: code default < file < CLI).
+    config_path = _early_config_path(sys.argv[1:])
+    if config_path is not None:
+        if not config_path.exists():
+            raise SystemExit(f"Missing --config file: {config_path}")
+        apply_config_file(parser, config_path)
     args = parser.parse_args()
+
+    if args.print_config:
+        values = {k: v for k, v in vars(args).items() if k not in ("config", "print_config")}
+        sys.stdout.write(format_config_toml(values))
+        return
 
     if args.resume:
         args.reuse_existing_audio = True

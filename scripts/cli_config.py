@@ -89,6 +89,75 @@ def config_from_prefixed(args: argparse.Namespace, cls, prefix: str, overrides: 
     return cls(**values)
 
 
+def apply_config_file(parser: argparse.ArgumentParser, path: Path) -> dict:
+    """Overlay a flat TOML file onto a parser's defaults (code default < file < CLI).
+
+    Keys are flag/dest names (hyphens or underscores), values their TOML-typed values;
+    they are validated against the parser's options and coerced with each option's own
+    type before becoming the new defaults, so an explicit CLI flag still wins. Nested
+    tables are rejected — the orchestrator's flag namespace is flat and irregular, so a
+    section convention would mislead. Returns the applied {dest: value} mapping.
+    """
+    import tomllib
+
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+
+    actions_by_dest = {a.dest: a for a in parser._actions if a.dest != "help"}
+    overrides: dict = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            raise SystemExit(
+                f"Config {path}: nested tables/sections are not supported; use flat keys "
+                f"like 'qwen_batch_size = 24' (offending section: [{key}])"
+            )
+        dest = key.replace("-", "_")
+        action = actions_by_dest.get(dest)
+        if action is None:
+            raise SystemExit(f"Config {path}: unknown key '{key}' (no matching option)")
+        # set_defaults bypasses argparse's own type/choices validation, so re-create it
+        # here: an on/off switch (nargs==0) needs a bool; a value option must not get one,
+        # is coerced with its own type, then checked against any choices.
+        if action.nargs == 0:
+            if not isinstance(value, bool):
+                raise SystemExit(f"Config {path}: '{key}' is an on/off switch; use true or false, got {value!r}")
+        else:
+            if isinstance(value, bool):
+                raise SystemExit(f"Config {path}: '{key}' expects a value, not a boolean")
+            if action.type is not None:
+                try:
+                    value = action.type(value)
+                except (ValueError, TypeError) as exc:
+                    raise SystemExit(f"Config {path}: '{key}' = {value!r} is not valid: {exc}")
+            if action.choices is not None and value not in action.choices:
+                raise SystemExit(f"Config {path}: '{key}' must be one of {tuple(action.choices)}, got {value!r}")
+        overrides[dest] = value
+
+    parser.set_defaults(**overrides)
+    return overrides
+
+
+def format_config_toml(values: dict) -> str:
+    """Serialize a {dest: value} mapping to flat TOML (the inverse of apply_config_file).
+
+    Used by --print-config to emit the effective configuration as a reusable template.
+    None-valued and skipped keys are omitted; Paths render as quoted strings.
+    """
+    lines: list[str] = []
+    for key, value in values.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, (int, float)):
+            rendered = repr(value)
+        else:
+            text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+            rendered = f'"{text}"'
+        lines.append(f"{key} = {rendered}")
+    return "\n".join(lines) + "\n"
+
+
 def config_to_cli_args(cfg) -> list[str]:
     """Serialize a populated config dataclass back into sub-script CLI flags.
 
