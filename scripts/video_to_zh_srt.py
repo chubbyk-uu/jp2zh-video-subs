@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from cli_config import config_from_prefixed, config_to_cli_args
-from pipeline_configs import QwenAsrConfig
+from pipeline_configs import (
+    BilingualAssConfig,
+    GalTranslTranslateConfig,
+    HymtTranslateConfig,
+    QwenAsrConfig,
+    SakuraTranslateConfig,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
@@ -263,6 +269,70 @@ def build_qwen_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> l
     ]
 
 
+def translate_backend(args: argparse.Namespace) -> tuple[Path, Path]:
+    if args.translator == "sakura":
+        return SAKURA_TRANSLATE_SCRIPT, SAKURA_MODEL
+    if args.translator == "galtransl":
+        return GALTRANSL_TRANSLATE_SCRIPT, GALTRANSL_MODEL
+    return TRANSLATE_SCRIPT, TRANSLATE_MODEL
+
+
+def build_translate_command(args: argparse.Namespace, input_srt: Path, output_srt: Path) -> list[str]:
+    translate_script, translate_model = translate_backend(args)
+    context_size = args.context_size
+    if context_size is None:
+        context_size = 2 if args.translator == "hymt" else 6
+
+    common = {
+        "context_size": context_size,
+        "lead_out_seconds": args.lead_out_seconds,
+        "min_display_seconds": args.min_display_seconds,
+    }
+    if args.translator == "galtransl":
+        cfg = GalTranslTranslateConfig(batch_size=args.translate_batch_size, **common)
+    elif args.translator == "sakura":
+        cfg = SakuraTranslateConfig(**common)
+    else:
+        cfg = HymtTranslateConfig(**common)
+
+    return [
+        sys.executable,
+        str(translate_script),
+        str(input_srt),
+        "--output",
+        str(output_srt),
+        "--model-path",
+        str(translate_model),
+        *config_to_cli_args(cfg),
+    ]
+
+
+def build_bilingual_command(args: argparse.Namespace, zh_srt: Path, ja_srt: Path, output_ass: Path, audio: Path) -> list[str]:
+    cfg = config_from_prefixed(
+        args,
+        BilingualAssConfig,
+        prefix="bilingual_",
+        overrides={
+            "colour_by_speaker": args.colour_by_speaker,
+            "gender_confidence": args.gender_confidence,
+        },
+    )
+    command = [
+        sys.executable,
+        str(BILINGUAL_SCRIPT),
+        "--zh-srt",
+        str(zh_srt),
+        "--ja-srt",
+        str(ja_srt),
+        "--output",
+        str(output_ass),
+        *config_to_cli_args(cfg),
+    ]
+    if args.colour_by_speaker:
+        command.extend(["--audio", str(audio)])
+    return command
+
+
 def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: Path, audio: Path) -> None:
     job_dir.mkdir(parents=True, exist_ok=True)
     log = JobLog(job_dir / "pipeline.log")
@@ -484,37 +554,7 @@ def process_video_stages(
             run(fill_command, log)
         translate_input_srt = filled_ja_srt
 
-    # Sakura, GalTransl, and HY-MT share the same core CLI (input, --output,
-    # --model-path, --context-size, --lead-out/--min-display), so only the script and
-    # model differ. Each translator decides how to render context in its own prompt.
-    if args.translator == "sakura":
-        translate_script, translate_model = SAKURA_TRANSLATE_SCRIPT, SAKURA_MODEL
-    elif args.translator == "galtransl":
-        translate_script, translate_model = GALTRANSL_TRANSLATE_SCRIPT, GALTRANSL_MODEL
-    else:
-        translate_script, translate_model = TRANSLATE_SCRIPT, TRANSLATE_MODEL
-    translate_context_size = args.context_size
-    if translate_context_size is None:
-        translate_context_size = 2 if args.translator == "hymt" else 6
-    translate_command = [
-        sys.executable,
-        str(translate_script),
-        str(translate_input_srt),
-        "--output",
-        str(output),
-        "--model-path",
-        str(translate_model),
-        "--context-size",
-        str(translate_context_size),
-        "--lead-out-seconds",
-        str(args.lead_out_seconds),
-        "--min-display-seconds",
-        str(args.min_display_seconds),
-    ]
-    # Batch translation is GalTransl-only (relies on its line-break-preservation
-    # contract); Sakura/HY-MT do not take --batch-size.
-    if args.translator == "galtransl":
-        translate_command.extend(["--batch-size", str(args.translate_batch_size)])
+    translate_command = build_translate_command(args, translate_input_srt, output)
     if args.resume and translation_is_complete(output, translate_input_srt):
         log.print(f"Resume: skipping translation, reusing {output}")
     else:
@@ -523,34 +563,7 @@ def process_video_stages(
     bilingual_output: Path | None = None
     if args.bilingual:
         bilingual_output = output.with_suffix(".ass")
-        bilingual_command = [
-            sys.executable,
-            str(BILINGUAL_SCRIPT),
-            "--zh-srt",
-            str(output),
-            "--ja-srt",
-            str(translate_input_srt),
-            "--output",
-            str(bilingual_output),
-            "--zh-font-size",
-            str(args.bilingual_zh_font_size),
-            "--ja-font-size",
-            str(args.bilingual_ja_font_size),
-            "--zh-colour",
-            args.bilingual_zh_colour,
-            "--ja-colour",
-            args.bilingual_ja_colour,
-            "--male-colour",
-            args.bilingual_male_colour,
-            "--female-colour",
-            args.bilingual_female_colour,
-            "--gender-confidence",
-            str(args.gender_confidence),
-        ]
-        if args.colour_by_speaker:
-            bilingual_command.extend(["--audio", str(audio), "--colour-by-speaker"])
-        else:
-            bilingual_command.append("--no-colour-by-speaker")
+        bilingual_command = build_bilingual_command(args, output, translate_input_srt, bilingual_output, audio)
         run(bilingual_command, log)
 
     if not args.skip_quality_report:
@@ -635,19 +648,23 @@ def main() -> None:
         default=True,
         help="Write a bilingual ASS (Chinese on top, Japanese below) next to the Chinese SRT (default on; --no-bilingual writes only the Chinese SRT)",
     )
-    parser.add_argument("--bilingual-zh-font-size", type=int, default=36)
-    parser.add_argument("--bilingual-ja-font-size", type=int, default=24)
-    parser.add_argument("--bilingual-zh-colour", default="&H0000FFFF", help="ASS colour &HAABBGGRR for the Chinese line")
-    parser.add_argument("--bilingual-ja-colour", default="&H00B4B4B4", help="ASS colour &HAABBGGRR for the Japanese line")
+    bilingual_defaults = BilingualAssConfig()
+    parser.add_argument("--bilingual-font", default=bilingual_defaults.font)
+    parser.add_argument("--bilingual-zh-font-size", type=int, default=bilingual_defaults.zh_font_size)
+    parser.add_argument("--bilingual-ja-font-size", type=int, default=bilingual_defaults.ja_font_size)
+    parser.add_argument("--bilingual-zh-colour", default=bilingual_defaults.zh_colour, help="ASS colour &HAABBGGRR for the Chinese line")
+    parser.add_argument("--bilingual-ja-colour", default=bilingual_defaults.ja_colour, help="ASS colour &HAABBGGRR for the Japanese line")
+    parser.add_argument("--bilingual-play-res-x", type=int, default=bilingual_defaults.play_res_x)
+    parser.add_argument("--bilingual-play-res-y", type=int, default=bilingual_defaults.play_res_y)
     parser.add_argument(
         "--colour-by-speaker",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="In bilingual mode, recolour each cue's Chinese line by speaker gender (ECAPA, off by default)",
     )
-    parser.add_argument("--bilingual-male-colour", default="&H00FFBF00", help="ASS colour for male-speaker Chinese line")
-    parser.add_argument("--bilingual-female-colour", default="&H00B478FF", help="ASS colour for female-speaker Chinese line")
-    parser.add_argument("--gender-confidence", type=float, default=0.6, help="Min confidence to colour a cue by gender")
+    parser.add_argument("--bilingual-male-colour", default=bilingual_defaults.male_colour, help="ASS colour for male-speaker Chinese line")
+    parser.add_argument("--bilingual-female-colour", default=bilingual_defaults.female_colour, help="ASS colour for female-speaker Chinese line")
+    parser.add_argument("--gender-confidence", type=float, default=bilingual_defaults.gender_confidence, help="Min confidence to colour a cue by gender")
     parser.add_argument(
         "--context-size",
         type=int,

@@ -323,7 +323,7 @@ def collapse_filler_repetitions(
 ) -> list[tuple[str, float, float, bool]]:
     """Collapse a consecutive same-core filler run (うん、うん、うん…) to one instance.
 
-    Qwen sometimes transcribes a stretch of backchannel/moaning as one cue that
+    Qwen sometimes transcribes a stretch of low-value filler as one cue that
     repeats a filler mora, either alone (うんうんうん。) or padded around real
     speech (うん、うん、うん、一人。). The per-cue interjection filter only matches a
     cue that *is* a single filler, so these slip through. Collapsing at the token
@@ -491,7 +491,7 @@ def sentences_from_alignment(
 def drop_same_start_piles(entries: list[SubtitleEntry], tol: float = 0.05) -> list[SubtitleEntry]:
     """Drop cues piled on a single start time, keeping the first.
 
-    In near-silent/moaning regions the forced aligner collapses many characters
+    In near-silent low-value filler regions the forced aligner collapses many characters
     onto one timestamp, producing several cues with the same start that the shared
     overlap resolver leaves alone (it skips equal starts to avoid zero-duration
     cues). Their timing is meaningless, so rather than fan them into a flashing

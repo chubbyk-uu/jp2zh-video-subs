@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from cli_config import add_dataclass_arguments
+from pipeline_configs import BilingualAssConfig
 from srt_utils import parse_time
 
 
@@ -12,24 +14,24 @@ from srt_utils import parse_time
 # Microsoft YaHei ships with every Windows install and covers both the Chinese line
 # and the Japanese kana/kanji line; Arial has no CJK glyphs, which left the actual
 # typeface to the player's fallback. Non-Windows renderers fall back via fontconfig.
-DEFAULT_FONT = "Microsoft YaHei"
-DEFAULT_ZH_FONT_SIZE = 36
-DEFAULT_JA_FONT_SIZE = 24
-DEFAULT_ZH_COLOUR = "&H0000FFFF"  # yellow, larger top line
-DEFAULT_JA_COLOUR = "&H00B4B4B4"  # light gray, smaller bottom line
+BILINGUAL_DEFAULTS = BilingualAssConfig()
+DEFAULT_FONT = BILINGUAL_DEFAULTS.font
+DEFAULT_ZH_FONT_SIZE = BILINGUAL_DEFAULTS.zh_font_size
+DEFAULT_JA_FONT_SIZE = BILINGUAL_DEFAULTS.ja_font_size
+DEFAULT_ZH_COLOUR = BILINGUAL_DEFAULTS.zh_colour  # yellow, larger top line
+DEFAULT_JA_COLOUR = BILINGUAL_DEFAULTS.ja_colour  # light gray, smaller bottom line
 # Speaker colours recolour only the Chinese (top) line; the JA line stays gray via
 # {\rJA}. ASS is &HAABBGGRR, so these are blue-ish and pink in RGB terms.
-DEFAULT_MALE_COLOUR = "&H00FFBF00"  # deep sky blue, RGB(0,191,255)
-DEFAULT_FEMALE_COLOUR = "&H00B478FF"  # pink, RGB(255,120,180)
-DEFAULT_PLAY_RES_X = 1280
-DEFAULT_PLAY_RES_Y = 720
+DEFAULT_MALE_COLOUR = BILINGUAL_DEFAULTS.male_colour  # deep sky blue, RGB(0,191,255)
+DEFAULT_FEMALE_COLOUR = BILINGUAL_DEFAULTS.female_colour  # pink, RGB(255,120,180)
+DEFAULT_PLAY_RES_X = BILINGUAL_DEFAULTS.play_res_x
+DEFAULT_PLAY_RES_Y = BILINGUAL_DEFAULTS.play_res_y
 
 # Speaker gender per cue comes from an ECAPA-TDNN classifier (VoxCeleb-trained), which
-# is robust to the breathy/music-laden audio that defeats raw pitch (F0 octave errors
-# would flip male<->female). We colour only cues classified confidently; the rest keep
-# the default colour rather than risk a wrong guess.
+# is more stable than raw pitch on noisy or music-laden audio. We colour only cues
+# classified confidently; the rest keep the default colour rather than risk a wrong guess.
 DEFAULT_GENDER_MODEL = Path(__file__).resolve().parent.parent / "models" / "voice-gender-classifier"
-DEFAULT_GENDER_CONFIDENCE = 0.6
+DEFAULT_GENDER_CONFIDENCE = BILINGUAL_DEFAULTS.gender_confidence
 MIN_GENDER_SECONDS = 0.30  # cues shorter than this carry too little signal to trust
 
 
@@ -180,39 +182,27 @@ def detect_genders(
     return {idx: classify_gender(m, f, confidence) for idx, (m, f) in probs.items()}
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build a bilingual ASS subtitle (Chinese on top, Japanese below) from aligned SRTs."
     )
     parser.add_argument("--zh-srt", type=Path, required=True, help="Chinese SRT (top line)")
     parser.add_argument("--ja-srt", type=Path, required=True, help="Japanese SRT aligned by index (bottom line)")
     parser.add_argument("--output", type=Path, required=True, help="Output ASS path")
-    parser.add_argument("--font", default=DEFAULT_FONT)
-    parser.add_argument("--zh-font-size", type=int, default=DEFAULT_ZH_FONT_SIZE)
-    parser.add_argument("--ja-font-size", type=int, default=DEFAULT_JA_FONT_SIZE)
-    parser.add_argument("--zh-colour", default=DEFAULT_ZH_COLOUR, help="ASS colour &HAABBGGRR")
-    parser.add_argument("--ja-colour", default=DEFAULT_JA_COLOUR, help="ASS colour &HAABBGGRR")
-    parser.add_argument("--male-colour", default=DEFAULT_MALE_COLOUR, help="Top-line colour for male speakers")
-    parser.add_argument("--female-colour", default=DEFAULT_FEMALE_COLOUR, help="Top-line colour for female speakers")
-    parser.add_argument("--play-res-x", type=int, default=DEFAULT_PLAY_RES_X)
-    parser.add_argument("--play-res-y", type=int, default=DEFAULT_PLAY_RES_Y)
     parser.add_argument(
         "--audio", type=Path, default=None,
         help="16kHz mono WAV; when given, recolour each cue's top line by speaker gender",
     )
     parser.add_argument(
-        "--colour-by-speaker", action=argparse.BooleanOptionalAction, default=False,
-        help="With --audio, colour cues by ECAPA male/female classification (off by default)",
-    )
-    parser.add_argument(
         "--gender-model", type=Path, default=DEFAULT_GENDER_MODEL,
         help="Directory of the ECAPA gender classifier (model.safetensors + config.json)",
     )
-    parser.add_argument(
-        "--gender-confidence", type=float, default=DEFAULT_GENDER_CONFIDENCE,
-        help="Min softmax probability to colour a cue; below this it keeps the default colour",
-    )
-    args = parser.parse_args()
+    add_dataclass_arguments(parser, BilingualAssConfig)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     zh_entries = parse_srt(args.zh_srt)
     ja_by_index = {entry.index: entry.text for entry in parse_srt(args.ja_srt)}

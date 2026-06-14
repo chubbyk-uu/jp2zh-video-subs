@@ -350,7 +350,7 @@ def test_uncovered_gap_spans_zero_min_gap_short_timeline():
 
 
 def test_unanchored_hai_run_is_dropped():
-    # Metronomic はい far from any real line (breathy quiet labelled as 「はい」)
+    # Metronomic はい far from any real line (quiet audio labelled as 「はい」)
     # is an ordinary filler run and goes.
     hais = [SubtitleEntry(8.0 + 2.5 * i, 8.8 + 2.5 * i, "はい。") for i in range(4)]
     entries = [SubtitleEntry(0.0, 1.0, "始めようか"), *hais, SubtitleEntry(30.0, 31.0, "次です")]
@@ -403,7 +403,7 @@ def test_anchored_hai_survives_while_following_noise_run_drops():
 
 
 def test_hai_in_a_mixed_filler_chain_is_dropped():
-    # はい buried in a うん/あ moaning run joins the chain and goes with it.
+    # はい buried in a うん/あ filler run joins the chain and goes with it.
     entries = [
         SubtitleEntry(0.0, 1.0, "始めようか"),
         SubtitleEntry(5.0, 5.8, "うん。"),

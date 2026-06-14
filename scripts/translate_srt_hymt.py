@@ -7,6 +7,8 @@ from pathlib import Path
 
 from llama_cpp import Llama
 
+from cli_config import add_dataclass_arguments
+from pipeline_configs import HymtTranslateConfig
 from srt_utils import padded_end, parse_time, srt_time
 
 
@@ -357,29 +359,25 @@ def write_entry(
     f.flush()
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("input", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument(
-        "--context-size",
-        type=int,
-        default=2,
-        help="Number of prior translated Chinese lines supplied as Hy-MT2 background "
-        "context. 0 translates each line standalone.",
-    )
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
-    parser.add_argument("--lead-out-seconds", type=float, default=0.0)
-    parser.add_argument("--min-display-seconds", type=float, default=0.0)
     parser.add_argument("--prompt-mode", choices=("hymt2", "chat", "background"), default="hymt2")
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--terms-report", type=Path, help="Terminology review report path")
     parser.add_argument("--no-glossary", action="store_true", help="Disable default glossary prompt and report")
     parser.add_argument("--no-terms-report", action="store_true", help="Do not write a terminology review report")
-    args = parser.parse_args()
+    add_dataclass_arguments(parser, HymtTranslateConfig)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     if args.context_size < 0:
         raise SystemExit("--context-size must be >= 0")
     if args.lead_out_seconds < 0:

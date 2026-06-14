@@ -79,3 +79,48 @@ class QwenAsrConfig:
     hallucination_repeat_avg_logprob: float = arg_field(-1.0, help="avg_logprob gate for repeats")
     hallucination_high_risk_max_repeats: int = arg_field(2, help="Absolute repeat cap for high-risk phrases")
     filter_hallucinations: bool = arg_field(False, action="store_true", help="Apply Whisper-style hallucination filters")
+
+
+@dataclass
+class HymtTranslateConfig:
+    """Tunable knobs shared with translate_srt_hymt.py."""
+
+    context_size: int = arg_field(2, help="Prior translated Chinese lines used as background")
+    lead_out_seconds: float = arg_field(0.0, help="Extend each displayed cue by this many seconds")
+    min_display_seconds: float = arg_field(0.0, help="Minimum displayed cue duration")
+
+
+@dataclass
+class SakuraTranslateConfig:
+    """Tunable knobs shared with translate_srt_sakura.py."""
+
+    context_size: int = arg_field(6, help="Prior source/translation turns supplied as context")
+    lead_out_seconds: float = arg_field(0.0, help="Extend each displayed cue by this many seconds")
+    min_display_seconds: float = arg_field(0.0, help="Minimum displayed cue duration")
+
+
+@dataclass
+class GalTranslTranslateConfig:
+    """Tunable knobs shared with translate_srt_galtransl.py."""
+
+    context_size: int = arg_field(6, help="Prior translated Chinese lines supplied as context")
+    batch_size: int = arg_field(8, help="Max consecutive cues translated as one GalTransl turn")
+    lead_out_seconds: float = arg_field(0.0, help="Extend each displayed cue by this many seconds")
+    min_display_seconds: float = arg_field(0.0, help="Minimum displayed cue duration")
+
+
+@dataclass
+class BilingualAssConfig:
+    """Style and speaker-colour knobs shared with make_bilingual_ass.py."""
+
+    font: str = arg_field("Microsoft YaHei", help="ASS font name")
+    zh_font_size: int = arg_field(36, help="Chinese line font size")
+    ja_font_size: int = arg_field(24, help="Japanese line font size")
+    zh_colour: str = arg_field("&H0000FFFF", help="Chinese line ASS colour &HAABBGGRR")
+    ja_colour: str = arg_field("&H00B4B4B4", help="Japanese line ASS colour &HAABBGGRR")
+    male_colour: str = arg_field("&H00FFBF00", help="Male-speaker Chinese line ASS colour")
+    female_colour: str = arg_field("&H00B478FF", help="Female-speaker Chinese line ASS colour")
+    play_res_x: int = arg_field(1280, help="ASS PlayResX")
+    play_res_y: int = arg_field(720, help="ASS PlayResY")
+    colour_by_speaker: bool = arg_field(False, action="boolean_optional", help="Colour cues by speaker classification")
+    gender_confidence: float = arg_field(0.6, help="Minimum classifier confidence for speaker colour")

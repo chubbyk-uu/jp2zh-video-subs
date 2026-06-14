@@ -5,6 +5,8 @@ from pathlib import Path
 
 from llama_cpp import Llama
 
+from cli_config import add_dataclass_arguments
+from pipeline_configs import SakuraTranslateConfig
 from translation_common import KANA_RE, looks_degenerate, relevant_terms
 from translate_srt_hymt import (
     DEFAULT_GLOSSARY,
@@ -110,25 +112,22 @@ def translate_with_retry(
     return translated
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Translate a Japanese SRT to Chinese with SakuraLLM.")
     parser.add_argument("input", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument(
-        "--context-size",
-        type=int,
-        default=2,
-        help="Number of prior dialogue turns supplied as chat history. 0 disables context.",
-    )
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
-    parser.add_argument("--lead-out-seconds", type=float, default=0.0)
-    parser.add_argument("--min-display-seconds", type=float, default=0.0)
     parser.add_argument("--terms-report", type=Path)
     parser.add_argument("--no-glossary", action="store_true")
     parser.add_argument("--no-terms-report", action="store_true")
-    args = parser.parse_args()
+    add_dataclass_arguments(parser, SakuraTranslateConfig)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     if args.context_size < 0:
         raise SystemExit("--context-size must be >= 0")
     if args.lead_out_seconds < 0 or args.min_display_seconds < 0:

@@ -30,7 +30,7 @@ def _main_filter_args(**overrides):
     return types.SimpleNamespace(**base)
 
 
-def test_filter_main_local_keeps_short_responses_drops_moaning():
+def test_filter_main_local_keeps_short_responses_drops_repeated_filler():
     entries = [
         SubtitleEntry(1.0, 2.0, "はい"),
         SubtitleEntry(3.0, 4.0, "うん"),
@@ -66,7 +66,7 @@ def test_drop_adjacent_near_duplicates_keeps_fuller_twin():
 
 
 def test_drop_adjacent_near_duplicates_keeps_genuine_repeats_at_normal_duration():
-    # Real repeated moaning at normal durations must NOT be deduped — only the
+    # Real repeated lines at normal durations must NOT be deduped — only the
     # squeezed flash twin is removed.
     entries = [
         SubtitleEntry(10.0, 11.5, "気持ちいい"),

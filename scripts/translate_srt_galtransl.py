@@ -6,6 +6,8 @@ from typing import NamedTuple
 
 from llama_cpp import Llama
 
+from cli_config import add_dataclass_arguments
+from pipeline_configs import GalTranslTranslateConfig
 from translation_common import KANA_RE, looks_degenerate, relevant_terms
 from translate_srt_hymt import (
     DEFAULT_GLOSSARY,
@@ -251,37 +253,22 @@ def translate_block_adaptive(
     return left_slots + right_slots, True
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Translate a Japanese SRT to Chinese with Sakura-GalTransl.")
     parser.add_argument("input", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument(
-        "--context-size",
-        type=int,
-        default=2,
-        help="Number of prior translations supplied as the 历史翻译 block. 0 disables context.",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=8,
-        help=(
-            "Translate up to N consecutive cues as one turn so the model sees whole "
-            "sentences split across cues (fixes omitted-subject/person errors). The model "
-            "card's 'do not add/remove line breaks' keeps output 1:1; mismatches are "
-            "retried as smaller strict batches, and remaining unsafe slots fall back "
-            "per-line. 0 or 1 disables batching (per-line only)."
-        ),
-    )
     parser.add_argument("--n-gpu-layers", type=int, default=-1)
-    parser.add_argument("--lead-out-seconds", type=float, default=0.0)
-    parser.add_argument("--min-display-seconds", type=float, default=0.0)
     parser.add_argument("--terms-report", type=Path)
     parser.add_argument("--no-glossary", action="store_true")
     parser.add_argument("--no-terms-report", action="store_true")
-    args = parser.parse_args()
+    add_dataclass_arguments(parser, GalTranslTranslateConfig)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     if args.context_size < 0:
         raise SystemExit("--context-size must be >= 0")
     if args.batch_size < 0:
