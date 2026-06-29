@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文说明
 
-这个项目用于从本地视频生成简体中文字幕 SRT。当前默认流程面向日语语音，下载好模型后，推理过程全部在本地完成。
+这个项目用于从本地视频生成简体中文字幕 SRT，并默认生成中日双语 ASS。当前默认流程面向日语语音，下载好模型后，推理过程全部在本地完成。
 
 项目提供两套识别后端，用 `--asr` 选择：
 
@@ -17,6 +17,8 @@
 
 逐项对比见 [识别后端：Qwen vs Whisper](#识别后端qwen-vs-whisper) 和 [翻译后端：GalTransl vs Sakura vs HY-MT](#翻译后端galtransl-vs-sakura-vs-hy-mt)。
 
+阅读顺序建议：先看项目功能、安装依赖和下载模型，再看一条命令、默认行为和常用参数。后端对比、单步运行和排障章节用于调参、复查质量或定位失败。
+
 ## 项目功能
 
 一键流程会执行以下步骤：
@@ -24,9 +26,10 @@
 1. 用 `ffmpeg` 从视频抽取 16 kHz 单声道 WAV 音频。
 2. 用所选识别后端（默认 `qwen`）识别日语并生成日语 SRT。
 3. 用所选翻译后端（默认 `galtransl`）把日语 SRT 翻译成简体中文字幕 SRT。
-4. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
+4. 默认生成中日双语 ASS（中文在上、日文在下），并复制到输入视频同目录。
+5. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
 
-默认的 Qwen 后端用一个宽松的 VAD 按静音切片来降低时间轴漂移，分批识别，再用强制对齐器给每句定时。在当前项目测试里，它比 Whisper 更少出现循环/幻觉，所以默认关闭 Whisper 那套重量级幻觉过滤，也没有单独的补漏阶段。如果怀疑 VAD 切片漏掉语音，用 `--no-qwen-vad-chunks` 回退到固定均匀平铺做对比。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
+默认的 Qwen 后端用一个宽松的 VAD 按静音切片来降低时间轴漂移，分批识别，再用强制对齐器给每句定时。在当前项目测试里，它比 Whisper 更少出现循环/幻觉，所以默认关闭 Whisper 那套重量级幻觉过滤；Qwen 不使用 Whisper 的 `--gap-fill`，自己的空窗补捞 recapture 也默认关闭。如果怀疑 VAD 切片漏掉语音，优先开启 `--qwen-recapture-min-gap 10` 做高覆盖率跑法；如果要排查 VAD 切片本身，再用 `--no-qwen-vad-chunks` 回退到固定均匀平铺做对比。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
 
 用 `--asr whisper` 时，第 2 步走 Whisper 滑窗主识别，`--gap-fill` 再加一个音频补漏阶段捞回更多轻声/漏识别语音（更慢，也更容易引入幻觉或听错的字幕，重要输出建议复查质量报告和补漏元数据）。
 
@@ -301,8 +304,8 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 |---|---|---|
 | 文本质量 | 当前测试里更干净；默认关闭重量级幻觉过滤 | 安静音频上更易幻觉/循环，需要内置过滤 |
 | 时间漂移 | 更小——VAD 切片把字幕锚在真实语音起点 | 长段安静处更大 |
-| 速度 | 批量主识别快；无补漏阶段 | 主识别相当；`--gap-fill` 多一个更慢的二阶段 |
-| 轻声召回 | 当前测试里较好；仍建议看质量报告，VAD 切片可疑时用固定平铺对比 | 加 `--gap-fill` 进一步提升 |
+| 速度 | 批量主识别快；默认不跑补捞，开启 recapture 后会变慢 | 主识别相当；`--gap-fill` 多一个更慢的二阶段 |
+| 轻声召回 | 当前测试里较好；需要更高覆盖率时先开 recapture，VAD 切片可疑时再用固定平铺对比 | 加 `--gap-fill` 进一步提升 |
 | 专有名词/人名 | 偏弱——可能听错人名和生僻词 | 同样弱；两者对没见过的人名都不可靠 |
 | 后处理 | 极简（重叠 + 一闪而过 cue 清理，外加丢弃 うん/あ 这类不含台词的纯语气词 cue）；想要 Whisper 那套过滤用 `--qwen-filter-hallucinations` | 完整的压缩比/循环/去重/幻觉过滤 |
 | 显存 | 1.7B + 0.6B，默认 `--qwen-batch-size 24` 约 11.5 GB（12 GB 卡降到 `16`） | large-v3，约 10 GB（调小 `--main-local-batch-size` 更省） |
@@ -329,7 +332,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt     # HY-M
 | 术语表 | 原生 `src->dst #备注` 格式，按句注入 | 原生 GPT 字典格式，按句注入 | 只注入当前句命中的术语，使用 Hy-MT2 官方参考翻译格式 |
 | 体量 | 7B（约 6.25 GB Q6） | 14B（约 8–9 GB iq4xs） | 7B（约 6.16 GB Q6） |
 
-在一部两小时片源上（1491 条 cue，同一日语 SRT，RTX 5080），GalTransl 翻译约 1 分 36 秒，Sakura-14B 约 2 分 32 秒（约快 1.6 倍），进程内存更低、相邻重复译文更少，逐条抽样里台词读起来至少同样自然。GalTransl（约 6 GB）和 Qwen 识别栈（约 6 GB）都能塞进 16 GB，原则上可以同时常驻。
+GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，当前项目样例里台词风格也更贴近日常口语。Sakura-14B 更重，适合作为长难句或可疑译文的第二意见；HY-MT 更通用，但对这类台词内容通常更直译。实际速度和显存取决于 GGUF 量化、上下文长度、批大小、`llama-cpp-python` 是否启用 GPU，以及具体显卡。
 
 三者都修不了 ASR 阶段听错的专名（识别错了翻译救不回来），都依赖识别出的日文本身正确。
 
@@ -435,6 +438,8 @@ ASS 里的日文只按字幕序号对齐贡献文本。
 
 ## 常用参数
 
+### 路径与批处理
+
 指定单个视频的输出路径：
 
 ```bash
@@ -446,6 +451,20 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --output outputs/input.zh.sr
 ```bash
 python scripts/video_to_zh_srt.py path/to/videos/ --output-dir outputs
 ```
+
+批量处理时，如果某个视频失败后继续处理后面的视频：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/videos/ --continue-on-error
+```
+
+不把最终字幕拷贝到输入视频同目录：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
+```
+
+### 后端选择
 
 选择识别后端（默认 `qwen`），改用旧版 Whisper 流程：
 
@@ -459,6 +478,8 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
 ```
+
+### 召回与补捞
 
 默认 Qwen 后端用固定均匀平铺代替 VAD 切片（更快，漂移略大）：
 
@@ -480,6 +501,8 @@ Whisper 后端的二阶段音频补漏才使用 `--gap-fill`，这样开启：
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
 ```
+
+### 质量报告、音频和续跑
 
 不生成质量报告：
 
@@ -507,11 +530,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --reuse-existing-audio
 python scripts/video_to_zh_srt.py path/to/videos/ --bilingual --resume
 ```
 
-不把最终字幕拷贝到输入视频同目录：
-
-```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
-```
+### 双语 ASS 与样式
 
 默认输出双语字幕（中文在上，日文在下）。若只想要中文 SRT，用 `--no-bilingual`：
 
@@ -519,7 +538,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
 python scripts/video_to_zh_srt.py path/to/input.mp4 --no-bilingual
 ```
 
-默认会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour`（颜色用 ASS 的 `&HAABBGGRR` 格式）和 `--font`（默认 `Microsoft YaHei`，在 Windows 上中日文行均有字形；非 Windows 播放器经 fontconfig 回退）调整。下面那行日文来自参与翻译的日语 SRT（默认 `.ja.srt`，加 `--gap-fill` 时为 `.filled.ja.srt`），因此中日两行逐条对齐。
+默认会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-font`（默认 `Microsoft YaHei`，在 Windows 上中日文行均有字形；非 Windows 播放器经 fontconfig 回退）、`--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour`（颜色用 ASS 的 `&HAABBGGRR` 格式）调整。下面那行日文来自参与翻译的日语 SRT（默认 `.ja.srt`，加 `--gap-fill` 时为 `.filled.ja.srt`），因此中日两行逐条对齐。
 
 双语模式下还可**按说话人性别给中文那行上色**（默认关闭，加 `--colour-by-speaker` 开启）：对每条字幕从音频里取对应片段，用 ECAPA-TDNN 声纹性别模型（VoxCeleb 训练，见[下载模型](#下载模型)）判男/女——它在嘈杂/带背景音乐的真实音频上远比纯基频（F0）稳健，不会出现 F0 八度错误导致的男女互判。只有置信度高于 `--gender-confidence`（默认 0.6）的字幕才上色：男声深天蓝、女声粉；不够确定的保持默认黄色，宁可不上色也不上错色。用 `--bilingual-male-colour`、`--bilingual-female-colour` 改配色。未下载该模型时自动跳过上色、输出普通双语 ASS。注意只给中文那行上色，日文那行始终灰白。
 
@@ -549,6 +568,8 @@ python scripts/retime_existing_subtitles.py path/to/videos/ \
 并把新的 ASS 复制到视频同目录覆盖 `<名称>.zh.ass`。先用 `--dry-run`
 可以只检查匹配关系；加 `--no-copy-to-video-dir` 则只写 `outputs/`，不覆盖视频同目录字幕。
 
+### 翻译和资源调参
+
 如果发现翻译把前文一起输出，可以关闭翻译上下文：
 
 ```bash
@@ -561,12 +582,6 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --qwen-batch-size 8
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --main-local-batch-size 8
-```
-
-批量处理时，如果某个视频失败后继续处理后面的视频：
-
-```bash
-python scripts/video_to_zh_srt.py path/to/videos/ --continue-on-error
 ```
 
 ## 单步运行
@@ -779,5 +794,5 @@ Qwen 主线想覆盖更多语音，优先开启空窗补捞，例如 `--qwen-rec
 
 ## 后续改进
 
-- 给 Whisper 增加可配置 `initial_prompt`，用于人名、术语、作品名和场景词。
+- 梳理 Qwen `--qwen-context` 的推荐用法，给人名、术语、作品名和场景词提供更稳定的示例配置。
 - 继续改进 ASR 后处理，减少孤立符号、无意义短字幕、乱码和片尾噪声词。

@@ -2,7 +2,9 @@
 
 English | [Chinese](README-CN.md)
 
-This project generates Simplified Chinese SRT subtitles from local video files. The default pipeline is tuned for Japanese audio and runs fully offline after the required models are downloaded.
+This project generates Simplified Chinese SRT subtitles from local video files and writes
+a bilingual Chinese/Japanese ASS by default. The default pipeline is tuned for Japanese
+audio and runs fully offline after the required models are downloaded.
 
 It ships two transcription backends, selectable with `--asr`:
 
@@ -17,6 +19,11 @@ It ships two transcription backends, selectable with `--asr`:
 
 See [ASR Backends: Qwen vs Whisper](#asr-backends-qwen-vs-whisper) and [Translation Backends: GalTransl vs Sakura vs HY-MT](#translation-backends-galtransl-vs-sakura-vs-hy-mt) for feature-by-feature comparisons.
 
+Suggested reading order: start with what the pipeline does, installation, and model
+downloads, then use the one-command, default behavior, and common options sections. The
+backend comparisons, step-by-step usage, and troubleshooting sections are for tuning,
+quality review, or failure analysis.
+
 ## What It Does
 
 The one-command pipeline performs these steps:
@@ -24,16 +31,19 @@ The one-command pipeline performs these steps:
 1. Extract a 16 kHz mono WAV file from the input video with `ffmpeg`.
 2. Transcribe Japanese audio into a Japanese SRT with the selected ASR backend (`qwen` by default).
 3. Translate the Japanese SRT into Simplified Chinese with the selected translation backend (`galtransl` by default).
-4. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles.
+4. Generate a bilingual ASS by default (Chinese on top, Japanese below) and copy it next to the input video.
+5. Write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles.
 
 The default Qwen backend cuts clips on silence with a loose VAD to reduce timing drift,
 transcribes those clips in batches, and times each sentence from the forced aligner. In
 current project tests it has been less prone to Whisper-style looping/hallucination, so
-the heavy Whisper filters are off by default and there is no separate gap-fill stage. If
-you suspect the VAD-cut pass missed speech, use `--no-qwen-vad-chunks` to fall back to
-uniform timeline tiling for comparison. The translation step runs in its own process so
-the ASR and translation models never share VRAM. All generated SRTs are sorted and
-de-overlapped so cues never overlap or go out of order.
+the heavy Whisper filters are off by default. Qwen does not use Whisper's `--gap-fill`,
+and its own gap recapture pass is also off by default. If you suspect the VAD-cut pass
+missed speech, first enable a high-coverage run such as `--qwen-recapture-min-gap 10`;
+use `--no-qwen-vad-chunks` when you specifically want a fixed-tiling comparison that
+does not depend on VAD-cut clips. The translation step runs in its own process so the ASR
+and translation models never share VRAM. All generated SRTs are sorted and de-overlapped
+so cues never overlap or go out of order.
 
 With `--asr whisper`, step 2 runs the sliding-window Whisper pass, and `--gap-fill`
 adds an audio-aware second pass to recover more quiet or missed speech (slower, and more
@@ -56,7 +66,7 @@ No online API is required for inference. Model files are not included in this re
 │   ├── faster-whisper-large-v3/     # Legacy CTranslate2 Whisper ASR model
 │   ├── Hy-MT2-7B-GGUF/              # Optional HY-MT translation model
 │   └── voice-gender-classifier/     # Optional ECAPA gender model (bilingual colouring)
-├── outputs/                         # Final Chinese SRT files
+├── outputs/                         # Final subtitles (Chinese SRT and bilingual ASS)
 ├── scripts/
 │   ├── video_to_zh_srt.py           # One-command video-to-Chinese-SRT pipeline
 │   ├── transcribe_ja_srt_qwen.py    # WAV/audio to Japanese SRT (default Qwen backend)
@@ -340,8 +350,8 @@ Disable the VAD cutting (fall back to uniform 30 s tiling) with `--no-qwen-vad-c
 |---|---|---|
 | Content quality | Cleaner in current tests; heavy hallucination filters are off by default | More prone to hallucination/looping on quiet audio; needs the built-in filters |
 | Timing drift | Lower — VAD-cut clips anchor cues to real speech onset | Higher on long quiet stretches |
-| Speed | Fast batched main pass; no gap-fill stage | Comparable main pass; `--gap-fill` adds a slower second pass |
-| Recall on quiet speech | Good in current tests; verify with the quality report and use fixed tiling if VAD-cut clips look suspicious | Add `--gap-fill` to push recall further |
+| Speed | Fast batched main pass; no recall pass by default, slower when recapture is enabled | Comparable main pass; `--gap-fill` adds a slower second pass |
+| Recall on quiet speech | Good in current tests; enable recapture when you need higher coverage, then use fixed tiling if VAD-cut clips look suspicious | Add `--gap-fill` to push recall further |
 | Proper nouns / names | Weaker — can mishear names and rare terms | Similar weakness; neither is reliable on unseen names |
 | Post-processing | Minimal (overlap + flash-cue hygiene, plus dropping bare filler interjections like うん/あ that carry no dialogue); opt into Whisper-style filters with `--qwen-filter-hallucinations` | Full compression/looping/duplicate/hallucination filtering |
 | VRAM | 1.7B + 0.6B, ~11.5 GB at default `--qwen-batch-size 24` (lower to `16` on 12 GB cards) | large-v3, ~10 GB (less with smaller `--main-local-batch-size`) |
@@ -379,11 +389,11 @@ shape with matched terminology plus previous Chinese translations as background.
 | Terminology table | Native `src->dst #note` format, injected per line | Native GPT-dictionary format, injected per line | Matched terms only, injected in Hy-MT2's documented reference format |
 | Size | 7B (~6.25 GB Q6) | 14B (~8–9 GB iq4xs) | 7B (~6.16 GB Q6) |
 
-On a 2-hour title (1491 cues, same Japanese SRT, RTX 5080), GalTransl translated in
-~1m36s vs Sakura-14B's ~2m32s (~1.6× faster) with lower process memory, fewer
-adjacent-duplicate translations, and dialogue that read at least as naturally in a
-side-by-side sample. Because GalTransl (~6 GB) and the Qwen ASR stack (~6 GB) both fit in
-16 GB, they can in principle stay co-resident.
+GalTransl is the default translator because it is smaller, lighter to run, and has matched
+the project's dialogue samples well. Sakura-14B is heavier and useful as a second opinion
+for long or suspicious lines; HY-MT is more general-purpose but usually more literal on
+this kind of dialogue. Actual speed and memory use depend on the GGUF quant, context
+length, batch size, whether `llama-cpp-python` is GPU-enabled, and the specific GPU.
 
 All three leave proper-noun mistakes from the ASR stage untouched (none can fix a misheard
 name), and all depend on the recognised Japanese being correct.
@@ -513,6 +523,8 @@ index only.
 
 ## Common Options
 
+### Paths and batch runs
+
 Set output path for a single video:
 
 ```bash
@@ -524,6 +536,20 @@ Set output directory for batch processing:
 ```bash
 python scripts/video_to_zh_srt.py path/to/videos/ --output-dir outputs
 ```
+
+Continue batch processing after one video fails:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/videos/ --continue-on-error
+```
+
+Do not copy the final subtitle file (the bilingual ASS by default, or the SRT with `--no-bilingual`) next to the input video:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
+```
+
+### Backend selection
 
 Select the ASR backend (default `qwen`); use the legacy Whisper pipeline with:
 
@@ -537,6 +563,8 @@ Select the translation backend (default `galtransl`); use Sakura-14B or HY-MT wi
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
 ```
+
+### Recall and gap recovery
 
 Run the default Qwen backend with fixed uniform tiling instead of VAD-cut clips
 (faster, slightly more drift):
@@ -560,6 +588,8 @@ Whisper's second-pass audio-aware gap fill uses `--gap-fill`; enable it with:
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
 ```
+
+### Reports, audio, and resume
 
 Disable quality report generation:
 
@@ -594,11 +624,7 @@ The ASS and quality-report stages always rerun (fast, no GPU). `--resume` implie
 python scripts/video_to_zh_srt.py path/to/videos/ --bilingual --resume
 ```
 
-Do not copy the final subtitle file (the bilingual ASS by default, or the SRT with `--no-bilingual`) next to the input video:
-
-```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --no-copy-to-video-dir
-```
+### Bilingual ASS and styling
 
 A bilingual ASS (Chinese on top, Japanese below) is written by default. To write only the Chinese SRT instead:
 
@@ -611,12 +637,12 @@ bilingual mode only the ASS is placed beside the video (the SRT is not), while
 `outputs/` still keeps both the SRT and the ASS. SRT cannot reliably style each
 line differently, so the bilingual output is ASS: the Chinese line is larger and
 coloured, the Japanese line is smaller and gray. Defaults can be changed with
-`--bilingual-zh-font-size`, `--bilingual-ja-font-size`, `--bilingual-zh-colour`,
-`--bilingual-ja-colour` (colours use the ASS `&HAABBGGRR` format), and `--font`
-(default `Microsoft YaHei`, which covers both the Chinese and Japanese lines on Windows;
-non-Windows players fall back via fontconfig). The Japanese line comes from the
-Japanese SRT used for translation (`.ja.srt` by default, `.filled.ja.srt` with
-`--gap-fill`), so the two lines stay aligned cue by cue.
+`--bilingual-font` (default `Microsoft YaHei`, which covers both the Chinese and
+Japanese lines on Windows; non-Windows players fall back via fontconfig),
+`--bilingual-zh-font-size`, `--bilingual-ja-font-size`, `--bilingual-zh-colour`, and
+`--bilingual-ja-colour` (colours use the ASS `&HAABBGGRR` format). The Japanese line
+comes from the Japanese SRT used for translation (`.ja.srt` by default,
+`.filled.ja.srt` with `--gap-fill`), so the two lines stay aligned cue by cue.
 
 In bilingual mode the Chinese line can also be **coloured by speaker gender**
 (off by default; enable with `--colour-by-speaker`). Each cue's audio span is
@@ -658,29 +684,13 @@ then copies the refreshed ASS next to each video as `<name>.zh.ass`. Use
 `--dry-run` to check matches first, and `--no-copy-to-video-dir` to only write
 the files under `outputs/`.
 
+### Translation and resource tuning
+
 Reduce translation context if translated lines include previous subtitles:
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
-
-Recover more quiet speech with Qwen's optional gap recapture:
-
-```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 \
-  --qwen-recapture-min-gap 10 \
-  --qwen-recapture-min-speech 2 \
-  --qwen-recapture-vad-threshold 0.05
-```
-
-Or compare with the Whisper backend's optional gap-fill stage:
-
-```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
-```
-
-Gap fill re-examines subtitle gaps and may recover more quiet speech, but it is
-slower and can introduce less stable short lines.
 
 Reduce ASR batch size if your GPU runs out of VRAM (`--qwen-batch-size` for the
 default Qwen backend, `--main-local-batch-size` for `--asr whisper`):
@@ -688,12 +698,6 @@ default Qwen backend, `--main-local-batch-size` for `--asr whisper`):
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --qwen-batch-size 8
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --main-local-batch-size 8
-```
-
-Continue batch processing after one video fails:
-
-```bash
-python scripts/video_to_zh_srt.py path/to/videos/ --continue-on-error
 ```
 
 ## Step-by-Step Usage
@@ -915,5 +919,5 @@ Do not commit:
 
 ## Future Work
 
-- Add configurable ASR initial prompts for names, terms, products, and scene-specific vocabulary.
+- Document recommended `--qwen-context` patterns for names, terms, products, and scene-specific vocabulary.
 - Continue improving ASR post-processing for isolated symbols, meaningless short subtitles, OCR-like noise, and end-credit noise.
