@@ -206,6 +206,27 @@ models/voice-gender-classifier/config.json
 python scripts/video_to_zh_srt.py path/to/input.mp4
 ```
 
+这条命令就是默认主线：`qwen` 识别（Qwen3-ASR + ForcedAligner，VAD 切片、补捞默认关闭）、
+`galtransl` 翻译、生成中文 SRT、双语 ASS 和质量报告。常用变体：
+
+```bash
+# 默认识别 + 默认翻译（Qwen + GalTransl）
+python scripts/video_to_zh_srt.py path/to/input.mp4
+
+# 默认 Qwen 识别，但开启 Qwen 空窗补捞（不是 Whisper 的 --gap-fill）
+python scripts/video_to_zh_srt.py path/to/input.mp4 \
+  --qwen-recapture-min-gap 10 \
+  --qwen-recapture-min-speech 2 \
+  --qwen-recapture-vad-threshold 0.05
+
+# 旧版 Whisper 识别，并开启 Whisper 二阶段补漏
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
+
+# 保持默认 Qwen 识别，只切换翻译模型
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
+```
+
 批量处理目录下的常见视频文件：
 
 ```bash
@@ -287,7 +308,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 | 显存 | 1.7B + 0.6B，默认 `--qwen-batch-size 24` 约 11.5 GB（12 GB 卡降到 `16`） | large-v3，约 10 GB（调小 `--main-local-batch-size` 更省） |
 | VAD 切片代价 | 切片数约为均匀平铺的 2 倍，主识别略慢，换来更小漂移 | 不适用 |
 
-**推荐：** 常规使用保持默认 Qwen 主线。当你确实需要榨出更多轻声/低能量语音、并愿意复查更多不稳定字幕时，用 `--asr whisper --gap-fill`；没有 CUDA 显卡时也用 Whisper（它有 CPU 回退，Qwen 需要 CUDA）。
+**推荐：** 常规使用保持默认 Qwen 主线。当你确实需要榨出更多轻声/低能量语音、并愿意复查更多不稳定字幕时，优先试 Qwen 的空窗补捞（例如 `--qwen-recapture-min-gap 10`）；需要和旧流程对比，或没有 CUDA 显卡时，再用 Whisper（`--asr whisper`，需要二阶段补漏时加 `--gap-fill`；Whisper 有 CPU 回退，Qwen 需要 CUDA）。
 
 ## 翻译后端：GalTransl vs Sakura vs HY-MT
 
@@ -331,11 +352,11 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt     # HY-M
 - 翻译上下文：按后端使用不同默认值（galtransl/sakura 默认前 6 轮；hymt 默认前 2 条中文译文作为 Hy-MT2 背景信息）；设为 0 则逐句独立翻译
 - 批量翻译（仅 GalTransl，`--translate-batch-size`，默认 8）：把至多 N 条连续字幕（不跨越 >10 秒间隔）作为一轮一起翻译，让被切成多条 cue 的整句能被完整看到，从而纠正省略主语/人称错误——例如跨多条 cue 的第三人称旁白此前会被误译成第一人称。它依赖 GalTransl「不要擅自增减换行」的契约保证输出与输入逐行 1:1；行数不匹配会先拆成更小的严格批量重试，仍不可靠的输出槽位才逐条回退，不会丢掉同块里已经可靠的译文。设为 `0` 或 `1` 关闭批量。
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
-- 二阶段补漏：Qwen 后端不使用（需要对比时用 `--no-qwen-vad-chunks` 做固定平铺 Qwen 识别，或用 `--asr whisper --gap-fill` 走旧版补漏）
+- Whisper 式二阶段补漏：Qwen 后端不使用 `--gap-fill`；Qwen 自己的空窗补捞由 `--qwen-recapture-min-gap > 0` 开启。需要对比时，用 `--no-qwen-vad-chunks` 做固定平铺 Qwen 识别，或用 `--asr whisper --gap-fill` 走旧版补漏。
 - 质量报告：默认开启
 - 抽取音频：默认保留 WAV，方便复查和调参
 
-Qwen 后端没有补漏阶段，VAD 切片主识别就是唯一识别。用 `--qwen-vad-threshold`
+Qwen 默认只跑 VAD 切片主识别；开启 `--qwen-recapture-min-gap` 后，才会在主识别之后对字幕空窗做一次更灵敏的 VAD+ASR 补捞。用 `--qwen-vad-threshold`
 （默认 0.1，调低捞回更多轻声）和 `--qwen-vad-max-cluster-gap`（默认 2.0，调高把邻近语音
 并成更少更长的切片、跑得更快）在召回和切片数之间权衡。需要不依赖 VAD 语音簇的兜底对比时，用
 `--no-qwen-vad-chunks`。
@@ -445,7 +466,16 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
 python scripts/video_to_zh_srt.py path/to/input.mp4 --no-qwen-vad-chunks
 ```
 
-音频补漏阶段属于 Whisper 后端，这样开启：
+默认 Qwen 后端没有 `--gap-fill` 阶段；它的可选补捞叫 recapture，主识别结束后只检查满足门槛的字幕空窗：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 \
+  --qwen-recapture-min-gap 10 \
+  --qwen-recapture-min-speech 2 \
+  --qwen-recapture-vad-threshold 0.05
+```
+
+Whisper 后端的二阶段音频补漏才使用 `--gap-fill`，这样开启：
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
@@ -711,8 +741,9 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 `--main-local-vad-threshold`（默认 0.6）或提高 `--main-local-vad-max-cluster-gap`
 （默认 2.0）；两者都会选中更多音频，也会带来更多需要过滤的幻觉。
 
-如果还想覆盖更多语音，加 `--gap-fill`。它会对字幕空窗跑局部 VAD，只对存在足够语音的
-空窗重新识别，并复用主识别清洗过滤。但补漏最容易出现在轻声、背景音或近静音处，
+Qwen 主线想覆盖更多语音，优先开启空窗补捞，例如 `--qwen-recapture-min-gap 10`。如果使用
+`--asr whisper`，再用 `--gap-fill` 开启 Whisper 的二阶段补漏：它会对字幕空窗跑局部 VAD，
+只对存在足够语音的空窗重新识别，并复用主识别清洗过滤。但补漏最容易出现在轻声、背景音或近静音处，
 所以更慢，也更可能产生听错或幻觉字幕。
 
 ### 字幕有重复内容

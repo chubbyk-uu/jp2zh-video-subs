@@ -228,6 +228,28 @@ Process one video:
 python scripts/video_to_zh_srt.py path/to/input.mp4
 ```
 
+That command is the default line: `qwen` ASR (Qwen3-ASR + ForcedAligner, VAD-cut
+clips, recapture off by default), `galtransl` translation, Chinese SRT, bilingual ASS, and a
+quality report. Common variants:
+
+```bash
+# Default ASR + default translation (Qwen + GalTransl)
+python scripts/video_to_zh_srt.py path/to/input.mp4
+
+# Default Qwen ASR, with Qwen gap recapture enabled (not Whisper --gap-fill)
+python scripts/video_to_zh_srt.py path/to/input.mp4 \
+  --qwen-recapture-min-gap 10 \
+  --qwen-recapture-min-speech 2 \
+  --qwen-recapture-vad-threshold 0.05
+
+# Legacy Whisper ASR, with Whisper's second-pass gap fill enabled
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
+
+# Keep default Qwen ASR, but switch the translator
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
+python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
+```
+
 Process all supported video files in a directory:
 
 ```bash
@@ -325,9 +347,11 @@ Disable the VAD cutting (fall back to uniform 30 s tiling) with `--no-qwen-vad-c
 | VRAM | 1.7B + 0.6B, ~11.5 GB at default `--qwen-batch-size 24` (lower to `16` on 12 GB cards) | large-v3, ~10 GB (less with smaller `--main-local-batch-size`) |
 | Cost of VAD cutting | ~2× clips vs uniform tiling, so the main pass is a bit slower in exchange for less drift | n/a |
 
-**Recommendation:** keep the default Qwen line for general use. Use `--asr whisper`
-`--gap-fill` when you specifically need to squeeze out more quiet/low-energy speech and
-are willing to review more unstable lines, or when a CUDA GPU is unavailable (Whisper has
+**Recommendation:** keep the default Qwen line for general use. When you specifically
+need to squeeze out more quiet/low-energy speech and are willing to review more unstable
+lines, try Qwen gap recapture first (for example `--qwen-recapture-min-gap 10`). Use
+Whisper (`--asr whisper`, plus `--gap-fill` for its second pass) when comparing against
+the legacy flow or when a CUDA GPU is unavailable (Whisper has
 a CPU fallback; Qwen requires CUDA).
 
 ## Translation Backends: GalTransl vs Sakura vs HY-MT
@@ -385,15 +409,17 @@ The one-command pipeline uses:
 - Translation context: backend-specific default context (galtransl/sakura: previous 6 turns; hymt: previous 2 Chinese translations as Hy-MT2 background information). `--context-size 0` translates each line standalone
 - Batch translation (GalTransl only, `--translate-batch-size`, default 8): up to N consecutive cues (never crossing a >10 s gap) are translated as one turn, so a sentence split across cues is seen whole. This fixes omitted-subject/person errors — e.g. third-person narration spread over several cues was otherwise mistranslated as first-person. It leans on GalTransl's "do not add/remove line breaks" contract to keep output 1:1 with input; line-count mismatches are retried as smaller strict batches, and any remaining unsafe output slots fall back to per-line translation without discarding the rest of the block. `0` or `1` disables batching.
 - Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
-- Gap fill: not used by the Qwen backend (use `--no-qwen-vad-chunks` for a fixed-tiling Qwen comparison, or `--asr whisper --gap-fill` for the legacy recall pass)
+- Whisper-style gap fill: Qwen does not use `--gap-fill`; enable Qwen's own gap recapture with `--qwen-recapture-min-gap > 0`. Use `--no-qwen-vad-chunks` for a fixed-tiling Qwen comparison, or `--asr whisper --gap-fill` for the legacy recall pass.
 - Quality report: enabled by default
 - Extracted WAV audio: kept by default
 
-The Qwen backend has no gap-fill stage; its VAD-cut main pass is the only recognition
-pass. Tune recall vs. clip count with `--qwen-vad-threshold` (default 0.1; lower keeps
-more quiet speech) and `--qwen-vad-max-cluster-gap` (default 2.0; higher merges nearby
-speech into fewer, longer clips and runs faster). Use `--no-qwen-vad-chunks` when you
-want a fixed-tiling sanity check that does not depend on VAD-found clusters.
+By default, Qwen only runs the VAD-cut main pass. When `--qwen-recapture-min-gap` is
+positive, it adds one more sensitive VAD+ASR look inside matching subtitle gaps after
+the main pass. Tune recall vs. clip count with `--qwen-vad-threshold` (default 0.1;
+lower keeps more quiet speech) and `--qwen-vad-max-cluster-gap` (default 2.0; higher
+merges nearby speech into fewer, longer clips and runs faster). Use
+`--no-qwen-vad-chunks` when you want a fixed-tiling sanity check that does not depend
+on VAD-found clusters.
 
 ### Whisper backend defaults (`--asr whisper`)
 
@@ -519,7 +545,17 @@ Run the default Qwen backend with fixed uniform tiling instead of VAD-cut clips
 python scripts/video_to_zh_srt.py path/to/input.mp4 --no-qwen-vad-chunks
 ```
 
-The audio-aware gap-fill stage belongs to the Whisper backend; enable it with:
+The default Qwen backend does not use `--gap-fill`; its optional recall pass is
+called recapture and re-checks only subtitle gaps that meet the configured thresholds:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 \
+  --qwen-recapture-min-gap 10 \
+  --qwen-recapture-min-speech 2 \
+  --qwen-recapture-vad-threshold 0.05
+```
+
+Whisper's second-pass audio-aware gap fill uses `--gap-fill`; enable it with:
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
@@ -628,7 +664,16 @@ Reduce translation context if translated lines include previous subtitles:
 python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 ```
 
-Recover more quiet speech with the Whisper backend's optional gap-fill stage:
+Recover more quiet speech with Qwen's optional gap recapture:
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 \
+  --qwen-recapture-min-gap 10 \
+  --qwen-recapture-min-speech 2 \
+  --qwen-recapture-vad-threshold 0.05
+```
+
+Or compare with the Whisper backend's optional gap-fill stage:
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
@@ -827,10 +872,11 @@ local VAD. If you prefer more recall, lower `--main-local-vad-threshold` (defaul
 or raise `--main-local-vad-max-cluster-gap` (default 2.0); both select more audio at the
 cost of more clips and more hallucinations to filter.
 
-For even more recall, add `--gap-fill`. It does not judge gaps by duration alone;
-it runs per-gap local VAD on each eligible subtitle gap and only re-transcribes
-gaps with enough speech, then cleans the results with the same filters as the main
-pass.
+For more recall on the Qwen line, first enable gap recapture, for example
+`--qwen-recapture-min-gap 10`. With `--asr whisper`, use `--gap-fill` for Whisper's
+second-pass gap fill. It does not judge gaps by duration alone; it runs per-gap local
+VAD on each eligible subtitle gap and only re-transcribes gaps with enough speech,
+then cleans the results with the same filters as the main pass.
 
 ### Duplicate-Looking Lines
 
