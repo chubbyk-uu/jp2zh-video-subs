@@ -144,7 +144,12 @@ def extract_audio(video: Path, audio: Path, reuse_existing: bool = False, log: J
         else:
             print(message, flush=True)
         return
-    run(["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", str(audio)], log)
+    # Extract to a temp name and rename atomically: an interrupted ffmpeg must not
+    # leave a truncated WAV at the final path, where a later --resume /
+    # --reuse-existing-audio run would reuse it and silently transcribe short.
+    partial = audio.with_name(audio.name + ".part")
+    run(["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", str(partial)], log)
+    partial.replace(audio)
 
 
 def run_pipeline(
@@ -817,7 +822,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.print_config:
-        values = {k: v for k, v in vars(args).items() if k not in ("config", "print_config")}
+        # input/output are per-run IO arguments, not reusable configuration; a config
+        # file cannot set the input positional anyway, so emitting them would mislead.
+        values = {k: v for k, v in vars(args).items() if k not in ("config", "print_config", "input", "output")}
         sys.stdout.write(format_config_toml(values))
         return
 
@@ -885,6 +892,19 @@ def main() -> None:
         output = args.output.resolve() if args.output else output_path_for(video, input_path, args.output_dir, args.recursive)
         job_dir = work_dir_for(video, input_path, args.work_dir, args.recursive)
         jobs.append(VideoJob(index, video, output, job_dir, job_dir / f"{video.stem}.wav"))
+
+    # Paths derive from the stem only, so videos differing just by extension
+    # (a.mp4 + a.mkv) would share one work dir/WAV and one output; the look-ahead
+    # extractor would then overwrite the WAV while the previous job still reads it.
+    claimed: dict[Path, Path] = {}
+    for job in jobs:
+        for path in (job.output, job.job_dir):
+            other = claimed.setdefault(path, job.video)
+            if other != job.video:
+                raise SystemExit(
+                    f"{other} and {job.video} map to the same path: {path}\n"
+                    "Rename one of them (same stem with different extensions is not supported)."
+                )
 
     total = len(jobs)
 

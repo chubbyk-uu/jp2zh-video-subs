@@ -352,6 +352,8 @@ def test_pipeline_print_config_applies_file_and_cli(tmp_path):
     ).stdout
     assert 'translator = "galtransl"' in out   # CLI overrides file
     assert "qwen_batch_size = 12" in out        # file overrides code default
+    # Per-run IO args are not reusable configuration and are omitted.
+    assert "input =" not in out and "output =" not in out
 
 
 def _choices_parser() -> argparse.ArgumentParser:

@@ -438,3 +438,30 @@ def test_disabled_thresholds_keep_everything():
     kept, dropped = drop_isolated_interjections(entries, min_silence=0.0, run_min=0)
     assert kept == entries
     assert dropped == []
+
+
+def _finalize_args(*extra: str):
+    from transcribe_ja_srt_qwen import build_parser
+    return build_parser().parse_args(["a.wav", "out.srt", *extra])
+
+
+def test_filter_hallucinations_enables_near_dup_squeeze_filter():
+    from transcribe_ja_srt_qwen import finalize_qwen_entries
+    # Overlapping-clip twin: the second cue is the same line up to punctuation and
+    # has been squeezed by resolve_overlaps to a sub-squeeze-window flash.
+    entries = [
+        SubtitleEntry(10.0, 12.0, "いやいや今選んでください"),
+        SubtitleEntry(12.05, 12.35, "いやいや、今選んでください"),
+    ]
+    kept = finalize_qwen_entries(list(entries), _finalize_args("--filter-hallucinations"))
+    assert [e.text for e in kept] == ["いやいや今選んでください"]
+
+
+def test_near_dup_squeeze_filter_stays_off_by_default():
+    from transcribe_ja_srt_qwen import finalize_qwen_entries
+    entries = [
+        SubtitleEntry(10.0, 12.0, "いやいや今選んでください"),
+        SubtitleEntry(12.05, 12.35, "いやいや、今選んでください"),
+    ]
+    kept = finalize_qwen_entries(list(entries), _finalize_args())
+    assert len(kept) == 2

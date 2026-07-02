@@ -403,6 +403,7 @@ def main() -> None:
         verbose=False,
     )
 
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as f:
         history: list[tuple[str, str]] = []  # (source, translation) pairs, oldest -> newest
         previous_end: float | None = None

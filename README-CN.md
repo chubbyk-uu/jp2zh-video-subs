@@ -278,7 +278,7 @@ lead_out_seconds = 0.8
 min_display_seconds = 1.5
 ```
 
-TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒绝。输入路径仍然必须在命令行传入，即使 `--print-config` 会显示 `input` key。命令行传入的普通取值参数会覆盖 TOML。`gap_fill = true`、`resume = true` 这类单向开关一旦在 TOML 里设为 `true`，同一条命令无法用 `--no-*` 关掉；需要修改 TOML，或为不同模式准备不同配置文件。
+TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒绝。`input`/`output` 属于每次运行的 IO 参数，不会出现在 `--print-config` 的输出里，输入路径始终在命令行传入。命令行传入的普通取值参数会覆盖 TOML。`gap_fill = true`、`resume = true` 这类单向开关一旦在 TOML 里设为 `true`，同一条命令无法用 `--no-*` 关掉；需要修改 TOML，或为不同模式准备不同配置文件。
 
 ## 识别后端：Qwen vs Whisper
 
@@ -592,8 +592,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --main-local-b
 python scripts/transcribe_ja_srt_qwen.py work/input/input.wav \
   work/input/input.ja.srt \
   --model models/Qwen3-ASR-1.7B \
-  --forced-aligner models/Qwen3-ForcedAligner-0.6B \
-  --vad-chunks
+  --forced-aligner models/Qwen3-ForcedAligner-0.6B
 ```
 
 想离线快速调后处理参数，可以先用 `--raw-output work/input/input.raw.json` 把原始

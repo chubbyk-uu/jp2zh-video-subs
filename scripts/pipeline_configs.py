@@ -32,7 +32,7 @@ class QwenAsrConfig:
     no_default_context: bool = arg_field(False, action="store_true", help="Drop the built-in ASR context")
 
     # VAD clip construction (used when vad_chunks is on).
-    vad_chunks: bool = arg_field(False, action="boolean_optional", help="Cut clips on silence (VAD)")
+    vad_chunks: bool = arg_field(True, action="boolean_optional", help="Cut clips on silence (VAD)")
     vad_threshold: float = arg_field(0.1, help="VAD speech probability threshold")
     vad_window_seconds: float = arg_field(8.0, help="VAD sliding window length")
     vad_window_overlap_seconds: float = arg_field(4.0, help="VAD sliding window overlap")
@@ -53,6 +53,8 @@ class QwenAsrConfig:
     phrase_max_internal_gap: float = arg_field(2.0, help="Split a cue on internal gaps over this")
     phrase_max_char_seconds: float = arg_field(0.5, help="Per-char duration cap for the aligner")
     min_duration: float = arg_field(0.8, help="Floor a cue to this duration")
+    # Shared knob across ASR backends: the orchestrator overrides this with its own
+    # unprefixed --min-cue-seconds (default 0.3).
     min_cue_seconds: float = arg_field(0.2, help="Drop cues shorter than this after shaping")
 
     # Filler/interjection handling.
@@ -193,7 +195,7 @@ class FillConfig(WhisperAsrConfig):
     """Tuning knobs shared with the gap-fill stage (fill_ja_srt_gaps.py).
 
     Embeds a Whisper main pass, so it extends WhisperAsrConfig with the gap-fill-only knobs.
-    IO/structural args and the --condition-on-previous-text / --no-vad flags stay manual.
+    IO/structural args stay manual.
     The orchestrator uses its own fill_*-prefixed knobs for the gate family (see the command
     builder's overrides); other fields map by identical name.
     """

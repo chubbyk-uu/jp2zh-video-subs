@@ -13,6 +13,7 @@ from pipeline_configs import QwenAsrConfig
 from srt_utils import Interval
 from transcribe_ja_srt import (
     SubtitleEntry,
+    drop_adjacent_near_duplicates,
     filter_main_local_entries,
     resolve_overlaps,
     speech_clusters,
@@ -610,12 +611,23 @@ def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace
     """Minimal time/format hygiene for Qwen output.
 
     In current project tests Qwen has been less prone to Whisper-style
-    looping/hallucination, so those filters are opt-in via --filter-hallucinations.
+    looping/hallucination, so those filters are opt-in via --filter-hallucinations
+    (which also enables the near-duplicate squeeze filter below).
     This keeps the transcript faithful: only overlap trimming, a sub-second
     flash-cue floor, and de-overlap of collapsed-timestamp cues.
     """
     entries = drop_same_start_piles(entries)
     entries = resolve_overlaps(entries)
+    if args.filter_hallucinations and args.near_dup_similarity > 0:
+        before = len(entries)
+        entries = drop_adjacent_near_duplicates(
+            entries,
+            args.near_dup_max_gap,
+            args.near_dup_similarity,
+            args.near_dup_squeeze_seconds,
+        )
+        if before != len(entries):
+            print(f"Dropped {before - len(entries)} adjacent near-duplicate cues", flush=True)
     entries, dropped = drop_isolated_interjections(
         entries,
         args.isolated_interjection_silence,
@@ -1090,6 +1102,7 @@ def main() -> None:
     write_entries(entries, args.output)
 
     meta_output = args.meta_output or args.output.with_suffix(args.output.suffix + ".meta.json")
+    meta_output.parent.mkdir(parents=True, exist_ok=True)
     meta_output.write_text(
         json.dumps(
             {

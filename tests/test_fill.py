@@ -11,13 +11,12 @@ from fill_ja_srt_gaps import (
     looks_like_hallucination,
     looks_like_noise,
     normalize_phrase,
-    repeated_character_ratio,
     repeated_hallucination_texts,
     srt_gaps_with_boundaries,
     speech_clusters_for_gap,
-    split_clip,
     split_clip_with_overlap,
 )
+from hallucination_filters import repeated_character_ratio
 from srt_utils import Interval
 from transcribe_ja_srt import SubtitleEntry
 from quality_report import Entry
@@ -46,12 +45,6 @@ def test_looks_like_noise():
     assert looks_like_noise("ああ", 3) is True  # shorter than min chars
     assert looks_like_noise("ababab", 3) is True  # repeated 2-char token
     assert looks_like_noise("今日はいい天気", 3) is False
-
-
-def test_split_clip():
-    clips = split_clip(Interval(0, 10), 4)
-    assert [(c.start, c.end) for c in clips] == [(0, 4), (4, 8), (8, 10)]
-    assert len(split_clip(Interval(0, 3), 4)) == 1
 
 
 def test_split_clip_with_overlap_only_splits_long_clips():
@@ -282,6 +275,21 @@ def test_low_confidence_low_vad_support_filter_targets_long_weak_entries(monkeyp
 
     monkeypatch.setattr(fill_module, "fill_vad_support_seconds", lambda *args, **kwargs: 1.5)
     assert looks_like_low_confidence_low_vad_support([], supported_long, args) is False
+
+
+def test_context_key_strips_punctuation_and_whitespace():
+    assert fill_module.context_key("テスト、です！") == "テストです"
+    assert fill_module.context_key("「引用」…（笑）") == "引用笑"
+    assert fill_module.context_key("いい天気 ですね。") == "いい天気ですね"
+
+
+def test_context_duplicate_fill_entries_drop_punctuation_only_variant():
+    existing = [Entry(1, 10.0, 12.0, "今日は、いい天気ですね！")]
+    fills = [SubtitleEntry(12.1, 13.0, "今日はいい天気ですね", avg_logprob=-0.2, no_speech_prob=0.1)]
+
+    dropped = context_duplicate_fill_entries(fills, existing)
+
+    assert dropped == {id(fills[0])}
 
 
 def test_context_duplicate_fill_entries_drop_existing_fragment():

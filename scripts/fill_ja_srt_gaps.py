@@ -18,7 +18,6 @@ from hallucination_filters import (
     looks_like_hallucination,
     looks_like_noise,
     normalize_phrase,
-    repeated_character_ratio,
     repeated_hallucination_texts,
 )
 from quality_report import (
@@ -73,7 +72,7 @@ class CandidateClip:
 CONTEXT_DUPLICATE_MAX_GAP_SECONDS = 0.5
 CONTEXT_DUPLICATE_SIMILARITY = 0.72
 CONTEXT_FRAGMENT_MIN_CHARS = 2
-CONTEXT_PUNCTUATION_RE = re.compile(r"[、。．，！？!?…・ー～~「」『』（）()\\[\\]\"'`\\s　]+")
+CONTEXT_PUNCTUATION_RE = re.compile(r"[、。．，！？!?…・ー～~「」『』（）()\[\]\"'`\s　]+")
 
 
 def existing_intervals(entries: list[Entry], padding: float) -> list[Interval]:
@@ -123,18 +122,6 @@ def speech_clusters_for_gap(
         Interval(max(gap.start, item.start - pad), min(gap.end, item.end + pad))
         for item in clusters
     ]
-
-
-def split_clip(clip: Interval, max_clip_seconds: float) -> list[Interval]:
-    if clip.end - clip.start <= max_clip_seconds:
-        return [clip]
-    clips: list[Interval] = []
-    start = clip.start
-    while start < clip.end:
-        end = min(clip.end, start + max_clip_seconds)
-        clips.append(Interval(start, end))
-        start = end
-    return clips
 
 
 def split_clip_with_overlap(
@@ -598,7 +585,7 @@ def fill_gaps(args: argparse.Namespace, model=None, existing_entries=None) -> Fi
 
 def build_parser() -> argparse.ArgumentParser:
     """Tuning knobs come from FillConfig (single source of truth, shared with the
-    orchestrator); only IO/structural args and the two opt-in flags are declared here."""
+    orchestrator); only IO/structural args are declared here."""
     parser = argparse.ArgumentParser(description="Fill likely missed Japanese SRT gaps using audio-aware VAD clips.")
     parser.add_argument("input", type=Path, nargs="?", help="Input Japanese SRT (omit when using --transcribe-output)")
     parser.add_argument("--audio", type=Path, required=True)
@@ -610,8 +597,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Transcribe the audio first (sharing one loaded model), write the raw Japanese SRT here, then fill gaps.",
     )
-    parser.add_argument("--condition-on-previous-text", action="store_true")
-    parser.add_argument("--no-vad", action="store_true")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     add_dataclass_arguments(parser, FillConfig)
     return parser

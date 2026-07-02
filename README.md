@@ -314,8 +314,8 @@ min_display_seconds = 1.5
 ```
 
 The TOML file is flat; sections such as `[asr]` or `[translation]` are rejected.
-The input path is still required on the command line, even if `--print-config`
-shows an `input` key. Value flags given on the command line override the TOML
+The per-run `input`/`output` paths are omitted from `--print-config` and always
+given on the command line. Value flags given on the command line override the TOML
 file. Plain one-way switches such as `gap_fill = true` or `resume = true` cannot
 be turned back off from the same command line; edit the TOML file or use a
 separate config for those modes.
@@ -708,8 +708,7 @@ Transcribe audio to Japanese SRT with the default Qwen backend (VAD-cut clips):
 python scripts/transcribe_ja_srt_qwen.py work/input/input.wav \
   work/input/input.ja.srt \
   --model models/Qwen3-ASR-1.7B \
-  --forced-aligner models/Qwen3-ForcedAligner-0.6B \
-  --vad-chunks
+  --forced-aligner models/Qwen3-ForcedAligner-0.6B
 ```
 
 For fast offline post-processing tuning, dump the raw ASR + aligner stream once with
