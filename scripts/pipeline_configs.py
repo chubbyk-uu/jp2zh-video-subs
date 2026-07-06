@@ -31,6 +31,38 @@ class QwenAsrConfig:
     context: str = arg_field("", help="Extra ASR hotwords/context appended to the built-in list")
     no_default_context: bool = arg_field(False, action="store_true", help="Drop the built-in ASR context")
 
+    # ASR text backend. Despite the QwenAsrConfig name, this hosts both text sources:
+    #   qwen  — Qwen3-ASR (bundled model + forced aligner), the current default.
+    #   anime — litagin/anime-whisper text + standalone Qwen3 forced aligner (two-phase).
+    text_backend: str = arg_field("qwen", choices=("qwen", "anime"), help="ASR text source")
+    text_model: str = arg_field("models/anime-whisper", help="anime-whisper model path (text_backend=anime)")
+    timestamp_mode: str = arg_field(
+        "vad_only", choices=("aligner_fallback", "aligner_only", "vad_only"),
+        help="anime timing: aligner_fallback recovers collapse, aligner_only trusts the aligner, vad_only skips aligner",
+    )
+    collapse_recovery: bool = arg_field(
+        True, action="boolean_optional", help="Recover collapsed forced alignment (anime backend)",
+    )
+    no_repeat_ngram_size: int = arg_field(0, help="anime-whisper n-gram repeat guard (0 = model-card default)")
+
+    # Speech segmentation backend for anime jobs (Stage 3):
+    #   current    — existing Silero build_vad_jobs (long clips, more aligner collapse).
+    #   whisperseg — short, speech-pure ONNX frames (fewer long clips, less collapse).
+    vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="anime speech segmentation backend")
+    whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
+    whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
+    whisperseg_max_group: float = arg_field(5.0, help="WhisperSeg max frame group duration (s)")
+    whisperseg_chunk_threshold: float = arg_field(0.5, help="WhisperSeg frame grouping silence threshold (s)")
+    whisperseg_threshold: float = arg_field(0.35, help="WhisperSeg onset probability threshold")
+
+    # Optional semantic scene pre-segmentation (Stage 4). When "semantic", the audio is
+    # first cut into acoustic-texture scenes and WhisperSeg runs per-scene so frames do
+    # not cross texture boundaries. Only meaningful with vad_backend=whisperseg.
+    scene_backend: str = arg_field("none", choices=("none", "semantic"), help="anime scene pre-segmentation")
+    scene_min_seconds: float = arg_field(20.0, help="semantic scene min duration (s)")
+    scene_max_seconds: float = arg_field(48.0, help="semantic scene max duration (s)")
+    scene_clustering_threshold: float = arg_field(18.0, help="semantic agglomerative distance threshold")
+
     # VAD clip construction (used when vad_chunks is on).
     vad_chunks: bool = arg_field(True, action="boolean_optional", help="Cut clips on silence (VAD)")
     vad_threshold: float = arg_field(0.1, help="VAD speech probability threshold")

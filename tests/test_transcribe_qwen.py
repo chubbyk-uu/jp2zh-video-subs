@@ -1,12 +1,37 @@
+import argparse
+
+import pytest
+
+from srt_utils import Interval
 from transcribe_ja_srt import SubtitleEntry
 from transcribe_ja_srt_qwen import (
     ISOLATED_INTERJECTION_CORES,
+    ChunkJob,
     _RawItem,
+    _clip_relative_speech,
     _interjection_core,
+    _time_anime_job,
     drop_isolated_interjections,
+    entries_from_raw,
+    qwen_aligner_language,
     sentences_from_alignment,
+    split_into_units,
     uncovered_gap_spans,
+    vad_only_items_for_text,
 )
+import whisperseg_vad
+
+
+def _shaping_args(**overrides):
+    """A minimal Namespace with the cue-shaping knobs chunk_entries/_time_anime_job read."""
+    base = dict(
+        phrase_max_chars=26, phrase_max_duration=8.0, min_duration=0.0,
+        phrase_max_internal_gap=2.0, phrase_max_char_seconds=0.5,
+        collapse_filler_repetition=True,
+        timestamp_mode="aligner_fallback", collapse_recovery=True,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
 
 
 def aligned_entries(text: str, chars: list[tuple[str, float, float]], **overrides):
@@ -465,3 +490,135 @@ def test_near_dup_squeeze_filter_stays_off_by_default():
     ]
     kept = finalize_qwen_entries(list(entries), _finalize_args())
     assert len(kept) == 2
+
+
+# ---- anime backend bridge ----
+
+def test_qwen_aligner_language_normalizes_codes_to_names():
+    assert qwen_aligner_language("ja") == "Japanese"
+    assert qwen_aligner_language("Japanese") == "Japanese"
+    assert qwen_aligner_language(" Japanese ") == "Japanese"
+    assert qwen_aligner_language("en") == "English"
+    assert qwen_aligner_language("") == "Japanese"
+
+
+def test_whisperseg_resolve_model_path_local_only(tmp_path, monkeypatch):
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"onnx")
+    assert whisperseg_vad.resolve_model_path(str(model)) == str(model)
+
+    monkeypatch.setattr(whisperseg_vad, "DEFAULT_MODEL_PATH", model)
+    assert whisperseg_vad.resolve_model_path() == str(model)
+
+    monkeypatch.setattr(whisperseg_vad, "DEFAULT_MODEL_PATH", tmp_path / "missing.onnx")
+    with pytest.raises(SystemExit):
+        whisperseg_vad.resolve_model_path()
+
+
+def test_clip_relative_speech_intersects_and_shifts():
+    intervals = [Interval(1.0, 2.0), Interval(5.0, 9.0)]
+    regions = _clip_relative_speech(intervals, job_start=4.0, job_end=8.0)
+    # 1-2s is outside [4,8]; 5-9s clips to 5-8s -> clip-relative 1-4s
+    assert [(r.start, r.end) for r in regions] == [(1.0, 4.0)]
+
+
+def test_time_anime_job_healthy_passthrough():
+    job = ChunkJob(10.0, 20.0, 10.0, 20.0)
+    items = [_RawItem(c, i * 0.7, i * 0.7 + 0.5) for i, c in enumerate("あいうえおかきくけこさし")]
+    sentinel, recovery, out = _time_anime_job(job, items, _shaping_args())
+    assert sentinel["status"] == "OK"
+    assert recovery["applied"] is False
+    assert out is not items and len(out) == len(items)  # copied, unchanged count
+
+
+def test_time_anime_job_recovers_collapse_with_vad():
+    job = ChunkJob(10.0, 20.0, 10.0, 20.0)  # widened clip duration = 10s
+    job.speech = [Interval(1.0, 3.0), Interval(6.0, 9.0)]  # clip-relative speech
+    items = [_RawItem(c, 0.0, 0.0) for c in "あいうえおかきくけこさし"]  # zero-position collapse
+    sentinel, recovery, out = _time_anime_job(job, items, _shaping_args())
+    assert sentinel["status"] == "COLLAPSED"
+    assert recovery == {"applied": True, "strategy": "vad_guided"}
+    starts = [it.start_time for it in out]
+    assert starts == sorted(starts)
+    for it in out:  # every item lands inside a clip-relative speech region
+        assert (1.0 <= it.start_time <= 3.0) or (6.0 <= it.start_time <= 9.0), it.start_time
+
+
+def test_time_anime_job_aligner_only_skips_recovery():
+    job = ChunkJob(10.0, 20.0, 10.0, 20.0)
+    items = [_RawItem(c, 0.0, 0.0) for c in "あいうえおかきくけこさし"]
+    sentinel, recovery, out = _time_anime_job(job, items, _shaping_args(timestamp_mode="aligner_only"))
+    assert sentinel["status"] == "COLLAPSED"
+    assert recovery["applied"] is False  # aligner_only never redistributes
+
+
+def test_vad_only_items_distribute_across_speech_regions():
+    items = vad_only_items_for_text("あいうえお", 10.0, [Interval(1.0, 3.0), Interval(7.0, 9.0)])
+    assert [it.text for it in items] == list("あいうえお")
+    assert items[0].start_time == pytest.approx(1.0)
+    assert items[-1].end_time == pytest.approx(9.0)
+    assert all(it.start_time <= it.end_time for it in items)
+    # The silence gap between speech regions remains a real timing gap.
+    assert any(items[i + 1].start_time - items[i].end_time > 2.0 for i in range(len(items) - 1))
+
+
+def test_entries_from_raw_anime_schema():
+    raw = {
+        "text_backend": "anime", "timestamp_mode": "aligner_fallback",
+        "chunk_seconds": 30.0, "chunk_overlap_seconds": 3.0, "duration": 20.0,
+        "context": "",
+        "chunks": [{
+            "start": 10.0, "end": 18.0, "keep_lo": 10.0, "keep_hi": 18.0,
+            "raw_text": "おはようございます", "clean_text": "おはようございます。",
+            "speech_regions": [], "recovered_items": [], "sentinel": {}, "recovery": {"applied": False},
+            "items": [{"text": c, "start": i * 0.5, "end": i * 0.5 + 0.4}
+                      for i, c in enumerate("おはようございます")],
+        }],
+    }
+    entries = entries_from_raw(raw, _shaping_args())
+    assert entries and all(isinstance(e, SubtitleEntry) for e in entries)
+    # clean_text drove the cue, offset by chunk start (10.0)
+    assert entries[0].start >= 10.0
+    assert "おはよう" in "".join(e.text for e in entries)
+
+
+def test_entries_from_raw_anime_vad_only_rebuilds_from_speech_regions():
+    raw = {
+        "text_backend": "anime", "timestamp_mode": "aligner_fallback",
+        "chunk_seconds": 30.0, "chunk_overlap_seconds": 3.0, "duration": 20.0,
+        "context": "",
+        "chunks": [{
+            "start": 10.0, "end": 20.0, "keep_lo": 10.0, "keep_hi": 20.0,
+            "raw_text": "おはようございます", "clean_text": "おはようございます。",
+            "speech_regions": [[1.0, 4.0]], "raw_items": [], "items": [],
+            "recovered_items": [], "sentinel": {}, "recovery": {"applied": False},
+        }],
+    }
+    entries = entries_from_raw(raw, _shaping_args(timestamp_mode="vad_only"))
+    assert entries
+    assert entries[0].start == pytest.approx(11.0)
+    assert entries[-1].end <= 14.0 + 1e-6
+    assert "おはよう" in "".join(e.text for e in entries)
+
+
+# ---- anime ellipsis-soft sentence splitting ----
+
+def test_split_units_ellipsis_hard_default_splits_on_ellipsis():
+    # Qwen backend unchanged: … is a hard sentence end.
+    assert split_into_units("会長、やめて…て…", 26) == ["会長、やめて…", "て…"]
+
+
+def test_split_units_ellipsis_soft_keeps_line_whole():
+    # anime backend: … is not a hard end; a short line stays one cue.
+    assert split_into_units("会長、やめて…て…", 26, ellipsis_hard=False) == ["会長、やめて…て…"]
+
+
+def test_split_units_ellipsis_soft_still_hard_breaks_on_period():
+    assert split_into_units("はい。うん。", 26, ellipsis_hard=False) == ["はい。", "うん。"]
+
+
+def test_split_units_ellipsis_soft_breaks_overlong_at_ellipsis():
+    long = "あ" * 20 + "…" + "い" * 20  # 41 content chars, over max_chars=26
+    out = split_into_units(long, 26, ellipsis_hard=False)
+    assert len(out) >= 2
+    assert out[0].endswith("…")  # soft-cut landed on the …

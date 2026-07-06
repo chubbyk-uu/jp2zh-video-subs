@@ -5,9 +5,16 @@ import difflib
 import json
 import time
 import unicodedata
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from alignment_recovery import (
+    assess_alignment_quality,
+    items_to_words,
+    redistribute_collapsed_words,
+    words_to_items,
+)
+from anime_text_clean import anime_clean_text
 from cli_config import add_dataclass_arguments
 from pipeline_configs import QwenAsrConfig
 from srt_utils import Interval
@@ -36,6 +43,13 @@ DEFAULT_ASR_CONTEXT = ""
 
 # Characters that end a sentence-level cue.
 SENTENCE_END_CHARS = "。！？!?…．."
+# anime-whisper punctuates soft pauses with … liberally, so treating every … as a
+# hard sentence end shatters one spoken line into many tiny cues. In ellipsis-soft
+# mode (anime backend) … is NOT a hard ender — only 。！？ etc. are — and … instead
+# becomes a soft split point used only when a unit is over-long. See split_into_units
+# / sentences_from_alignment(ellipsis_hard_split=...). BREAK_PUNCT still keeps … as a
+# soft cut point inside _split_segment, which only fires past the length budget.
+SENTENCE_END_CHARS_NO_ELLIPSIS = SENTENCE_END_CHARS.replace("…", "")
 # Punctuation/whitespace that carries no timing and is ignored when matching the
 # punctuated `result.text` against the forced-aligner character stream.
 PUNCT_CHARS = set("。、，,！？!?…．・「」『』（）()【】〔〕〜~ー　 \t\r\n")
@@ -45,6 +59,10 @@ BREAK_PUNCT = set("。、，,！？!?…．")
 # collapsed point — the aligner stamped all its characters on one instant rather
 # than localising them. See sentences_from_alignment / drop_same_start_piles.
 COLLAPSED_SPAN_SECONDS = 1e-3
+# anime ellipsis-soft splitting: a … followed by a real pause of at least this many
+# seconds is a sentence boundary; a … with a smaller gap is trailing intonation (やだ…)
+# and stays joined. Only consulted when ellipsis_hard_split is False (anime backend).
+ELLIPSIS_SPLIT_GAP_SECONDS = 0.4
 # The aligner can push a short sentence ending several seconds after the preceding
 # text ("何欲しいん" ... "だ。"). Keep only strongly fragmentary joins across this
 # wider window; normal utterance pauses still split at phrase_max_internal_gap.
@@ -143,6 +161,29 @@ def item_end(item) -> float:
     return float(getattr(item, "end_time"))
 
 
+_QWEN_ALIGNER_LANGUAGE_ALIASES = {
+    "ja": "Japanese",
+    "jp": "Japanese",
+    "jpn": "Japanese",
+    "japanese": "Japanese",
+    "en": "English",
+    "eng": "English",
+    "english": "English",
+    "zh": "Chinese",
+    "zho": "Chinese",
+    "chi": "Chinese",
+    "chinese": "Chinese",
+}
+
+
+def qwen_aligner_language(language: str | None) -> str:
+    """Normalize CLI language codes to qwen-asr ForcedAligner language names."""
+    if not language or not str(language).strip():
+        return "Japanese"
+    key = str(language).strip().lower()
+    return _QWEN_ALIGNER_LANGUAGE_ALIASES.get(key, str(language).strip())
+
+
 def content_chars(text: str) -> list[str]:
     """Characters that carry timing \u2014 punctuation/whitespace stripped."""
     return [c for c in text if c not in PUNCT_CHARS]
@@ -185,17 +226,21 @@ def flatten_item_chars(time_stamps, max_char_seconds: float) -> list[tuple[str, 
     return out
 
 
-def split_into_units(text: str, max_chars: int) -> list[str]:
+def split_into_units(text: str, max_chars: int, ellipsis_hard: bool = True) -> list[str]:
     """Split the punctuated transcript into sentence-level cue units.
 
     Primary split on sentence-ending punctuation; overly long units are split
     further on the soft separator \u3001 so cues stay readable.
     """
+    enders = SENTENCE_END_CHARS if ellipsis_hard else SENTENCE_END_CHARS_NO_ELLIPSIS
+    # Soft separators used only to break an over-long unit. In ellipsis-soft mode \u2026
+    # joins \u3001 as a soft break so a long anime run still splits at a natural pause.
+    soft_seps = "\u3001" if ellipsis_hard else "\u3001\u2026"
     units: list[str] = []
     buf = ""
     for ch in text:
         buf += ch
-        if ch in SENTENCE_END_CHARS:
+        if ch in enders:
             units.append(buf)
             buf = ""
     if buf.strip():
@@ -209,7 +254,7 @@ def split_into_units(text: str, max_chars: int) -> list[str]:
         sub = ""
         for ch in unit:
             sub += ch
-            if ch == "\u3001" and len(content_chars(sub)) >= max_chars * 0.6:
+            if ch in soft_seps and len(content_chars(sub)) >= max_chars * 0.6:
                 result.append(sub)
                 sub = ""
         if sub:
@@ -417,6 +462,7 @@ def sentences_from_alignment(
     max_internal_gap: float,
     max_char_seconds: float,
     collapse_fillers: bool = True,
+    ellipsis_hard_split: bool = True,
 ) -> list[SubtitleEntry]:
     """Build cues from the raw transcript, timed via the aligner stream.
 
@@ -429,7 +475,7 @@ def sentences_from_alignment(
     exceeds max_chars/max_duration even when Qwen emitted no punctuation.
     """
     char_times = flatten_item_chars(time_stamps, max_char_seconds)
-    units = split_into_units(text, max_chars)
+    units = split_into_units(text, max_chars, ellipsis_hard=ellipsis_hard_split)
     entries: list[SubtitleEntry] = []
     pos = 0
     for unit in units:
@@ -463,7 +509,14 @@ def sentences_from_alignment(
         # Break on large internal time gaps (pauses between merged utterances).
         segments: list[list[tuple[str, float, float, bool]]] = [[tokens[0]]]
         for idx, tok in enumerate(tokens[1:], start=1):
-            gap = tok[1] - segments[-1][-1][2]
+            prev = segments[-1][-1]
+            gap = tok[1] - prev[2]
+            # anime: a … sitting on a real pause is a sentence boundary; the same … with
+            # no gap is just trailing intonation and stays joined. Fires below
+            # max_internal_gap so tighter pauses still break, but only right after a ….
+            if not ellipsis_hard_split and "…" in prev[0] and gap > ELLIPSIS_SPLIT_GAP_SECONDS:
+                segments.append([tok])
+                continue
             left_text = "".join(t[0] for t in segments[-1])
             right_text = "".join(t[0] for t in tokens[idx : min(len(tokens), idx + 8)])
             if gap > max_internal_gap and not should_keep_across_internal_gap(left_text, right_text, gap, max_internal_gap):
@@ -667,6 +720,22 @@ class ChunkJob:
     end: float
     keep_lo: float
     keep_hi: float
+    # Clip-relative speech regions inside [start, end] (offset by -start), used by
+    # the anime backend's collapse recovery for VAD-guided redistribution. Empty on
+    # the fixed-tiling path and on the qwen backend (which ignores it).
+    speech: list[Interval] = field(default_factory=list)
+
+
+def _clip_relative_speech(intervals: list[Interval], job_start: float, job_end: float) -> list[Interval]:
+    """Intersect absolute speech intervals with [job_start, job_end] and shift to
+    clip-relative coordinates (subtract job_start)."""
+    regions: list[Interval] = []
+    for iv in intervals:
+        s = max(iv.start, job_start)
+        e = min(iv.end, job_end)
+        if e > s:
+            regions.append(Interval(s - job_start, e - job_start))
+    return regions
 
 
 def build_fixed_jobs(duration: float, args: argparse.Namespace) -> list[ChunkJob]:
@@ -749,7 +818,66 @@ def build_vad_jobs(audio, samplerate: int, duration: float, args: argparse.Names
             keep_hi = group.end if i == last else sub.end - half
             audio_start = max(0.0, sub.start - effective_pre)
             audio_end = min(duration, sub.end + args.vad_post_context_seconds)
-            jobs.append(ChunkJob(audio_start, audio_end, keep_lo, keep_hi))
+            job = ChunkJob(audio_start, audio_end, keep_lo, keep_hi)
+            job.speech = _clip_relative_speech(intervals, audio_start, audio_end)
+            jobs.append(job)
+    return jobs
+
+
+def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argparse.Namespace) -> list[ChunkJob]:
+    """Short, speech-pure frames from WhisperSeg (Stage 3). Each grouped frame becomes
+    one ChunkJob spanning its speech; the frame's speech segments are stored
+    clip-relative for the collapse sentinel's VAD-guided recovery.
+
+    Frames do not overlap, so cue ownership is simply the frame's own [start, end).
+    """
+    from whisperseg_vad import WhisperSegVAD, resolve_model_path
+
+    if samplerate != 16000:
+        raise SystemExit("--vad-backend whisperseg requires 16 kHz audio")
+    vad = WhisperSegVAD(
+        model_path=resolve_model_path(str(args.whisperseg_model)),
+        threshold=args.whisperseg_threshold,
+        max_speech_duration_s=args.whisperseg_max_speech,
+        max_group_duration_s=args.whisperseg_max_group,
+        chunk_threshold_s=args.whisperseg_chunk_threshold,
+    )
+    if getattr(args, "scene_backend", "none") == "semantic":
+        # Cut acoustic-texture scenes first, then run WhisperSeg per scene so frames
+        # never cross a scene boundary (frame times shifted back to absolute).
+        from semantic_scene import detect_scenes
+
+        scenes = detect_scenes(
+            audio, samplerate,
+            min_dur=args.scene_min_seconds, max_dur=args.scene_max_seconds,
+            clustering_threshold=args.scene_clustering_threshold,
+        )
+        print(f"semantic scenes: {len(scenes)} (min={args.scene_min_seconds}s max={args.scene_max_seconds}s)", flush=True)
+        groups = []
+        for ss, se in scenes:
+            seg_audio = audio[int(ss * samplerate) : int(se * samplerate)]
+            if len(seg_audio) < int(0.1 * samplerate):
+                continue
+            for g in vad.segment(seg_audio, samplerate):
+                for s in g:
+                    s.start += ss
+                    s.end += ss
+                groups.append(g)
+    else:
+        groups = vad.segment(audio, samplerate)
+    vad.cleanup()
+
+    jobs: list[ChunkJob] = []
+    n = len(groups)
+    for gi, g in enumerate(groups):
+        frame_start = g[0].start
+        frame_end = g[-1].end
+        if frame_end - frame_start < args.vad_min_clip_seconds:
+            continue
+        keep_hi = float("inf") if gi == n - 1 else frame_end
+        job = ChunkJob(frame_start, frame_end, frame_start, keep_hi)
+        job.speech = [Interval(s.start - frame_start, s.end - frame_start) for s in g]
+        jobs.append(job)
     return jobs
 
 
@@ -844,8 +972,75 @@ def chunk_entries(
         max_internal_gap=args.phrase_max_internal_gap,
         max_char_seconds=args.phrase_max_char_seconds,
         collapse_fillers=getattr(args, "collapse_filler_repetition", True),
+        ellipsis_hard_split=getattr(args, "text_backend", "qwen") != "anime",
     )
     return [e for e in sentence_entries if keep_lo <= (e.start + e.end) / 2.0 < keep_hi]
+
+
+def _speech_regions_for_vad_only(clip_duration: float, speech_regions: list[Interval]) -> list[Interval]:
+    """Clip-relative speech regions used as the timestamp source in vad_only mode."""
+    regions: list[Interval] = []
+    for iv in speech_regions:
+        start = max(0.0, min(float(iv.start), clip_duration))
+        end = max(0.0, min(float(iv.end), clip_duration))
+        if end > start:
+            regions.append(Interval(start, end))
+    if not regions and clip_duration > 0:
+        regions.append(Interval(0.0, clip_duration))
+    return regions
+
+
+def _map_speech_offset(regions: list[Interval], position: float) -> float:
+    """Map a position in concatenated-speech seconds back to clip-relative time."""
+    remaining = max(0.0, position)
+    for iv in regions:
+        span = iv.end - iv.start
+        if remaining <= span:
+            return iv.start + remaining
+        remaining -= span
+    return regions[-1].end if regions else 0.0
+
+
+def _region_at_speech_offset(regions: list[Interval], position: float) -> Interval:
+    """Return the speech region owning a concatenated-speech position."""
+    remaining = max(0.0, position)
+    for iv in regions:
+        span = iv.end - iv.start
+        if remaining <= span:
+            return iv
+        remaining -= span
+    return regions[-1]
+
+
+def vad_only_items_for_text(text: str, clip_duration: float, speech_regions: list[Interval]) -> list[_RawItem]:
+    """Build WJ-style aligner-free pseudo items for anime-whisper text.
+
+    WhisperJAV's anime-whisper preset uses vad_only: no forced aligner is loaded;
+    frame/VAD boundaries are the timing source. This adapter gives our existing
+    cue shaping one timed pseudo item per content character, distributed across
+    the detected speech regions and leaving inter-region gaps as real pauses.
+    """
+    chars = content_chars(text)
+    if not chars:
+        return []
+    regions = _speech_regions_for_vad_only(clip_duration, speech_regions)
+    if not regions:
+        return []
+    total = sum(iv.end - iv.start for iv in regions)
+    if total <= 0:
+        return []
+    items: list[_RawItem] = []
+    n = len(chars)
+    for i, ch in enumerate(chars):
+        speech_start = total * i / n
+        speech_end = total * (i + 1) / n
+        region = _region_at_speech_offset(regions, speech_start)
+        start = _map_speech_offset(regions, speech_start)
+        end = min(_map_speech_offset(regions, speech_end), region.end)
+        if end < start:
+            end = start
+        items.append(_RawItem(ch, start, end))
+    return items
 
 
 def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]:
@@ -854,9 +1049,27 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
     step = raw["chunk_seconds"] - raw["chunk_overlap_seconds"]
     context = raw.get("context", "")
     entries: list[SubtitleEntry] = []
+    # anime aligner_only: replay from the pre-recovery raw_items so a single expensive
+    # generate/align pass can be replayed as either mode (aligner_fallback uses the
+    # recovered items stored in "items").
+    anime_only = (
+        getattr(args, "text_backend", "qwen") == "anime"
+        and getattr(args, "timestamp_mode", "aligner_fallback") == "aligner_only"
+    )
     for ch in raw["chunks"]:
-        items = [_RawItem(it["text"], it["start"], it["end"]) for it in ch["items"]]
-        text = "" if is_context_echo(ch["text"], context) else ch["text"]
+        if "clean_text" in ch:
+            # anime schema: text is already cleaned; no context echo to strip.
+            text = ch["clean_text"]
+            if getattr(args, "timestamp_mode", "aligner_fallback") == "vad_only":
+                regions = [Interval(float(s), float(e)) for s, e in ch.get("speech_regions", [])]
+                items = vad_only_items_for_text(text, ch["end"] - ch["start"], regions)
+            else:
+                src = ch["raw_items"] if (anime_only and "raw_items" in ch) else ch["items"]
+                items = [_RawItem(it["text"], it["start"], it["end"]) for it in src]
+        else:
+            text = "" if is_context_echo(ch["text"], context) else ch["text"]
+            src = ch["items"]
+            items = [_RawItem(it["text"], it["start"], it["end"]) for it in src]
         if "keep_lo" in ch:
             keep_lo = ch["keep_lo"]
             keep_hi = ch["keep_hi"] if ch.get("keep_hi") is not None else float("inf")
@@ -905,7 +1118,215 @@ def asr_context(args: argparse.Namespace) -> str:
     return " ".join(parts)
 
 
+def _time_anime_job(job: ChunkJob, items, args: argparse.Namespace) -> tuple[dict, dict, list]:
+    """Run the collapse sentinel on a job's aligner items (clip-relative) and, in
+    aligner_fallback mode, redistribute when collapsed. Returns (sentinel, recovery, items).
+
+    scene_duration is the widened clip duration (job.end - job.start); speech regions
+    are the job's clip-relative VAD regions. Output items stay clip-relative.
+    """
+    words = items_to_words(items)
+    sentinel = assess_alignment_quality(words, job.end - job.start)
+    recovery = {"applied": False, "strategy": "none"}
+    out_items = list(items)
+    if (
+        args.timestamp_mode == "aligner_fallback"
+        and getattr(args, "collapse_recovery", True)
+        and sentinel["status"] == "COLLAPSED"
+    ):
+        regions = [(iv.start, iv.end) for iv in job.speech]
+        recovered = redistribute_collapsed_words(words, job.end - job.start, speech_regions=regions or None)
+        out_items = words_to_items(recovered)
+        recovery = {"applied": True, "strategy": "vad_guided" if regions else "proportional"}
+    return sentinel, recovery, out_items
+
+
+def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list[ChunkResult], dict]:
+    """anime-whisper text + standalone Qwen forced aligner, two-phase (generate-all then
+    align-all). Reuses the existing VAD clip construction; WhisperSeg/semantic are Stage 3/4.
+
+    Phase 1 loads anime-whisper and transcribes each clip to text (cleaned). Phase 2
+    either builds vad_only timestamps from VAD regions (WJ anime preset) or unloads it,
+    loads the standalone aligner, aligns every non-empty clip, then runs the collapse
+    sentinel / recovery before the shared chunk_entries shaping.
+    """
+    import gc
+    import torch
+    from transformers import WhisperForConditionalGeneration, WhisperProcessor
+
+    audio, samplerate = load_full_audio(args.audio)
+    duration = audio.shape[0] / float(samplerate)
+    if getattr(args, "vad_backend", "current") == "whisperseg":
+        jobs = build_whisperseg_jobs(audio, samplerate, duration, args)
+        mode = "whisperseg"
+    elif args.vad_chunks:
+        jobs = build_vad_jobs(audio, samplerate, duration, args)
+        mode = "vad"
+    else:
+        jobs = build_fixed_jobs(duration, args)
+        mode = "fixed"
+
+    if args.recapture_min_gap > 0:
+        print("warning: recapture is not supported on the anime backend; ignoring --recapture-min-gap", flush=True)
+    if (args.context or "").strip():
+        print("warning: --context is ignored by anime-whisper (model constraint: no initial prompt)", flush=True)
+
+    print(
+        f"anime ASR: audio={duration / 60.0:.1f}min mode={mode} clips={len(jobs)} "
+        f"batch={args.batch_size} timestamp_mode={args.timestamp_mode} model={args.text_model}",
+        flush=True,
+    )
+
+    gen_dtype = torch.float16 if "cuda" in str(args.device) else torch.float32
+
+    # ---- Phase 1: generate all clip texts ----
+    proc = WhisperProcessor.from_pretrained(str(args.text_model))
+    model = WhisperForConditionalGeneration.from_pretrained(str(args.text_model), dtype=gen_dtype).to(args.device)
+    max_tokens = min(int(args.max_new_tokens), 444)
+    raw_texts: list[str] = []
+    clean_texts: list[str] = []
+    t0 = time.time()
+    for i, job in enumerate(jobs):
+        clip = audio[int(job.start * samplerate) : int(job.end * samplerate)]
+        feats = proc(clip, sampling_rate=samplerate, return_tensors="pt").input_features.to(args.device, gen_dtype)
+        with torch.no_grad():
+            ids = model.generate(
+                input_features=feats, language="ja", task="transcribe",
+                do_sample=False, num_beams=1,
+                no_repeat_ngram_size=int(args.no_repeat_ngram_size), max_new_tokens=max_tokens,
+            )
+        raw = str(proc.batch_decode(ids, skip_special_tokens=True)[0]).strip()
+        raw_texts.append(raw)
+        clean_texts.append(anime_clean_text(raw))
+        if (i + 1) % 50 == 0 or i + 1 == len(jobs):
+            el = time.time() - t0
+            eta = el / (i + 1) * (len(jobs) - i - 1)
+            print(
+                f"[anime-gen] {i + 1}/{len(jobs)} elapsed={el:.0f}s eta={eta:.0f}s last={clean_texts[-1][:40]!r}",
+                flush=True,
+            )
+    del model, proc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    job_items: dict[int, list] = {}
+    job_sentinel: dict[int, dict] = {}
+    job_recovery: dict[int, dict] = {}
+    job_raw_items: dict[int, list] = {}
+    idxs = [i for i, c in enumerate(clean_texts) if c]
+    n_collapsed = 0
+    if args.timestamp_mode == "vad_only":
+        for i in idxs:
+            job_items[i] = vad_only_items_for_text(clean_texts[i], jobs[i].end - jobs[i].start, jobs[i].speech)
+            job_raw_items[i] = []
+            job_sentinel[i] = {"status": "N/A", "reason": "vad_only"}
+            job_recovery[i] = {"applied": False, "strategy": "vad_only"}
+        print(f"[anime-vad-only] timed {len(idxs)} non-empty clips from VAD regions", flush=True)
+    else:
+        # ---- Phase 2: align all non-empty clips ----
+        from qwen_asr.inference.qwen3_forced_aligner import Qwen3ForcedAligner
+
+        aligner = Qwen3ForcedAligner.from_pretrained(
+            str(args.forced_aligner), dtype=getattr(torch, args.dtype), device_map=args.device,
+        )
+        aligner_language = qwen_aligner_language(getattr(args, "language", None))
+        t1 = time.time()
+        for gstart in range(0, len(idxs), args.batch_size):
+            gi = idxs[gstart : gstart + args.batch_size]
+            clips = [(audio[int(jobs[i].start * samplerate) : int(jobs[i].end * samplerate)], samplerate) for i in gi]
+            texts = [clean_texts[i] for i in gi]
+            results = aligner.align(audio=clips, text=texts, language=[aligner_language] * len(clips))
+            for i, res in zip(gi, results):
+                items = getattr(res, "items", None)
+                if items is None:
+                    try:
+                        items = list(res)
+                    except TypeError:
+                        items = []
+                job_raw_items[i] = items
+                sentinel, recovery, out_items = _time_anime_job(jobs[i], items, args)
+                job_sentinel[i] = sentinel
+                job_recovery[i] = recovery
+                job_items[i] = out_items
+                if sentinel["status"] == "COLLAPSED":
+                    n_collapsed += 1
+            done = min(gstart + args.batch_size, len(idxs))
+            print(f"[anime-align] {done}/{len(idxs)} elapsed={time.time() - t1:.0f}s collapsed={n_collapsed}", flush=True)
+        del aligner
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    # ---- Build entries + raw dump ----
+    entries: list[SubtitleEntry] = []
+    chunk_results: list[ChunkResult] = []
+    raw_chunks: list[dict] = []
+    n_recovered = {"vad_guided": 0, "proportional": 0}
+    for i, job in enumerate(jobs):
+        clean = clean_texts[i]
+        out_items = job_items.get(i, [])
+        raw_items = job_raw_items.get(i, [])
+        sentinel = job_sentinel.get(i, {})
+        recovery = job_recovery.get(i, {"applied": False, "strategy": "none"})
+        if recovery.get("applied"):
+            n_recovered[recovery["strategy"]] = n_recovered.get(recovery["strategy"], 0) + 1
+        kept = chunk_entries(
+            clean, out_items, start=job.start, keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
+        )
+        entries.extend(kept)
+        raw_chunks.append({
+            "start": job.start,
+            "end": job.end,
+            "keep_lo": job.keep_lo,
+            "keep_hi": None if job.keep_hi == float("inf") else job.keep_hi,
+            "raw_text": raw_texts[i],
+            "clean_text": clean,
+            "speech_regions": [[iv.start, iv.end] for iv in job.speech],
+            "raw_items": [
+                {"text": it.text, "start": float(it.start_time), "end": float(it.end_time)}
+                for it in raw_items
+                if getattr(it, "start_time", None) is not None and getattr(it, "end_time", None) is not None
+            ],
+            "recovered_items": (
+                [{"text": item_text(it), "start": item_start(it), "end": item_end(it)} for it in out_items]
+                if recovery.get("applied") else []
+            ),
+            "sentinel": sentinel,
+            "recovery": recovery,
+            "items": [
+                {"text": item_text(it), "start": item_start(it), "end": item_end(it)} for it in out_items
+            ],
+        })
+        chunk_results.append(
+            ChunkResult(start=job.start, end=job.end, language="ja", text=raw_texts[i], segments=len(kept), seconds=0.0)
+        )
+
+    entries.sort(key=lambda e: (e.start, e.end))
+    print(
+        f"anime done: clips={len(jobs)} non_empty={len(idxs)} collapsed={n_collapsed} "
+        f"recovered(vad={n_recovered['vad_guided']}, prop={n_recovered['proportional']}) entries={len(entries)}",
+        flush=True,
+    )
+    raw = {
+        "text_backend": "anime",
+        "scene_backend": getattr(args, "scene_backend", "none"),
+        "vad_backend": getattr(args, "vad_backend", "current"),
+        "timestamp_mode": args.timestamp_mode,
+        "chunk_seconds": args.chunk_seconds,
+        "chunk_overlap_seconds": args.chunk_overlap_seconds,
+        "duration": duration,
+        "mode": mode,
+        "context": "",
+        "recapture": {},
+        "chunks": raw_chunks,
+    }
+    return entries, chunk_results, raw
+
+
 def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list[ChunkResult], dict]:
+    if getattr(args, "text_backend", "qwen") == "anime":
+        return transcribe_anime(args)
     # Imported here so the pure helpers (filters, chunking) stay importable in
     # environments without the GPU stack, e.g. the pytest suite.
     import torch
@@ -1071,9 +1492,13 @@ def main() -> None:
     args = build_parser().parse_args()
 
     if args.from_raw is None:
-        if not args.model.exists():
+        if args.text_backend == "anime":
+            if not Path(args.text_model).exists():
+                raise SystemExit(f"Missing anime-whisper model: {args.text_model}")
+        elif not args.model.exists():
             raise SystemExit(f"Missing Qwen ASR model: {args.model}")
-        if not args.forced_aligner.exists():
+        needs_forced_aligner = args.text_backend != "anime" or args.timestamp_mode != "vad_only"
+        if needs_forced_aligner and not args.forced_aligner.exists():
             raise SystemExit(f"Missing Qwen forced aligner: {args.forced_aligner}")
         if args.chunk_overlap_seconds >= args.chunk_seconds:
             raise SystemExit("--chunk-overlap-seconds must be smaller than --chunk-seconds")
