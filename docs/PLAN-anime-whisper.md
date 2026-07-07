@@ -1,6 +1,6 @@
 # WJ-style anime ASR migration plan
 
-Last updated: 2026-07-06
+Last updated: 2026-07-07
 
 ## Goal
 
@@ -9,9 +9,12 @@ The DLDSS-492 comparison showed two different strengths:
 - The existing Qwen3-ASR path produces relatively clean subtitles, but misses weak speech, breathy dialogue, and mixed moan/dialogue regions.
 - WhisperJAV's anime path has better weak-speech recall, but its final SRT can have long cues and overlaps.
 
-The goal is not to copy WhisperJAV's final subtitles wholesale. The goal is to borrow the parts that directly address our failures: anime-whisper as a text source, WhisperSeg weak-speech VAD, VAD-only timing for anime, and optional semantic scene boundaries. The existing project subtitle shaping, overlap cleanup, translation, and ASS generation remain the output chain.
+The goal is not to copy WhisperJAV's final subtitles wholesale. The goal is to borrow the parts that directly address our failures: anime-whisper as a text source, WhisperSeg weak-speech VAD, VAD-only timing for anime, and WJ-style semantic scene boundaries. The existing project subtitle shaping, overlap cleanup, translation, and ASS generation remain the output chain.
 
-Current default project pipeline is still Qwen unless the user explicitly selects `--text-backend anime`. Within the anime backend, the current default is now WJ-style:
+The top-level default project pipeline is now `--asr anime`, which selects
+`--text-backend anime` in the shared Qwen/anime sub-script. The sub-script's raw
+`QwenAsrConfig.text_backend` default remains `qwen` so direct script use stays
+explicit, but the normal video pipeline now uses the WJ-style anime path:
 
 ```text
 audio
@@ -35,7 +38,7 @@ audio
   -> chunk_entries / finalize_qwen_entries
 ```
 
-Semantic scene is implemented but remains opt-in:
+Semantic scene is implemented and enabled by default for the anime path:
 
 ```text
 semantic scene
@@ -121,28 +124,35 @@ whisperseg_threshold = 0.35
 whisperseg_max_speech = 5.0
 whisperseg_max_group = 5.0
 whisperseg_chunk_threshold = 0.5
+whisperseg_min_frame_seconds = 0.1
 ```
 
-Qwen remains the global ASR default unless `--text-backend anime` is selected.
+The top-level video pipeline now selects anime by default; Qwen remains available with `--asr qwen`.
 
 ### Stage 4: semantic scene
 
 Implemented:
 
 - `--scene-backend none | semantic`
+- top-level `--qwen-scene-backend none | semantic`
 - `--scene-min-seconds`
 - `--scene-max-seconds`
 - `--scene-clustering-threshold`
 - semantic scene boundaries are used only to constrain WhisperSeg jobs
 - scene type / `asr_prompt` are not fed to anime-whisper
 
-Current default is still:
+Current anime default is:
 
 ```text
-scene_backend = none
+scene_backend = semantic
+scene_min_seconds = 12.0
+scene_max_seconds = 48.0
 ```
 
-This keeps the default anime path simpler and avoids forcing semantic behavior before it consistently improves text quality.
+This matches the WhisperJAV ChronosJAV anime outer-shell default. Semantic scene is still
+a normal CLI knob and can be disabled from the top-level pipeline with
+`--qwen-scene-backend none` (or `--scene-backend none` when calling the sub-script
+directly) for A/B testing.
 
 ## Current Evidence
 
@@ -180,7 +190,8 @@ Observed effects:
 
 Conclusion:
 
-- Semantic scene is a useful optional experiment, not a proven default switch.
+- Semantic scene now matches the WJ ChronosJAV anime default. It remains a normal A/B
+  knob because local windows show mixed text effects.
 - The remaining gap is likely in clip boundary/context and audio input differences, not decode parameters.
 
 ### Decode parameter comparison
@@ -215,7 +226,9 @@ This suggests that clip boundaries and context length materially affect anime-wh
 
 Semantic scene helps weak-speech recall but can increase fragmentation and does not consistently improve wording.
 
-It should remain opt-in until local window experiments prove which scene/VAD settings are better.
+It should stay easy to disable (`--qwen-scene-backend none` at the top level,
+`--scene-backend none` in the sub-script) while local window experiments verify which
+scene/VAD settings are best.
 
 ### 3. WJ parity is not just one flag
 
@@ -227,7 +240,7 @@ WJ anime combines:
 - temporary WAV frame inputs read by the generator
 - WJ reconstruction/regrouping
 
-We currently match the major defaults only in the anime path when requested, but not every implementation detail.
+We currently match the major defaults in the top-level anime path, but not every implementation detail.
 
 ### 4. Evaluation is approximate
 
@@ -266,13 +279,13 @@ Only implement after the audit identifies a cause:
 - Add a small anime-only context padding knob around WhisperSeg jobs.
 - Add a WJ-like temp WAV/librosa diagnostic mode, not as default.
 - Tune WhisperSeg grouping if it improves both weak-speech recall and misrecognition windows.
-- Keep semantic scene opt-in unless it improves the selected windows consistently.
+- Keep semantic scene easy to disable unless it improves the selected windows consistently.
 
 ### Later work
 
 After anime stabilizes:
 
-- Revisit README / README-CN default-command docs.
+- Keep README / README-CN default-command docs in sync with the anime default.
 - Consider moving selected WJ improvements back to the Qwen text backend.
 - Consider Qwen text-only assembly, dynamic token budget, repetition penalty, or semantic+WhisperSeg framing for Qwen only after anime evidence is understood.
 

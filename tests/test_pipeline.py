@@ -146,3 +146,61 @@ def test_output_path_for_keeps_flat_directory_names(tmp_path):
     video = input_dir / "sample.mp4"
 
     assert output_path_for(video, input_dir, output_dir, recursive=False) == (output_dir / "sample.zh.srt").resolve()
+
+
+def test_build_qwen_command_survives_unexposed_config_fields(tmp_path):
+    """Regression: the orchestrator must not crash when QwenAsrConfig has a field with
+    no matching --qwen-<field> flag. config_from_prefixed falls back to the dataclass
+    default instead of raising AttributeError (which previously took down the pipeline)."""
+    import argparse
+
+    from video_to_zh_srt import build_qwen_command
+
+    # Namespace with only the override sources present — every qwen_<field> is
+    # absent, exactly the situation for the newly added text_backend/vad_backend/etc.
+    ns = argparse.Namespace(language="ja", min_cue_seconds=0.3, asr="qwen")
+    cmd = build_qwen_command(ns, tmp_path / "audio.wav", tmp_path / "out.ja.srt")
+
+    assert str(tmp_path / "audio.wav") in cmd
+    assert "--text-backend" in cmd          # unexposed field serialized from its default
+    assert cmd[cmd.index("--text-backend") + 1] == "qwen"  # --asr qwen stays on qwen
+
+
+def test_build_qwen_command_asr_anime_selects_anime_backend(tmp_path):
+    """--asr anime runs the shared qwen sub-script with text_backend=anime."""
+    import argparse
+
+    from video_to_zh_srt import build_qwen_command
+
+    ns = argparse.Namespace(language="ja", min_cue_seconds=0.3, asr="anime")
+    cmd = build_qwen_command(ns, tmp_path / "audio.wav", tmp_path / "out.ja.srt")
+
+    assert cmd[cmd.index("--text-backend") + 1] == "anime"
+    # anime defaults reach the sub-script through the shared QwenAsrConfig serialization
+    assert cmd[cmd.index("--vad-backend") + 1] == "whisperseg"
+    assert cmd[cmd.index("--timestamp-mode") + 1] == "vad_only"
+    assert cmd[cmd.index("--scene-backend") + 1] == "semantic"
+
+
+def test_build_qwen_command_asr_anime_can_select_aligner_mode(tmp_path):
+    import argparse
+
+    from video_to_zh_srt import build_qwen_command
+
+    ns = argparse.Namespace(language="ja", min_cue_seconds=0.3, asr="anime", qwen_timestamp_mode="aligner_fallback")
+    cmd = build_qwen_command(ns, tmp_path / "audio.wav", tmp_path / "out.ja.srt")
+
+    assert cmd[cmd.index("--text-backend") + 1] == "anime"
+    assert cmd[cmd.index("--timestamp-mode") + 1] == "aligner_fallback"
+
+
+def test_build_qwen_command_asr_anime_can_disable_semantic_scene(tmp_path):
+    import argparse
+
+    from video_to_zh_srt import build_qwen_command
+
+    ns = argparse.Namespace(language="ja", min_cue_seconds=0.3, asr="anime", qwen_scene_backend="none")
+    cmd = build_qwen_command(ns, tmp_path / "audio.wav", tmp_path / "out.ja.srt")
+
+    assert cmd[cmd.index("--text-backend") + 1] == "anime"
+    assert cmd[cmd.index("--scene-backend") + 1] == "none"

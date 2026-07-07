@@ -872,7 +872,7 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
     for gi, g in enumerate(groups):
         frame_start = g[0].start
         frame_end = g[-1].end
-        if frame_end - frame_start < args.vad_min_clip_seconds:
+        if frame_end - frame_start < args.whisperseg_min_frame_seconds:
             continue
         keep_hi = float("inf") if gi == n - 1 else frame_end
         job = ChunkJob(frame_start, frame_end, frame_start, keep_hi)

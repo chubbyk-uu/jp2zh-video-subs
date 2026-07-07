@@ -38,6 +38,9 @@ BILINGUAL_SCRIPT = SCRIPTS_DIR / "make_bilingual_ass.py"
 WHISPER_MODEL = PROJECT_ROOT / "models" / "faster-whisper-large-v3"
 QWEN_ASR_MODEL = PROJECT_ROOT / "models" / "Qwen3-ASR-1.7B"
 QWEN_ALIGNER_MODEL = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
+# anime backend reuses the Qwen sub-script (shared VAD/cue-shaping/finalize) with a
+# different text source, so --asr anime runs QWEN_TRANSCRIBE_SCRIPT with text_backend=anime.
+ANIME_ASR_MODEL = PROJECT_ROOT / "models" / "anime-whisper"
 TRANSLATE_MODEL = PROJECT_ROOT / "models" / "Hy-MT2-7B-GGUF" / "HY-MT2-7B-Q6_K.gguf"
 SAKURA_MODEL = PROJECT_ROOT / "models" / "Sakura-14B-Qwen2.5-v1.0-GGUF" / "sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
 GALTRANSL_MODEL = PROJECT_ROOT / "models" / "Sakura-GalTransl-7B-v3.7-GGUF" / "Sakura-Galtransl-7B-v3.7.gguf"
@@ -262,6 +265,7 @@ def build_qwen_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> l
         overrides={
             "language": "Japanese" if args.language == "ja" else args.language,
             "min_cue_seconds": args.min_cue_seconds,
+            "text_backend": "anime" if args.asr == "anime" else "qwen",
         },
     )
     return [
@@ -512,7 +516,7 @@ def process_video_stages(
     ja_srt = job_dir / f"{video.stem}.ja.srt"
     translate_input_srt = ja_srt
 
-    if args.asr == "qwen":
+    if args.asr in ("qwen", "anime"):
         transcribe_command = build_qwen_command(args, audio, ja_srt)
         if not resume_skip(args, ja_srt, log, "transcription"):
             run(transcribe_command, log)
@@ -547,7 +551,7 @@ def process_video_stages(
     if not args.skip_quality_report:
         report_path = job_dir / f"{video.stem}.quality.txt"
         fills_metadata = (job_dir / f"{video.stem}.fills.tsv") if args.gap_fill else None
-        qwen_metadata = ja_srt.with_suffix(ja_srt.suffix + ".meta.json") if args.asr == "qwen" else None
+        qwen_metadata = ja_srt.with_suffix(ja_srt.suffix + ".meta.json") if args.asr in ("qwen", "anime") else None
         quality_command = build_quality_command(
             args,
             translate_input_srt,
@@ -692,11 +696,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--asr",
-        choices=("whisper", "qwen"),
-        default="qwen",
-        help="Transcription backend (default qwen). 'qwen' uses Qwen3-ASR with VAD-cut "
-        "clips (no gap fill); 'whisper' is the legacy sliding+gap-fill pipeline. "
-        "Downstream translate/bilingual/quality are shared.",
+        choices=("whisper", "qwen", "anime"),
+        default="anime",
+        help="Transcription backend (default anime). 'anime' uses litagin/anime-whisper "
+        "text + WhisperSeg framing + semantic scenes + vad_only timing; 'qwen' uses "
+        "Qwen3-ASR with VAD-cut clips (no gap fill); 'whisper' is the legacy "
+        "sliding+gap-fill pipeline. anime shares the qwen sub-script and its --qwen-* "
+        "tuning knobs. Downstream stages are shared.",
     )
     parser.add_argument("--qwen-batch-size", type=int, default=24)
     parser.add_argument("--qwen-device", default="cuda:0")
@@ -718,7 +724,8 @@ def main() -> None:
                         action=argparse.BooleanOptionalAction, default=True,
                         help="Cut Qwen clips on silence (VAD) so each clip's first token "
                              "sits where speech starts, reducing leading-anchor drift "
-                             "(default on; use --no-qwen-vad-chunks for fixed tiling).")
+                             "(Qwen comparison line; default on for --asr qwen, use "
+                             "--no-qwen-vad-chunks for fixed tiling).")
     parser.add_argument("--qwen-vad-threshold", type=float, default=0.1)
     parser.add_argument("--qwen-vad-window-seconds", type=float, default=8.0)
     parser.add_argument("--qwen-vad-window-overlap-seconds", type=float, default=4.0)
@@ -741,6 +748,18 @@ def main() -> None:
     parser.add_argument("--qwen-recapture-min-gap", type=float, default=0.0)
     parser.add_argument("--qwen-recapture-min-speech", type=float, default=2.0)
     parser.add_argument("--qwen-recapture-vad-threshold", type=float, default=0.05)
+    parser.add_argument(
+        "--qwen-timestamp-mode",
+        choices=("aligner_fallback", "aligner_only", "vad_only"),
+        default="vad_only",
+        help="Anime timing mode: default vad_only; aligner modes require Qwen3-ForcedAligner.",
+    )
+    parser.add_argument(
+        "--qwen-scene-backend",
+        choices=("none", "semantic"),
+        default="semantic",
+        help="Anime scene pre-segmentation (default semantic; use none for A/B tests).",
+    )
     parser.add_argument("--qwen-collapse-filler-repetition", dest="qwen_collapse_filler_repetition",
                         action=argparse.BooleanOptionalAction, default=True,
                         help="Collapse repeated filler runs inside one Qwen cue (default on).")
@@ -831,10 +850,10 @@ def main() -> None:
     if args.resume:
         args.reuse_existing_audio = True
 
-    if args.asr == "qwen":
-        # Qwen gap-fill is intentionally disabled; use Whisper when a second recall pass is required.
+    if args.asr in ("qwen", "anime"):
+        # Qwen/anime gap-fill is intentionally disabled; use Whisper when a second recall pass is required.
         if args.gap_fill:
-            print("Note: --gap-fill is ignored with --asr qwen; gap fill belongs to the Whisper backend.", flush=True)
+            print(f"Note: --gap-fill is ignored with --asr {args.asr}; gap fill belongs to the Whisper backend.", flush=True)
         args.gap_fill = False
 
     if args.keep_audio:
@@ -855,7 +874,12 @@ def main() -> None:
     if shutil.which("ffmpeg") is None:
         raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")
 
-    if args.asr == "qwen":
+    if args.asr == "anime":
+        require_file(ANIME_ASR_MODEL, "anime-whisper model")
+        if args.qwen_timestamp_mode != "vad_only":
+            require_file(QWEN_ALIGNER_MODEL, "Qwen3 forced aligner")
+        require_file(QWEN_TRANSCRIBE_SCRIPT, "transcription script")
+    elif args.asr == "qwen":
         require_file(QWEN_ASR_MODEL, "Qwen3-ASR model")
         require_file(QWEN_ALIGNER_MODEL, "Qwen3 forced aligner")
         require_file(QWEN_TRANSCRIBE_SCRIPT, "Qwen transcription script")

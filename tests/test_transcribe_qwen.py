@@ -1,5 +1,6 @@
 import argparse
 
+import numpy as np
 import pytest
 
 from srt_utils import Interval
@@ -11,6 +12,7 @@ from transcribe_ja_srt_qwen import (
     _clip_relative_speech,
     _interjection_core,
     _time_anime_job,
+    build_whisperseg_jobs,
     drop_isolated_interjections,
     entries_from_raw,
     qwen_aligner_language,
@@ -20,6 +22,7 @@ from transcribe_ja_srt_qwen import (
     vad_only_items_for_text,
 )
 import whisperseg_vad
+from whisperseg_vad import SpeechSegment
 
 
 def _shaping_args(**overrides):
@@ -513,6 +516,39 @@ def test_whisperseg_resolve_model_path_local_only(tmp_path, monkeypatch):
     monkeypatch.setattr(whisperseg_vad, "DEFAULT_MODEL_PATH", tmp_path / "missing.onnx")
     with pytest.raises(SystemExit):
         whisperseg_vad.resolve_model_path()
+
+
+def test_whisperseg_jobs_use_min_frame_not_legacy_vad_min_clip(monkeypatch, tmp_path):
+    class FakeWhisperSegVAD:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, _audio, _sample_rate):
+            return [[SpeechSegment(1.0, 1.2)]]
+
+        def cleanup(self):
+            pass
+
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"onnx")
+    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", FakeWhisperSegVAD)
+
+    args = argparse.Namespace(
+        whisperseg_model=str(model),
+        whisperseg_threshold=0.35,
+        whisperseg_max_speech=5.0,
+        whisperseg_max_group=5.0,
+        whisperseg_chunk_threshold=0.5,
+        whisperseg_min_frame_seconds=0.1,
+        vad_min_clip_seconds=0.3,
+        scene_backend="none",
+    )
+
+    jobs = build_whisperseg_jobs(np.zeros(16000 * 3, dtype=np.float32), 16000, 3.0, args)
+
+    assert len(jobs) == 1
+    assert jobs[0].start == pytest.approx(1.0)
+    assert jobs[0].end == pytest.approx(1.2)
 
 
 def test_clip_relative_speech_intersects_and_shifts():

@@ -32,8 +32,9 @@ class QwenAsrConfig:
     no_default_context: bool = arg_field(False, action="store_true", help="Drop the built-in ASR context")
 
     # ASR text backend. Despite the QwenAsrConfig name, this hosts both text sources:
-    #   qwen  — Qwen3-ASR (bundled model + forced aligner), the current default.
-    #   anime — litagin/anime-whisper text + standalone Qwen3 forced aligner (two-phase).
+    #   qwen  — Qwen3-ASR text with bundled/standalone forced alignment.
+    #   anime — anime-whisper text with WhisperSeg + vad_only by default; standalone
+    #           Qwen3 forced alignment is available only for diagnostic timestamp modes.
     text_backend: str = arg_field("qwen", choices=("qwen", "anime"), help="ASR text source")
     text_model: str = arg_field("models/anime-whisper", help="anime-whisper model path (text_backend=anime)")
     timestamp_mode: str = arg_field(
@@ -54,12 +55,13 @@ class QwenAsrConfig:
     whisperseg_max_group: float = arg_field(5.0, help="WhisperSeg max frame group duration (s)")
     whisperseg_chunk_threshold: float = arg_field(0.5, help="WhisperSeg frame grouping silence threshold (s)")
     whisperseg_threshold: float = arg_field(0.35, help="WhisperSeg onset probability threshold")
+    whisperseg_min_frame_seconds: float = arg_field(0.1, help="Drop WhisperSeg frames shorter than this")
 
     # Optional semantic scene pre-segmentation (Stage 4). When "semantic", the audio is
     # first cut into acoustic-texture scenes and WhisperSeg runs per-scene so frames do
     # not cross texture boundaries. Only meaningful with vad_backend=whisperseg.
-    scene_backend: str = arg_field("none", choices=("none", "semantic"), help="anime scene pre-segmentation")
-    scene_min_seconds: float = arg_field(20.0, help="semantic scene min duration (s)")
+    scene_backend: str = arg_field("semantic", choices=("none", "semantic"), help="anime scene pre-segmentation")
+    scene_min_seconds: float = arg_field(12.0, help="semantic scene min duration (s)")
     scene_max_seconds: float = arg_field(48.0, help="semantic scene max duration (s)")
     scene_clustering_threshold: float = arg_field(18.0, help="semantic agglomerative distance threshold")
 

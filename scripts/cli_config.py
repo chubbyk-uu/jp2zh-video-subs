@@ -80,12 +80,17 @@ def config_from_prefixed(args: argparse.Namespace, cls, prefix: str, overrides: 
     unprefixed arg, or a value the orchestrator transforms first).
     """
     overrides = overrides or {}
+    # Fall back to the dataclass's own default for any field the orchestrator did not
+    # expose as a --<prefix><field> arg. Without this, adding a QwenAsrConfig field
+    # without also adding the matching orchestrator flag makes this call raise
+    # AttributeError and takes down the whole pipeline (regression guard).
+    defaults = cls()
     values = {}
     for field in dataclasses.fields(cls):
         if field.name in overrides:
             values[field.name] = overrides[field.name]
         else:
-            values[field.name] = getattr(args, prefix + field.name)
+            values[field.name] = getattr(args, prefix + field.name, getattr(defaults, field.name))
     return cls(**values)
 
 
