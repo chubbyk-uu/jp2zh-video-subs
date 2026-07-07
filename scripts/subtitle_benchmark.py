@@ -24,8 +24,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from functools import lru_cache
+from pathlib import Path
 
 import pykakasi
 
@@ -112,6 +114,50 @@ def timing_health(cand) -> dict:
     return {"cues": n, "short<0.4": short, "long>8s": long, "overlaps": ov}
 
 
+def score_candidates(anime_ref, qwen_refs, cands: dict[str, list[tuple[float, float, str]]]) -> dict:
+    consensus, anime_only = build_benchmark(anime_ref, qwen_refs)
+    rows = []
+    for name, cand in cands.items():
+        ch, ct = recall(cand, consensus)
+        wh, wt = recall(cand, anime_only)
+        th = timing_health(cand)
+        rows.append({
+            "candidate": name,
+            "consensus_hit": ch,
+            "consensus_total": ct,
+            "consensus_recall": round(ch / ct, 4) if ct else None,
+            "weak_speech_hit": wh,
+            "weak_speech_total": wt,
+            "weak_speech_recall": round(wh / wt, 4) if wt else None,
+            "timing": th,
+        })
+    return {
+        "consensus_segments": len(consensus),
+        "anime_only_weak_speech_segments": len(anime_only),
+        "candidates": rows,
+    }
+
+
+def render_report(result: dict, anime_name: str, qwen_ref_count: int) -> str:
+    lines = [
+        f"Benchmark from anime={anime_name} + {qwen_ref_count} qwen refs:",
+        f"  cross-model consensus (scored) : {result['consensus_segments']} segments",
+        f"  anime-only weak speech         : {result['anime_only_weak_speech_segments']} segments",
+        "  (isolated as 'needs human': reference-disagreement segments not scored)",
+        "",
+        f"{'candidate':16} {'consensus-recall':>18} {'weak-speech-recall':>20} {'timing'}",
+    ]
+    for row in result["candidates"]:
+        th = row["timing"]
+        lines.append(
+            f"{row['candidate']:16} "
+            f"{fmt_recall(row['consensus_hit'], row['consensus_total']):>18} "
+            f"{fmt_recall(row['weak_speech_hit'], row['weak_speech_total']):>20} "
+            f"  cues={th['cues']} short={th['short<0.4']} long={th['long>8s']} ov={th['overlaps']}"
+        )
+    return "\n".join(lines)
+
+
 def kv(pairs):
     d = {}
     for p in pairs:
@@ -125,6 +171,7 @@ def main():
     ap.add_argument("--anime-ref", required=True, help="name=path (anime reference, e.g. WJ-anime)")
     ap.add_argument("--qwen-ref", action="append", required=True, help="name=path (qwen reference)")
     ap.add_argument("--cand", action="append", required=True, help="name=path (candidate to score)")
+    ap.add_argument("--json-output", type=Path, help="Write structured benchmark metrics to JSON.")
     args = ap.parse_args()
 
     aname, apath = args.anime_ref.split("=", 1)
@@ -132,20 +179,11 @@ def main():
     qwen_refs = list(kv(args.qwen_ref).values())
     cands = kv(args.cand)
 
-    consensus, anime_only = build_benchmark(anime_ref, qwen_refs)
-    print(f"Benchmark from anime={aname} + {len(args.qwen_ref)} qwen refs:")
-    print(f"  cross-model consensus (scored) : {len(consensus)} segments")
-    print(f"  anime-only weak speech         : {len(anime_only)} segments")
-    print(f"  (isolated as 'needs human': reference-disagreement segments not scored)\n")
-
-    print(f"{'candidate':16} {'consensus-recall':>18} {'weak-speech-recall':>20} {'timing'}")
-    for name, cand in cands.items():
-        ch, ct = recall(cand, consensus)
-        wh, wt = recall(cand, anime_only)
-        th = timing_health(cand)
-        print(f"{name:16} {fmt_recall(ch, ct):>18} "
-              f"{fmt_recall(wh, wt):>20} "
-              f"  cues={th['cues']} short={th['short<0.4']} long={th['long>8s']} ov={th['overlaps']}")
+    result = score_candidates(anime_ref, qwen_refs, cands)
+    if args.json_output:
+        args.json_output.parent.mkdir(parents=True, exist_ok=True)
+        args.json_output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(render_report(result, aname, len(args.qwen_ref)))
 
 
 if __name__ == "__main__":
