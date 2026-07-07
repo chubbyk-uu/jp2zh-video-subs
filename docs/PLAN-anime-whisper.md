@@ -407,12 +407,14 @@ Validation for the split:
     batch-safe budgeting (batch=1 for dynamic mode, max-per-batch, or budget grouping).
   The probe samples did not produce a collapsed long clip, so Stage 6.1 should still test
   sentinel/recovery with synthetic items and real collapsed samples when available.
-- **Stage 6.1 — framing + sentinel/recovery:** in `transcribe_qwen()` honor
-  qwen-only `vad_backend`/`scene_backend` when explicitly selected (dispatch
-  `build_whisperseg_jobs`) and run sentinel/recovery on `time_stamps.items` before
-  `chunk_entries` (factor `_time_anime_job` into a backend-agnostic helper shared by anime
-  + qwen). Upgrade qwen raw dump / `--from-raw`. Qwen WhisperSeg parameters are 6.0/1.0
-  (distinct from anime 5.0/0.5). Keep opt-in first; qwen defaults unchanged.
+- **Stage 6.1 — framing + sentinel/recovery:** done. `transcribe_qwen()` now honors
+  qwen-only `vad_backend`/`scene_backend` when explicitly selected (dispatching
+  WhisperSeg/semantic through `build_qwen_jobs`) while keeping qwen defaults unchanged
+  (`vad_backend=current`, `scene_backend=none`). Bundled qwen `time_stamps.items` now pass
+  through the shared `_time_aligned_job` sentinel/recovery path before `chunk_entries`.
+  Qwen raw dumps now include `speech_regions`, `raw_items`, `sentinel`, `recovery`,
+  `recovered_items`, and final `items`; `--from-raw` replays the new schema and can use
+  `raw_items` for aligner-only comparison.
 - **Stage 6.2 — generation knobs (cheap, feasible):** set `repetition_penalty` (1.1, via the
   verified inner model generation config) and a dynamic token budget. Add qwen-only
   `repetition_penalty` / `max_tokens_per_second` config fields. Choose one batch-safe token
@@ -453,7 +455,7 @@ Validation for the split:
 ## Validation
 
 Current repository validation after the anime/WhisperSeg/semantic/config-split and
-Stage 6.0 probe changes:
+Stage 6.1 qwen sentinel/recovery changes:
 
 ```bash
 python -m pytest tests -q
@@ -464,7 +466,7 @@ git diff --check
 Latest observed result:
 
 ```text
-256 passed
+261 passed
 ```
 
 ## Key Files

@@ -721,8 +721,7 @@ class ChunkJob:
     keep_lo: float
     keep_hi: float
     # Clip-relative speech regions inside [start, end] (offset by -start), used by
-    # the anime backend's collapse recovery for VAD-guided redistribution. Empty on
-    # the fixed-tiling path and on the qwen backend (which ignores it).
+    # collapse recovery for VAD-guided redistribution. Empty on the fixed-tiling path.
     speech: list[Interval] = field(default_factory=list)
 
 
@@ -879,6 +878,20 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
         job.speech = [Interval(s.start - frame_start, s.end - frame_start) for s in g]
         jobs.append(job)
     return jobs
+
+
+def build_qwen_jobs(audio, samplerate: int, duration: float, args: argparse.Namespace) -> tuple[list[ChunkJob], str]:
+    """Build qwen clips without changing its default framing.
+
+    Qwen's measured baseline stays on the current Silero/VAD path. WhisperSeg and
+    semantic scenes are opt-in qwen experiments via --vad-backend whisperseg and
+    --scene-backend semantic.
+    """
+    if args.vad_chunks:
+        if getattr(args, "vad_backend", "current") == "whisperseg":
+            return build_whisperseg_jobs(audio, samplerate, duration, args), "whisperseg"
+        return build_vad_jobs(audio, samplerate, duration, args), "vad"
+    return build_fixed_jobs(duration, args), "fixed"
 
 
 def uncovered_gap_spans(entries: list[SubtitleEntry], duration: float, min_gap: float) -> list[Interval]:
@@ -1043,6 +1056,14 @@ def vad_only_items_for_text(text: str, clip_duration: float, speech_regions: lis
     return items
 
 
+def _serialize_items(items) -> list[dict]:
+    return [
+        {"text": item_text(it), "start": item_start(it), "end": item_end(it)}
+        for it in (items or [])
+        if getattr(it, "start_time", None) is not None and getattr(it, "end_time", None) is not None
+    ]
+
+
 def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]:
     """Rebuild cues from a dumped raw chunk stream, skipping the model entirely."""
     duration = raw["duration"]
@@ -1068,7 +1089,14 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
                 items = [_RawItem(it["text"], it["start"], it["end"]) for it in src]
         else:
             text = "" if is_context_echo(ch["text"], context) else ch["text"]
-            src = ch["items"]
+            if (
+                raw.get("text_backend", "qwen") == "qwen"
+                and getattr(args, "timestamp_mode", raw.get("timestamp_mode", "aligner_fallback")) == "aligner_only"
+                and "raw_items" in ch
+            ):
+                src = ch["raw_items"]
+            else:
+                src = ch.get("items") or ch.get("raw_items") or []
             items = [_RawItem(it["text"], it["start"], it["end"]) for it in src]
         if "keep_lo" in ch:
             keep_lo = ch["keep_lo"]
@@ -1118,7 +1146,7 @@ def asr_context(args: argparse.Namespace) -> str:
     return " ".join(parts)
 
 
-def _time_anime_job(job: ChunkJob, items, args: argparse.Namespace) -> tuple[dict, dict, list]:
+def _time_aligned_job(job: ChunkJob, items, args: argparse.Namespace) -> tuple[dict, dict, list]:
     """Run the collapse sentinel on a job's aligner items (clip-relative) and, in
     aligner_fallback mode, redistribute when collapsed. Returns (sentinel, recovery, items).
 
@@ -1139,6 +1167,10 @@ def _time_anime_job(job: ChunkJob, items, args: argparse.Namespace) -> tuple[dic
         out_items = words_to_items(recovered)
         recovery = {"applied": True, "strategy": "vad_guided" if regions else "proportional"}
     return sentinel, recovery, out_items
+
+
+def _time_anime_job(job: ChunkJob, items, args: argparse.Namespace) -> tuple[dict, dict, list]:
+    return _time_aligned_job(job, items, args)
 
 
 def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list[ChunkResult], dict]:
@@ -1245,7 +1277,7 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
                     except TypeError:
                         items = []
                 job_raw_items[i] = items
-                sentinel, recovery, out_items = _time_anime_job(jobs[i], items, args)
+                sentinel, recovery, out_items = _time_aligned_job(jobs[i], items, args)
                 job_sentinel[i] = sentinel
                 job_recovery[i] = recovery
                 job_items[i] = out_items
@@ -1283,20 +1315,11 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
             "raw_text": raw_texts[i],
             "clean_text": clean,
             "speech_regions": [[iv.start, iv.end] for iv in job.speech],
-            "raw_items": [
-                {"text": it.text, "start": float(it.start_time), "end": float(it.end_time)}
-                for it in raw_items
-                if getattr(it, "start_time", None) is not None and getattr(it, "end_time", None) is not None
-            ],
-            "recovered_items": (
-                [{"text": item_text(it), "start": item_start(it), "end": item_end(it)} for it in out_items]
-                if recovery.get("applied") else []
-            ),
+            "raw_items": _serialize_items(raw_items),
+            "recovered_items": _serialize_items(out_items) if recovery.get("applied") else [],
             "sentinel": sentinel,
             "recovery": recovery,
-            "items": [
-                {"text": item_text(it), "start": item_start(it), "end": item_end(it)} for it in out_items
-            ],
+            "items": _serialize_items(out_items),
         })
         chunk_results.append(
             ChunkResult(start=job.start, end=job.end, language="ja", text=raw_texts[i], segments=len(kept), seconds=0.0)
@@ -1347,12 +1370,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
 
     audio, samplerate = load_full_audio(args.audio)
     duration = audio.shape[0] / float(samplerate)
-    if args.vad_chunks:
-        jobs = build_vad_jobs(audio, samplerate, duration, args)
-        mode = "vad"
-    else:
-        jobs = build_fixed_jobs(duration, args)
-        mode = "fixed"
+    jobs, mode = build_qwen_jobs(audio, samplerate, duration, args)
     entries: list[SubtitleEntry] = []
     chunk_results: list[ChunkResult] = []
     raw_chunks: list[dict] = []
@@ -1361,8 +1379,10 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
         f"Qwen ASR: audio={duration / 60.0:.1f}min mode={mode} chunks={len(jobs)} "
         f"batch={args.batch_size} chunk_seconds={args.chunk_seconds} overlap={args.chunk_overlap_seconds}"
     )
-    if mode == "vad":
+    if mode in {"vad", "whisperseg"}:
         banner += (
+            f" vad_backend={getattr(args, 'vad_backend', 'current')} "
+            f"scene_backend={getattr(args, 'scene_backend', 'none')}"
             f" vad_pad={args.vad_pad_seconds} pre_context={args.vad_pre_context_seconds} "
             f"post_context={args.vad_post_context_seconds} max_leading={args.vad_max_leading_silence}"
         )
@@ -1386,11 +1406,13 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             for job, result in zip(group, results):
                 text = str(result.text or "").strip()
                 items = getattr(result.time_stamps, "items", None) if result.time_stamps is not None else None
+                raw_items = list(items or [])
+                sentinel, recovery, out_items = _time_aligned_job(job, raw_items, args)
                 # Drop context echoes (the model regurgitating the biasing prompt on
                 # near-silent clips) before they become spurious cues.
                 display_text = "" if is_context_echo(text, context) else text
                 kept = chunk_entries(
-                    display_text, items, start=job.start,
+                    display_text, out_items, start=job.start,
                     keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
                 )
                 entries.extend(kept)
@@ -1404,12 +1426,12 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                         "language": str(result.language),
                         "text": text,
                         "recapture": label == "recapture",
-                        "items": [
-                            {"text": it.text, "start": float(it.start_time), "end": float(it.end_time)}
-                            for it in (items or [])
-                            if getattr(it, "start_time", None) is not None
-                            and getattr(it, "end_time", None) is not None
-                        ],
+                        "speech_regions": [[iv.start, iv.end] for iv in job.speech],
+                        "raw_items": _serialize_items(raw_items),
+                        "recovered_items": _serialize_items(out_items) if recovery.get("applied") else [],
+                        "sentinel": sentinel,
+                        "recovery": recovery,
+                        "items": _serialize_items(out_items),
                     }
                 )
                 chunk_results.append(
@@ -1454,6 +1476,10 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
 
     entries.sort(key=lambda e: (e.start, e.end))
     raw = {
+        "text_backend": "qwen",
+        "vad_backend": getattr(args, "vad_backend", "current"),
+        "scene_backend": getattr(args, "scene_backend", "none"),
+        "timestamp_mode": getattr(args, "timestamp_mode", "aligner_fallback"),
         "chunk_seconds": args.chunk_seconds,
         "chunk_overlap_seconds": args.chunk_overlap_seconds,
         "duration": duration,
@@ -1543,6 +1569,9 @@ def main() -> None:
                 "phrase_max_internal_gap": args.phrase_max_internal_gap,
                 "phrase_max_char_seconds": args.phrase_max_char_seconds,
                 "vad_chunks": args.vad_chunks,
+                "vad_backend": getattr(args, "vad_backend", "current"),
+                "scene_backend": getattr(args, "scene_backend", "none"),
+                "timestamp_mode": getattr(args, "timestamp_mode", "aligner_fallback"),
                 "vad_threshold": args.vad_threshold,
                 "vad_window_seconds": args.vad_window_seconds,
                 "vad_window_overlap_seconds": args.vad_window_overlap_seconds,

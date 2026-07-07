@@ -11,7 +11,9 @@ from transcribe_ja_srt_qwen import (
     _RawItem,
     _clip_relative_speech,
     _interjection_core,
+    _time_aligned_job,
     _time_anime_job,
+    build_qwen_jobs,
     build_whisperseg_jobs,
     drop_isolated_interjections,
     entries_from_raw,
@@ -551,6 +553,42 @@ def test_whisperseg_jobs_use_min_frame_not_legacy_vad_min_clip(monkeypatch, tmp_
     assert jobs[0].end == pytest.approx(1.2)
 
 
+def test_build_qwen_jobs_default_uses_current_vad(monkeypatch):
+    calls = []
+    expected = [ChunkJob(1.0, 2.0, 1.0, 2.0)]
+
+    def fake_build_vad_jobs(audio, samplerate, duration, args):
+        calls.append((audio, samplerate, duration, args))
+        return expected
+
+    monkeypatch.setattr("transcribe_ja_srt_qwen.build_vad_jobs", fake_build_vad_jobs)
+    args = argparse.Namespace(vad_chunks=True, vad_backend="current")
+
+    jobs, mode = build_qwen_jobs(np.zeros(16000, dtype=np.float32), 16000, 1.0, args)
+
+    assert jobs is expected
+    assert mode == "vad"
+    assert len(calls) == 1
+
+
+def test_build_qwen_jobs_can_opt_into_whisperseg(monkeypatch):
+    calls = []
+    expected = [ChunkJob(1.0, 2.0, 1.0, 2.0)]
+
+    def fake_build_whisperseg_jobs(audio, samplerate, duration, args):
+        calls.append((audio, samplerate, duration, args))
+        return expected
+
+    monkeypatch.setattr("transcribe_ja_srt_qwen.build_whisperseg_jobs", fake_build_whisperseg_jobs)
+    args = argparse.Namespace(vad_chunks=True, vad_backend="whisperseg")
+
+    jobs, mode = build_qwen_jobs(np.zeros(16000, dtype=np.float32), 16000, 1.0, args)
+
+    assert jobs is expected
+    assert mode == "whisperseg"
+    assert len(calls) == 1
+
+
 def test_clip_relative_speech_intersects_and_shifts():
     intervals = [Interval(1.0, 2.0), Interval(5.0, 9.0)]
     regions = _clip_relative_speech(intervals, job_start=4.0, job_end=8.0)
@@ -578,6 +616,18 @@ def test_time_anime_job_recovers_collapse_with_vad():
     assert starts == sorted(starts)
     for it in out:  # every item lands inside a clip-relative speech region
         assert (1.0 <= it.start_time <= 3.0) or (6.0 <= it.start_time <= 9.0), it.start_time
+
+
+def test_time_aligned_job_recovers_qwen_collapse_with_vad():
+    job = ChunkJob(100.0, 110.0, 100.0, 110.0)
+    job.speech = [Interval(2.0, 6.0)]
+    items = [_RawItem(c, 0.0, 0.0) for c in "ありがとうございますまたお願いします"]
+
+    sentinel, recovery, out = _time_aligned_job(job, items, _shaping_args())
+
+    assert sentinel["status"] == "COLLAPSED"
+    assert recovery == {"applied": True, "strategy": "vad_guided"}
+    assert all(2.0 <= it.start_time <= 6.0 for it in out)
 
 
 def test_time_anime_job_aligner_only_skips_recovery():
@@ -635,6 +685,52 @@ def test_entries_from_raw_anime_vad_only_rebuilds_from_speech_regions():
     assert entries[0].start == pytest.approx(11.0)
     assert entries[-1].end <= 14.0 + 1e-6
     assert "おはよう" in "".join(e.text for e in entries)
+
+
+def test_entries_from_raw_qwen_schema_uses_final_items():
+    raw = {
+        "text_backend": "qwen", "timestamp_mode": "aligner_fallback",
+        "chunk_seconds": 30.0, "chunk_overlap_seconds": 3.0, "duration": 20.0,
+        "context": "",
+        "chunks": [{
+            "start": 10.0, "end": 20.0, "keep_lo": 10.0, "keep_hi": 20.0,
+            "language": "Japanese", "text": "おはようございます。",
+            "speech_regions": [[2.0, 5.0]],
+            "raw_items": [{"text": c, "start": 0.0, "end": 0.0} for c in "おはようございます"],
+            "recovered_items": [{"text": c, "start": 2.0 + i * 0.2, "end": 2.1 + i * 0.2}
+                                for i, c in enumerate("おはようございます")],
+            "sentinel": {"status": "COLLAPSED"}, "recovery": {"applied": True, "strategy": "vad_guided"},
+            "items": [{"text": c, "start": 2.0 + i * 0.2, "end": 2.1 + i * 0.2}
+                      for i, c in enumerate("おはようございます")],
+        }],
+    }
+
+    entries = entries_from_raw(raw, _shaping_args())
+
+    assert entries
+    assert entries[0].start == pytest.approx(12.0)
+    assert "おはよう" in "".join(e.text for e in entries)
+
+
+def test_entries_from_raw_qwen_aligner_only_uses_raw_items():
+    raw = {
+        "text_backend": "qwen", "timestamp_mode": "aligner_fallback",
+        "chunk_seconds": 30.0, "chunk_overlap_seconds": 3.0, "duration": 20.0,
+        "context": "",
+        "chunks": [{
+            "start": 10.0, "end": 20.0, "keep_lo": 10.0, "keep_hi": 20.0,
+            "language": "Japanese", "text": "おはようございます。",
+            "raw_items": [{"text": c, "start": 1.0 + i * 0.1, "end": 1.05 + i * 0.1}
+                          for i, c in enumerate("おはようございます")],
+            "items": [{"text": c, "start": 2.0 + i * 0.2, "end": 2.1 + i * 0.2}
+                      for i, c in enumerate("おはようございます")],
+        }],
+    }
+
+    entries = entries_from_raw(raw, _shaping_args(timestamp_mode="aligner_only"))
+
+    assert entries
+    assert entries[0].start == pytest.approx(11.0)
 
 
 # ---- anime ellipsis-soft sentence splitting ----
