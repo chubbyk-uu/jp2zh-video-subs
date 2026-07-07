@@ -88,20 +88,25 @@ class BaseAsrConfig:
 class QwenAsrConfig(BaseAsrConfig):
     """Qwen3-ASR backend defaults forwarded to transcribe_ja_srt_qwen.py."""
 
+    max_new_tokens: int = arg_field(4096, help="Hard cap for Qwen generated tokens per clip")
     text_backend: str = arg_field("qwen", choices=("qwen", "anime"), help="ASR text source")
     text_model: str = arg_field("models/anime-whisper", help="anime-whisper model path (ignored by qwen)")
     timestamp_mode: str = arg_field(
         "aligner_fallback", choices=("aligner_fallback", "aligner_only", "vad_only"),
-        help="qwen timing mode; aligner_fallback will enable WJ-style VAD fallback once implemented",
+        help="qwen timing mode; aligner_fallback enables WJ-style VAD fallback recovery",
     )
     collapse_recovery: bool = arg_field(
         True, action="boolean_optional", help="Recover collapsed forced alignment when fallback timing is enabled",
     )
     no_repeat_ngram_size: int = arg_field(0, help="anime-whisper n-gram repeat guard (ignored by qwen)")
+    repetition_penalty: float = arg_field(1.1, help="Qwen HF generation repetition penalty (1.0 disables)")
+    max_tokens_per_second: float = arg_field(20.0, help="Dynamic Qwen token budget per audio second (0 disables)")
+    min_tokens_floor: int = arg_field(256, help="Minimum dynamic Qwen token budget per batch")
 
-    # Qwen baseline stays on the existing VAD path. WhisperSeg/semantic become opt-in
-    # qwen experiments, using WJ qwen-style grouping defaults when selected.
-    vad_backend: str = arg_field("current", choices=("current", "whisperseg"), help="qwen speech segmentation backend")
+    # Stage 6.3 benchmark selected WhisperSeg+generation as the qwen default candidate.
+    # Semantic scenes remain opt-in for qwen because the same benchmark did not show a
+    # weak-speech gain from enabling them.
+    vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="qwen speech segmentation backend")
     whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
     whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
     whisperseg_max_group: float = arg_field(6.0, help="WhisperSeg max frame group duration (s)")

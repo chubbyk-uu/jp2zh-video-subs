@@ -165,8 +165,37 @@ def test_build_qwen_command_survives_unexposed_config_fields(tmp_path):
     assert "--text-backend" in cmd          # unexposed field serialized from its default
     assert cmd[cmd.index("--text-backend") + 1] == "qwen"  # --asr qwen stays on qwen
     assert cmd[cmd.index("--timestamp-mode") + 1] == "aligner_fallback"
-    assert cmd[cmd.index("--vad-backend") + 1] == "current"
+    assert cmd[cmd.index("--vad-backend") + 1] == "whisperseg"
     assert cmd[cmd.index("--scene-backend") + 1] == "none"
+    assert cmd[cmd.index("--max-new-tokens") + 1] == "4096"
+    assert cmd[cmd.index("--repetition-penalty") + 1] == "1.1"
+    assert cmd[cmd.index("--max-tokens-per-second") + 1] == "20.0"
+    assert cmd[cmd.index("--min-tokens-floor") + 1] == "256"
+
+
+def test_build_qwen_command_can_override_qwen_framing(tmp_path):
+    import argparse
+
+    from video_to_zh_srt import build_qwen_command
+
+    ns = argparse.Namespace(
+        language="ja",
+        min_cue_seconds=0.3,
+        asr="qwen",
+        qwen_vad_backend="current",
+        qwen_whisperseg_max_group=7.0,
+        qwen_whisperseg_chunk_threshold=0.8,
+        qwen_scene_backend="semantic",
+        qwen_scene_max_seconds=36.0,
+    )
+    cmd = build_qwen_command(ns, tmp_path / "audio.wav", tmp_path / "out.ja.srt")
+
+    assert cmd[cmd.index("--text-backend") + 1] == "qwen"
+    assert cmd[cmd.index("--vad-backend") + 1] == "current"
+    assert cmd[cmd.index("--whisperseg-max-group") + 1] == "7.0"
+    assert cmd[cmd.index("--whisperseg-chunk-threshold") + 1] == "0.8"
+    assert cmd[cmd.index("--scene-backend") + 1] == "semantic"
+    assert cmd[cmd.index("--scene-max-seconds") + 1] == "36.0"
 
 
 def test_build_qwen_command_asr_anime_selects_anime_backend(tmp_path):

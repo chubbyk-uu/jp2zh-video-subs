@@ -755,14 +755,18 @@ def main() -> None:
         default="anime",
         help="Transcription backend (default anime). 'anime' uses litagin/anime-whisper "
         "text + WhisperSeg framing + semantic scenes + vad_only timing; 'qwen' uses "
-        "Qwen3-ASR with VAD-cut clips (no gap fill); 'whisper' is the legacy "
+        "Qwen3-ASR with WhisperSeg framing, aligner fallback recovery, and WJ-style "
+        "generation knobs; 'whisper' is the legacy "
         "sliding+gap-fill pipeline. anime shares the qwen sub-script implementation but "
         "uses its own --anime-* tuning surface. Downstream stages are shared.",
     )
     parser.add_argument("--qwen-batch-size", type=int, default=24)
     parser.add_argument("--qwen-device", default="cuda:0")
     parser.add_argument("--qwen-dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16")
-    parser.add_argument("--qwen-max-new-tokens", type=int, default=256)
+    parser.add_argument("--qwen-max-new-tokens", type=int, default=4096)
+    parser.add_argument("--qwen-repetition-penalty", type=float, default=1.1)
+    parser.add_argument("--qwen-max-tokens-per-second", type=float, default=20.0)
+    parser.add_argument("--qwen-min-tokens-floor", type=int, default=256)
     parser.add_argument("--qwen-chunk-seconds", type=float, default=30.0)
     parser.add_argument("--qwen-chunk-overlap-seconds", type=float, default=3.0)
     parser.add_argument("--qwen-phrase-max-chars", type=int, default=26)
@@ -794,6 +798,13 @@ def main() -> None:
     parser.add_argument("--qwen-vad-max-leading-silence", type=float, default=0.5)
     parser.add_argument("--qwen-vad-context-merge-gap", type=float, default=0.0)
     parser.add_argument("--qwen-vad-target-context-seconds", type=float, default=24.0)
+    parser.add_argument("--qwen-vad-backend", choices=("current", "whisperseg"), default=None)
+    parser.add_argument("--qwen-whisperseg-model", default=None)
+    parser.add_argument("--qwen-whisperseg-max-speech", type=float, default=None)
+    parser.add_argument("--qwen-whisperseg-max-group", type=float, default=None)
+    parser.add_argument("--qwen-whisperseg-chunk-threshold", type=float, default=None)
+    parser.add_argument("--qwen-whisperseg-threshold", type=float, default=None)
+    parser.add_argument("--qwen-whisperseg-min-frame-seconds", type=float, default=None)
     parser.add_argument("--qwen-isolated-interjection-silence", type=float, default=3.0)
     parser.add_argument("--qwen-isolated-interjection-run", type=int, default=3)
     parser.add_argument("--qwen-isolated-interjection-run-gap", type=float, default=5.0)
@@ -815,6 +826,9 @@ def main() -> None:
         default=None,
         help="Qwen scene pre-segmentation; also accepted as a deprecated anime alias when --asr anime and --anime-scene-backend is unset.",
     )
+    parser.add_argument("--qwen-scene-min-seconds", type=float, default=None)
+    parser.add_argument("--qwen-scene-max-seconds", type=float, default=None)
+    parser.add_argument("--qwen-scene-clustering-threshold", type=float, default=None)
     parser.add_argument("--qwen-collapse-filler-repetition", dest="qwen_collapse_filler_repetition",
                         action=argparse.BooleanOptionalAction, default=True,
                         help="Collapse repeated filler runs inside one Qwen cue (default on).")

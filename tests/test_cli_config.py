@@ -112,7 +112,7 @@ def test_qwen_and_anime_backend_defaults_are_separate():
 
     assert qwen.text_backend == "qwen"
     assert qwen.timestamp_mode == "aligner_fallback"
-    assert qwen.vad_backend == "current"
+    assert qwen.vad_backend == "whisperseg"
     assert qwen.scene_backend == "none"
 
     assert anime.text_backend == "anime"

@@ -13,11 +13,14 @@ from transcribe_ja_srt_qwen import (
     _interjection_core,
     _time_aligned_job,
     _time_anime_job,
+    apply_qwen_generation_config,
     build_qwen_jobs,
     build_whisperseg_jobs,
     drop_isolated_interjections,
     entries_from_raw,
+    qwen_batch_token_budget,
     qwen_aligner_language,
+    resolve_qwen_generation_config,
     sentences_from_alignment,
     split_into_units,
     uncovered_gap_spans,
@@ -505,6 +508,50 @@ def test_qwen_aligner_language_normalizes_codes_to_names():
     assert qwen_aligner_language(" Japanese ") == "Japanese"
     assert qwen_aligner_language("en") == "English"
     assert qwen_aligner_language("") == "Japanese"
+
+
+class _Obj:
+    pass
+
+
+def test_resolve_qwen_generation_config_prefers_thinker_path():
+    wrapper = _Obj()
+    wrapper.model = _Obj()
+    wrapper.model.thinker = _Obj()
+    wrapper.model.thinker.generation_config = _Obj()
+
+    config, path = resolve_qwen_generation_config(wrapper)
+
+    assert config is wrapper.model.thinker.generation_config
+    assert path == "model.model.thinker.generation_config"
+
+
+def test_apply_qwen_generation_config_sets_repetition_penalty():
+    wrapper = _Obj()
+    wrapper.model = _Obj()
+    wrapper.model.thinker = _Obj()
+    wrapper.model.thinker.generation_config = _Obj()
+
+    result = apply_qwen_generation_config(wrapper, argparse.Namespace(repetition_penalty=1.1))
+
+    assert result == {
+        "applied": True,
+        "path": "model.model.thinker.generation_config",
+        "repetition_penalty": 1.1,
+    }
+    assert wrapper.model.thinker.generation_config.repetition_penalty == 1.1
+
+
+def test_qwen_batch_token_budget_uses_per_batch_max():
+    jobs = [
+        ChunkJob(0.0, 5.0, 0.0, 5.0),
+        ChunkJob(10.0, 30.0, 10.0, 30.0),
+    ]
+    args = argparse.Namespace(max_new_tokens=4096, max_tokens_per_second=20.0, min_tokens_floor=256)
+
+    budget = qwen_batch_token_budget(jobs, args)
+
+    assert budget == {"per_clip": [256, 400], "batch_budget": 400}
 
 
 def test_whisperseg_resolve_model_path_local_only(tmp_path, monkeypatch):

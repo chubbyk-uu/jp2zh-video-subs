@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import math
 import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
@@ -1173,6 +1174,54 @@ def _time_anime_job(job: ChunkJob, items, args: argparse.Namespace) -> tuple[dic
     return _time_aligned_job(job, items, args)
 
 
+def resolve_qwen_generation_config(model) -> tuple[object | None, str]:
+    """Find the HF GenerationConfig used by qwen-asr's transformers backend."""
+    candidates = [
+        ("model.model.thinker.generation_config", ("model", "thinker", "generation_config")),
+        ("model.model.generation_config", ("model", "generation_config")),
+        ("model.generation_config", ("generation_config",)),
+    ]
+    for label, attrs in candidates:
+        obj = model
+        try:
+            for attr in attrs:
+                obj = getattr(obj, attr)
+        except AttributeError:
+            continue
+        if obj is not None:
+            return obj, label
+    return None, "missing"
+
+
+def apply_qwen_generation_config(model, args: argparse.Namespace) -> dict:
+    penalty = float(getattr(args, "repetition_penalty", 1.0))
+    if penalty <= 0 or abs(penalty - 1.0) < 1e-9:
+        return {"applied": False, "path": "disabled", "repetition_penalty": penalty}
+    config, path = resolve_qwen_generation_config(model)
+    if config is None:
+        print("warning: qwen repetition_penalty requested, but generation_config path was not found", flush=True)
+        return {"applied": False, "path": path, "repetition_penalty": penalty}
+    setattr(config, "repetition_penalty", penalty)
+    return {"applied": True, "path": path, "repetition_penalty": getattr(config, "repetition_penalty", None)}
+
+
+def qwen_token_budget_for_seconds(clip_seconds: float, args: argparse.Namespace) -> int:
+    max_new_tokens = int(getattr(args, "max_new_tokens", 256))
+    max_tokens_per_second = float(getattr(args, "max_tokens_per_second", 0.0))
+    if max_tokens_per_second <= 0 or clip_seconds <= 0:
+        return max_new_tokens
+    floor = int(getattr(args, "min_tokens_floor", 256))
+    return min(max_new_tokens, max(floor, math.ceil(clip_seconds * max_tokens_per_second)))
+
+
+def qwen_batch_token_budget(jobs: list[ChunkJob], args: argparse.Namespace) -> dict:
+    per_clip = [qwen_token_budget_for_seconds(job.end - job.start, args) for job in jobs]
+    return {
+        "per_clip": per_clip,
+        "batch_budget": max(per_clip, default=int(getattr(args, "max_new_tokens", 256))),
+    }
+
+
 def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list[ChunkResult], dict]:
     """anime-whisper text + standalone Qwen forced aligner, two-phase (generate-all then
     align-all). Reuses the existing VAD clip construction; WhisperSeg/semantic are Stage 3/4.
@@ -1367,6 +1416,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             device_map=args.device,
         ),
     )
+    generation_config = apply_qwen_generation_config(model, args)
 
     audio, samplerate = load_full_audio(args.audio)
     duration = audio.shape[0] / float(samplerate)
@@ -1389,19 +1439,36 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
     print(banner, flush=True)
     if context:
         print(f"ASR context: {context}", flush=True)
+    print(
+        "Qwen generation: "
+        f"max_new_tokens={args.max_new_tokens} "
+        f"max_tokens_per_second={getattr(args, 'max_tokens_per_second', 0.0)} "
+        f"min_tokens_floor={getattr(args, 'min_tokens_floor', 256)} "
+        f"repetition_penalty={generation_config.get('repetition_penalty')} "
+        f"repetition_path={generation_config.get('path')}",
+        flush=True,
+    )
 
     def run_jobs(job_list: list[ChunkJob], label: str) -> int:
         added = 0
         for group_start in range(0, len(job_list), args.batch_size):
             group = job_list[group_start : group_start + args.batch_size]
             clips = [(audio[int(j.start * samplerate) : int(j.end * samplerate)], samplerate) for j in group]
+            token_budget = qwen_batch_token_budget(group, args)
+            original_max_tokens = getattr(model, "max_new_tokens", None)
             t0 = time.time()
-            results = model.transcribe(
-                audio=clips,
-                context=context,
-                language=[args.language] * len(clips),
-                return_time_stamps=True,
-            )
+            try:
+                if float(getattr(args, "max_tokens_per_second", 0.0)) > 0 and original_max_tokens is not None:
+                    model.max_new_tokens = token_budget["batch_budget"]
+                results = model.transcribe(
+                    audio=clips,
+                    context=context,
+                    language=[args.language] * len(clips),
+                    return_time_stamps=True,
+                )
+            finally:
+                if original_max_tokens is not None:
+                    model.max_new_tokens = original_max_tokens
             elapsed = time.time() - t0
             for job, result in zip(group, results):
                 text = str(result.text or "").strip()
@@ -1431,6 +1498,10 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                         "recovered_items": _serialize_items(out_items) if recovery.get("applied") else [],
                         "sentinel": sentinel,
                         "recovery": recovery,
+                        "token_budget": {
+                            "max_new_tokens": token_budget["batch_budget"],
+                            "max_tokens_per_second": float(getattr(args, "max_tokens_per_second", 0.0)),
+                        },
                         "items": _serialize_items(out_items),
                     }
                 )
@@ -1447,7 +1518,8 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             done = min(group_start + args.batch_size, len(job_list))
             last_text = str(results[-1].text or "").strip()
             print(
-                f"[{label}] {done}/{len(job_list)} batch_elapsed={elapsed:.2f}s text={last_text[:60]}",
+                f"[{label}] {done}/{len(job_list)} batch_elapsed={elapsed:.2f}s "
+                f"max_new_tokens={token_budget['batch_budget']} text={last_text[:60]}",
                 flush=True,
             )
         return added
@@ -1485,6 +1557,13 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
         "duration": duration,
         "mode": mode,
         "context": context,
+        "generation": {
+            **generation_config,
+            "max_new_tokens": int(args.max_new_tokens),
+            "max_tokens_per_second": float(getattr(args, "max_tokens_per_second", 0.0)),
+            "min_tokens_floor": int(getattr(args, "min_tokens_floor", 256)),
+            "budget_strategy": "per_batch_max",
+        },
         "recapture": recapture_stats,
         "chunks": raw_chunks,
     }
