@@ -129,11 +129,18 @@ def translate_with_retry(
         retried = translate_one(llm, text, [], glossary, frequency_penalty=0.3, temperature=0.7)
         if retried and not KANA_RE.search(retried):
             translated = retried
-    # Glossary violation: retry standalone with only the violated terms.
-    if glossary_issues(text, translated, glossary):
-        retried = translate_one(llm, text, [], glossary)
+    # Glossary violation: retry standalone with only the violated terms so a competing
+    # longer/shorter rule cannot pull the model back to the wrong rendering. If the
+    # model still violates a simple terminology replacement, apply the exact forbidden
+    # rendering deterministically; this catches bare 主人 -> 丈夫 while preserving
+    # ご主人様 -> 主人 through longest-match term selection.
+    issues = glossary_issues(text, translated, glossary)
+    if issues:
+        retried = translate_one(llm, text, [], tuple(issues))
         if retried and not glossary_issues(text, retried, glossary):
             translated = retried
+        else:
+            translated = apply_glossary_replacements(translated, issues)
     return translated
 
 
@@ -156,12 +163,24 @@ def merge_two_line_overflow(lines: list[str], src_lines: list[str]) -> list[str]
     return [lines[0], "".join(lines[1:])]
 
 
-def validate_block_lines(src_lines: list[str], lines: list[str]) -> BlockTranslation:
+def apply_glossary_replacements(text: str, issues: list[GlossaryTerm]) -> str:
+    fixed = text
+    for term in issues:
+        for forbidden in term.forbidden:
+            fixed = fixed.replace(forbidden, term.target)
+    return fixed
+
+
+def validate_block_lines(
+    src_lines: list[str],
+    lines: list[str],
+    glossary: tuple[GlossaryTerm, ...] = (),
+) -> BlockTranslation:
     if len(lines) != len(src_lines):
         merged = merge_two_line_overflow(lines, src_lines)
         if merged is None:
             return BlockTranslation(None, f"line-count:{len(src_lines)}->{len(lines)}")
-        merged_result = validate_block_lines(src_lines, merged)
+        merged_result = validate_block_lines(src_lines, merged, glossary)
         if merged_result.lines is not None:
             return BlockTranslation(merged_result.lines, "accepted-2to3")
         return merged_result
@@ -174,6 +193,9 @@ def validate_block_lines(src_lines: list[str], lines: list[str]) -> BlockTransla
         elif looks_degenerate(source, line):
             checked.append(None)
             rejected_reasons.append("degenerate")
+        elif glossary_issues(source, line, glossary):
+            checked.append(None)
+            rejected_reasons.append("glossary")
         else:
             checked.append(line)
     if rejected_reasons:
@@ -205,7 +227,7 @@ def translate_block_checked(
     )
     raw = result["choices"][0]["message"]["content"].strip()
     lines = [ln for ln in (clean_translation(x) for x in raw.split("\n")) if ln]
-    checked = validate_block_lines(src_lines, lines)
+    checked = validate_block_lines(src_lines, lines, glossary)
     return BlockTranslation(checked.lines, checked.reason, raw)
 
 

@@ -1,5 +1,6 @@
 from translate_srt_galtransl import (
     GALTRANSL_SYSTEM,
+    apply_glossary_replacements,
     build_messages,
     build_user_prompt,
     glossary_block,
@@ -10,7 +11,7 @@ from translate_srt_galtransl import (
     translate_block_checked,
     union_terms,
 )
-from translate_srt_hymt import GlossaryTerm
+from translate_srt_hymt import DEFAULT_GLOSSARY, GlossaryTerm, glossary_issues
 
 
 TEST_GLOSSARY = (
@@ -115,6 +116,18 @@ def test_translate_block_rejects_kana_leak():
     assert translate_block(_StubLlm("甲\nです\n丙"), ["a", "b", "c"], [], ()) is None
 
 
+def test_translate_block_checked_rejects_glossary_violation_slot():
+    result = translate_block_checked(
+        _StubLlm("主人在等我\n好的"),
+        ["主人が待ってるんです", "はい"],
+        [],
+        TEST_GLOSSARY,
+    )
+
+    assert result.lines == [None, "好的"]
+    assert result.reason == "partial-glossary"
+
+
 def test_translate_block_feeds_one_newline_joined_turn():
     llm = _StubLlm("甲\n乙")
     translate_block(llm, ["x", "y"], [], ())
@@ -168,6 +181,25 @@ def test_glossary_block_uses_native_arrow_note_format():
 
 def test_glossary_block_bare_term_renders_its_own_rule():
     assert glossary_block("主人、ご飯", TEST_GLOSSARY) == "主人->老公 #妻子称自己丈夫"
+
+
+def test_default_glossary_translates_bare_shujin_as_husband():
+    assert glossary_block("主人が待ってるんです", DEFAULT_GLOSSARY) == (
+        "主人->丈夫 #妻子称丈夫；只有ご主人様/主人様等尊称译为主人"
+    )
+    assert glossary_issues("主人が待ってるんです", "主人在等我", DEFAULT_GLOSSARY)
+
+
+def test_default_glossary_keeps_goshujinsama_as_master():
+    block = glossary_block("ご主人様、おはよう", DEFAULT_GLOSSARY)
+    assert block == "ご主人様->主人 #主仆/角色尊称"
+    assert not glossary_issues("ご主人様、おはよう", "主人，早上好", DEFAULT_GLOSSARY)
+
+
+def test_apply_glossary_replacements_fixes_bare_shujin_violation():
+    issues = glossary_issues("主人が待ってるんです", "主人在等我", DEFAULT_GLOSSARY)
+
+    assert apply_glossary_replacements("主人在等我", issues) == "丈夫在等我"
 
 
 def test_relevant_terms_skips_unmatched():

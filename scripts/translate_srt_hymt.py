@@ -43,7 +43,8 @@ class GlossaryTerm:
 
 
 # 带 様/さん 尊称的「ご主人様」是主仆/角色称呼，译「主人」。不带尊称的
-# 「主人」在不同语境可译为丈夫/老公等，不默认强制术语。
+# 「主人」在现实系台词里通常是妻子称丈夫，译「丈夫」。Longest-match matching
+# keeps ご主人様/主人様 from being caught by the bare 主人 rule.
 DEFAULT_GLOSSARY = (
     GlossaryTerm(
         source="ご主人様",
@@ -62,6 +63,12 @@ DEFAULT_GLOSSARY = (
         target="主人",
         note="主仆/角色尊称",
         forbidden=("老公", "丈夫"),
+    ),
+    GlossaryTerm(
+        source="主人",
+        target="丈夫",
+        note="妻子称丈夫；只有ご主人様/主人様等尊称译为主人",
+        forbidden=("主人",),
     ),
     # 契約結ぶ／契約: realistic-drama "sign a contract". Steer away from Sakura's stiff
     # literary "缔结契约" toward the colloquial "签合同/合同" (phrase form first so the
