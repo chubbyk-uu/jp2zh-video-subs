@@ -661,6 +661,41 @@ def drop_isolated_interjections(
     return kept, dropped
 
 
+def collapse_repeated_phrases(text: str, threshold: int = 4, keep: int = 2, max_len: int = 20) -> str:
+    """Collapse a runaway consecutive repetition of any 1..max_len-char unit to `keep`
+    copies. Targets the Qwen failure mode where a climax/moan line loops (行く×7, だめ×4,
+    ああ×6) into an untranslatable flood.
+
+    This is the narrow, text-quality half of WJ's AssemblyTextCleaner (phrase-repetition +
+    char-flood), NOT ported verbatim: WJ's Stage-1a regex `([\\p{L}\\p{N}]{2,8})\\1{2,}` is
+    greedy and on 行く×7 only reaches 行く×5 (verified with WJ's own `regex` lib), and its
+    recursive stage only fires at ≥10. This minimal-unit scanner instead finds the true
+    repeating unit and keeps exactly `keep`, so 行く×7 → 行く行く while genuine 2-3× emphasis
+    (threshold 4) and normal text are untouched. Single-char floods fall out of the len-1 case.
+    """
+    if not text or threshold < 2:
+        return text
+    out: list[str] = []
+    pos, n = 0, len(text)
+    while pos < n:
+        best_len = best_count = 0
+        for plen in range(1, min(max_len, n - pos) + 1):
+            unit = text[pos:pos + plen]
+            count, cp = 1, pos + plen
+            while cp + plen <= n and text[cp:cp + plen] == unit:
+                count += 1
+                cp += plen
+            if count >= threshold and count > best_count:
+                best_len, best_count = plen, count
+        if best_count >= threshold:
+            out.append(text[pos:pos + best_len] * min(keep, best_count))
+            pos += best_len * best_count
+        else:
+            out.append(text[pos])
+            pos += 1
+    return "".join(out)
+
+
 def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace) -> list[SubtitleEntry]:
     """Minimal time/format hygiene for Qwen output.
 
@@ -670,6 +705,17 @@ def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace
     This keeps the transcript faithful: only overlap trimming, a sub-second
     flash-cue floor, and de-overlap of collapsed-timestamp cues.
     """
+    if getattr(args, "collapse_repeats", True):
+        thr = int(getattr(args, "collapse_repeats_threshold", 4))
+        keep = int(getattr(args, "collapse_repeats_keep", 2))
+        collapsed_n = 0
+        for e in entries:
+            new_text = collapse_repeated_phrases(e.text, thr, keep)
+            if new_text != e.text:
+                e.text = new_text
+                collapsed_n += 1
+        if collapsed_n:
+            print(f"Collapsed runaway repetition in {collapsed_n} cues", flush=True)
     entries = drop_same_start_piles(entries)
     entries = resolve_overlaps(entries)
     if args.filter_hallucinations and args.near_dup_similarity > 0:

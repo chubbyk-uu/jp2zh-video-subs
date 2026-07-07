@@ -392,7 +392,7 @@ Validation for the split:
 | repetition_penalty 1.1 | generate() sampling | **DEFAULT after Stage 6.3** | Feasible on our transformers backend; the implementation sets the verified thinker's HF `generation_config` path and warns if unavailable. |
 | dynamic token budget (20 tok/s) | `_compute_dynamic_token_limit` | **DEFAULT after Stage 6.3** | Implemented as batch-safe `per_batch_max`; DLDSS-492 showed a small qwen recall gain when combined with WhisperSeg. |
 | text-only assembly + `merge_master_with_timestamps` | decoupled gen→align→merge | **OPTIONAL (not required)** | Feasible — `transcribe(return_time_stamps=False)` for text + our existing standalone `Qwen3ForcedAligner` for timing (both already used by anime). But NOT needed for the two knobs above (they work in bundled mode), and bundled already merges text+align. Only adopt if we want WJ-style separation or to unify qwen+anime under one two-phase path. |
-| AssemblyTextCleaner | pre-align text clean | **PENDING (待定)** | WJ qwen default has it ON, but we already run `finalize_qwen_entries` + filler/near-dup filters. Decide during the ablation whether porting it adds value over our existing cleaners; NOT part of the initial WJ-alignment pass. |
+| AssemblyTextCleaner | pre-align text clean | **NARROW PORT DONE** | Only the runaway-repetition half was a real gap (`行く×7` etc.). WJ's own regex under-collapses it (`行く×7 → 行く×5`), so we ported a clean minimal-unit scanner `collapse_repeated_phrases` (threshold 4 / keep 2) in `finalize_qwen_entries` instead. Did NOT port the Whisper-era hallucination list or sentence dedup (near-dup covers it). See Stage 6.4b. |
 | step-down retry | on, 6.0/6.0 | **IMPLEMENTED (WJ-faithful, default inert)** | `reframe_collapsed_jobs` + step-down pass in `transcribe_qwen`: collapsed jobs re-framed via WhisperSeg at `stepdown_fallback_group` and re-transcribed, cues replaced. WJ's default `fallback == main` (6.0) does not tighten → inert re-decode on our deterministic path; kept faithful. Ablation (6.4) tests tighter fallback (e.g. 3.0). |
 
 ### Staged approach
@@ -480,11 +480,35 @@ Validation for the split:
   the same-granularity clip and does not fix collapse. Semantic ON also costs weak-speech here
   (9.3% vs semantic-OFF `qwen_whisperseg_gen` 14.6%); resolving that is the Stage 6.4 ablation,
   not an alignment change.
-- **Stage 6.4 — ablation optimization (after alignment):** from the aligned WJ-qwen baseline,
-  ablate one axis at a time on the benchmark (semantic on/off *with* step-down present,
-  step-down on/off, generation knobs, WhisperSeg params, and whether AssemblyTextCleaner beats
-  our `finalize_qwen_entries`) to find our best qwen config. Only then consider deviating from
-  strict WJ parity. None of these are package-blocked; anime remains the project default ASR line.
+- **Stage 6.4 — ablation optimization: DONE.** Ablated on a **neutral GT** (WJ-anime ∩
+  ours-anime, 560 consensus / 119 weak-speech, **no qwen in the reference** so WJ-qwen scores
+  as a fair candidate). DLDSS-492:
+
+  | candidate | consensus | weak-speech | cues | short | long | ov |
+  |---|---:|---:|---|---|---|---|
+  | WJ-qwen | 79.3% | 25.2% | 954 | **175** | **19** | **29** |
+  | qwen_current (Silero) | 66.4% | 10.9% | 923 | 12 | 0 | 0 |
+  | **semoff_sd6** (semantic off, sd inert) | 77.9% | **22.7%** | 1078 | 3 | 0 | 0 |
+  | wjcore_sd6 (aligned: semantic on, sd inert) | 77.5% | 16.8% | 1093 | 4 | 0 | 0 |
+  | wj_sd3 (semantic on, sd 3.0) | 77.9% | 15.1% | 1120 | 4 | 0 | 0 |
+  | semoff_sd3 (semantic off, sd 3.0) | 77.7% | 21.8% | 1098 | 3 | 0 | 0 |
+
+  Findings: (1) **vs WJ-qwen we win the quality/timing tradeoff** — WJ-qwen leads recall by
+  ~1–2.5pt but ships **175 short + 19 long + 29 overlapping** cues (the collapse problem); our
+  best (`semoff_sd6`) trails recall by ~2pt with **3 short / 0 long / 0 overlap**. (2) **Semantic
+  ON costs ~6pt weak-speech** (22.7→16.8) with no consensus gain. (3) **Step-down 3.0 (which
+  actually tightens: reframe 97 vs 55) still doesn't help** — weak-speech −1pt, more cues.
+  **Decision: qwen default = `semoff_sd6` (semantic OFF, step-down OFF)**; both stay selectable.
+- **Stage 6.4b — AssemblyTextCleaner (narrow port): DONE.** Analysis: WJ's cleaner and our
+  `finalize_qwen_entries` are complementary — ours already does interjection removal + timing
+  hygiene + filler-core collapse; the one real gap is **general runaway phrase repetition**
+  (`行く×7`, `だめ×4`, `ああ×6`) which survives our filler-only collapse. **But WJ's own params
+  don't fix it**: WJ Stage-1a regex `([\p{L}\p{N}]{2,8})\1{2,}` is greedy and reduces `行く×7`
+  only to `行く×5` (verified with WJ's `regex` lib), and its recursive stage fires only at ≥10.
+  So we ported a **clean minimal-unit scanner** instead (`collapse_repeated_phrases`, threshold
+  4 / keep 2): `行く×7 → 行く行く`, genuine 2–3× emphasis untouched. Applied in
+  `finalize_qwen_entries` (Base config `collapse_repeats`, both lines). We did NOT port WJ's
+  hallucination phrase list (Whisper-era) or sentence dedup (we have near-dup).
 
 ### Files (Stage 6.1)
 

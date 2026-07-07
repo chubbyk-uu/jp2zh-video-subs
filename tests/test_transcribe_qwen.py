@@ -16,6 +16,7 @@ from transcribe_ja_srt_qwen import (
     apply_qwen_generation_config,
     build_qwen_jobs,
     build_whisperseg_jobs,
+    collapse_repeated_phrases,
     drop_isolated_interjections,
     entries_from_raw,
     qwen_batch_token_budget,
@@ -758,6 +759,21 @@ def test_entries_from_raw_qwen_schema_uses_final_items():
     assert entries
     assert entries[0].start == pytest.approx(12.0)
     assert "おはよう" in "".join(e.text for e in entries)
+
+
+def test_collapse_repeated_phrases_tames_runaway_only():
+    # runaway repetition collapses to `keep` copies (default 2)
+    assert collapse_repeated_phrases("行く" * 7 + "。") == "行く行く。"
+    assert collapse_repeated_phrases("だめ" * 4 + "だ。") == "だめだめだ。"
+    assert collapse_repeated_phrases("気持ちいい" * 5) == "気持ちいい" * 2
+    assert collapse_repeated_phrases("あ" * 6) == "ああ"  # single-char flood (len-1 unit)
+    # genuine 2-3x emphasis and normal text are untouched (threshold 4)
+    assert collapse_repeated_phrases("行く行く。") == "行く行く。"
+    assert collapse_repeated_phrases("行く行く行く。") == "行く行く行く。"
+    assert collapse_repeated_phrases("普通の文です。") == "普通の文です。"
+    # knobs
+    assert collapse_repeated_phrases("行く" * 7, threshold=4, keep=1) == "行く"
+    assert collapse_repeated_phrases("行く" * 3, threshold=3, keep=2) == "行く行く"
 
 
 def test_reframe_collapsed_jobs_preserves_outer_keep_window(monkeypatch):

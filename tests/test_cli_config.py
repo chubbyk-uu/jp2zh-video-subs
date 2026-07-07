@@ -113,9 +113,10 @@ def test_qwen_and_anime_backend_defaults_are_separate():
     assert qwen.text_backend == "qwen"
     assert qwen.timestamp_mode == "aligner_fallback"
     assert qwen.vad_backend == "whisperseg"
-    # Stage 6.3.5: qwen default aligned to WJ qwen (semantic scene ON + step-down ON).
-    assert qwen.scene_backend == "semantic"
-    assert qwen.stepdown is True
+    # Stage 6.4 ablation winner: semantic scene OFF + step-down OFF (both selectable but
+    # off by default; semantic cost ~6pt weak-speech, step-down gave no gain).
+    assert qwen.scene_backend == "none"
+    assert qwen.stepdown is False
     assert qwen.stepdown_fallback_group == 6.0
 
     assert anime.text_backend == "anime"

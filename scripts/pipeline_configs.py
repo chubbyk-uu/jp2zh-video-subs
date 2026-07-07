@@ -64,6 +64,9 @@ class BaseAsrConfig:
     isolated_interjection_run_gap: float = arg_field(5.0, help="Max gap within a filler chain")
     interjection_reply_anchor_lag: float = arg_field(3.0, help="Keep はい anchored within this lag (0 off)")
     collapse_filler_repetition: bool = arg_field(True, action="boolean_optional", help="Collapse repeated filler runs inside a cue")
+    collapse_repeats: bool = arg_field(True, action="boolean_optional", help="Collapse runaway consecutive repetition in a cue (行く×7 -> 行く行く)")
+    collapse_repeats_threshold: int = arg_field(4, help="Collapse a repeated unit only when it repeats at least this many times")
+    collapse_repeats_keep: int = arg_field(2, help="How many copies of the unit to keep when collapsing runaway repetition")
 
     # Recapture pass (second, more sensitive look inside gaps).
     recapture_min_gap: float = arg_field(0.0, help="Min uncovered gap to recapture (0 disables)")
@@ -103,10 +106,11 @@ class QwenAsrConfig(BaseAsrConfig):
     max_tokens_per_second: float = arg_field(20.0, help="Dynamic Qwen token budget per audio second (0 disables)")
     min_tokens_floor: int = arg_field(256, help="Minimum dynamic Qwen token budget per batch")
 
-    # Stage 6.3.5 aligns the qwen default to the WJ qwen line: WhisperSeg 6.0/1.0,
-    # aligner-fallback recovery, generation knobs, semantic scenes ON, and step-down retry.
-    # (The interim Stage 6.3 default kept scene off from a partial, no-step-down benchmark;
-    # superseded — re-evaluate scene/step-down value in the post-alignment ablation.)
+    # qwen default = the Stage 6.4 ablation winner (neutral WJ-anime∩ours-anime GT):
+    # WhisperSeg 6.0/1.0 + aligner-fallback recovery + generation knobs, with semantic scene
+    # OFF and step-down OFF. Ablation showed semantic ON costs ~6pt weak-speech recall and
+    # step-down (even tightened to 3.0) does not help; both stay selectable but off by default.
+    # Fair vs WJ-qwen: we match its recall within ~2pt with far cleaner timing (3 vs 175 short cues).
     vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="qwen speech segmentation backend")
     whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
     whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
@@ -115,7 +119,7 @@ class QwenAsrConfig(BaseAsrConfig):
     whisperseg_threshold: float = arg_field(0.35, help="WhisperSeg onset probability threshold")
     whisperseg_min_frame_seconds: float = arg_field(0.1, help="Drop WhisperSeg frames shorter than this")
 
-    scene_backend: str = arg_field("semantic", choices=("none", "semantic"), help="qwen scene pre-segmentation")
+    scene_backend: str = arg_field("none", choices=("none", "semantic"), help="qwen scene pre-segmentation")
     scene_min_seconds: float = arg_field(12.0, help="semantic scene min duration (s)")
     scene_max_seconds: float = arg_field(48.0, help="semantic scene max duration (s)")
     # Step-down retry (WJ qwen default ON). On sentinel-detected collapse of a job, re-frame
@@ -123,7 +127,7 @@ class QwenAsrConfig(BaseAsrConfig):
     # collapsed job's cues. WJ ships fallback == main max_group (6.0), which does not tighten
     # and is effectively inert on our deterministic bundled path; kept faithful to WJ, the
     # ablation will test tighter fallback values.
-    stepdown: bool = arg_field(True, action="boolean_optional", help="qwen step-down retry on alignment collapse")
+    stepdown: bool = arg_field(False, action="boolean_optional", help="qwen step-down retry on alignment collapse")
     stepdown_fallback_group: float = arg_field(6.0, help="WhisperSeg max_group used when re-framing a collapsed qwen clip (s)")
     scene_clustering_threshold: float = arg_field(18.0, help="semantic agglomerative distance threshold")
 

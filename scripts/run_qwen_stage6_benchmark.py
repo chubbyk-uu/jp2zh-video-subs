@@ -106,6 +106,38 @@ def default_variants() -> list[Variant]:
                 min_tokens_floor=256,
             ),
         ),
+        # Stage 6.4 ablation: tighter step-down (fallback 3.0, actually tightens vs the
+        # inert WJ-faithful 6.0) crossed with semantic on/off.
+        Variant(
+            "qwen_wj_sd3",  # aligned WJ-qwen (semantic ON) + real step-down 3.0
+            QwenAsrConfig(
+                timestamp_mode="aligner_fallback",
+                collapse_recovery=True,
+                vad_backend="whisperseg",
+                scene_backend="semantic",
+                max_new_tokens=4096,
+                repetition_penalty=1.1,
+                max_tokens_per_second=20.0,
+                min_tokens_floor=256,
+                stepdown=True,
+                stepdown_fallback_group=3.0,
+            ),
+        ),
+        Variant(
+            "qwen_semoff_sd3",  # semantic OFF + real step-down 3.0
+            QwenAsrConfig(
+                timestamp_mode="aligner_fallback",
+                collapse_recovery=True,
+                vad_backend="whisperseg",
+                scene_backend="none",
+                max_new_tokens=4096,
+                repetition_penalty=1.1,
+                max_tokens_per_second=20.0,
+                min_tokens_floor=256,
+                stepdown=True,
+                stepdown_fallback_group=3.0,
+            ),
+        ),
         Variant("anime", AnimeAsrConfig()),
     ]
 
