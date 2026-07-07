@@ -7,7 +7,7 @@
 项目提供三套识别后端，用 `--asr` 选择：
 
 - **`anime`（默认）**——用 `litagin/anime-whisper` 出文本，WhisperSeg 做弱语音切分，semantic scene 做场景边界，默认 `vad_only` 定时。它是当前 JAV/anime 风格素材的推荐主线。
-- **`qwen`**——用 `Qwen3-ASR-1.7B` 出文本内容，配 `Qwen3-ForcedAligner-0.6B` 出时间轴，在按语音切分（VAD 切片）的片段上识别。适合作为更干净的文本/时间轴对比线。
+- **`qwen`**——用 `Qwen3-ASR-1.7B` 出文本内容，配 `Qwen3-ForcedAligner-0.6B` 出时间轴，默认在 WhisperSeg 语音 frame 上识别，并带 aligner fallback recovery。适合作为更干净的文本/时间轴对比线。
 - **`whisper`**——旧的 `faster-whisper-large-v3` 滑窗主识别，可选 `--gap-fill` 音频补漏阶段。
 
 以及三套翻译后端，用 `--translator` 选择：
@@ -322,24 +322,25 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 
 ### Qwen 主线的工作方式
 
-1. 用一个宽松的滑窗 VAD（`--qwen-vad-threshold 0.1`）找出语音并聚成簇。VAD 用来把 Qwen 切片放在语音起点附近，从而降低首词时间漂移；如果整段语音岛被 VAD 漏掉，召回仍可能下降。
-2. 每个语音簇变成一个切片，锚定在真实的语音起始时间上（过长的簇带重叠再切分），分批送入 `Qwen3-ASR-1.7B`。
+1. Qwen 默认用 WhisperSeg 做 frame（`--qwen-vad-backend whisperseg`），使用 WJ qwen 风格参数：`max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`。
+2. 每个语音 frame 变成一个 Qwen 切片，分批送入 `Qwen3-ASR-1.7B`；生成参数默认也是 WJ 风格：`max_new_tokens=4096`、`repetition_penalty=1.1`、动态预算 `20` tokens/音频秒。
 3. 模型带标点的 `result.text` 作为权威文本内容；单独的 `Qwen3-ForcedAligner-0.6B` 给出逐字时间。句子按标点和较大的内部时间间隙切分，再由对齐器定时。
-4. 因为每个切片都从语音起点开始，第一个 token 锚在真实语音上而不是切片边缘，从而消除了大部分"首词被拽早"的漂移。
+4. 如果 forced aligner 把一个切片的词压到异常时间段里，Qwen 线会先用 VAD-guided fallback recovery 修复，再进入字幕塑形。semantic scene 和 step-down retry 都已实现但默认关闭；这是 DLDSS-492 ablation 后的当前选择。
 
 Qwen A/B 对比时，如果想关掉 VAD 切片、回退到固定 30 秒均匀平铺，用
-`--asr qwen --no-qwen-vad-chunks`。
+`--asr qwen --no-qwen-vad-chunks`；如果想对比旧的滑窗 VAD 路径，用
+`--asr qwen --qwen-vad-backend current`。
 
 ### 怎么选
 
 | | **Anime（默认）** | **Qwen（`--asr qwen`）** | **Whisper（`--asr whisper`）** |
 |---|---|---|---|
 | 文本质量 | 当前 WJ 对比里弱语音召回最好；局部短句仍可能误听 | 正常语音有时更干净；喘息/轻声弱一些 | 安静音频上更易幻觉/循环，需要内置过滤 |
-| 时间漂移 | VAD-only 避免 anime forced-aligner 坍缩 | VAD 切片把字幕锚在真实语音起点 | 长段安静处更大 |
+| 时间漂移 | VAD-only 避免 anime forced-aligner 坍缩 | WhisperSeg frame + aligner fallback recovery 明显减少旧 Qwen 的漂移/坍缩问题 | 长段安静处更大 |
 | 速度 | Whisper-large 风格逐 frame 生成，慢于批量 Qwen | 批量主识别快；默认不跑补捞 | 主识别相当；`--gap-fill` 多一个更慢的二阶段 |
-| 轻声召回 | 当前默认最强；重点复查误听短句 | 适合对比，或用 recapture 提高覆盖 | 加 `--gap-fill` 进一步提升 |
+| 轻声召回 | 当前默认最强；重点复查误听短句 | WhisperSeg 后已有改善，但喘息/轻声仍弱于 anime；可用 recapture 提高覆盖 | 加 `--gap-fill` 进一步提升 |
 | 专有名词/人名 | 可能听错人名和生僻词 | 同样可能听错 | 同样弱；三者对没见过的人名都不可靠 |
-| 后处理 | anime cleaner + 共享的重叠/闪字幕清理 | 共享清理；想要 Whisper 那套过滤用 `--qwen-filter-hallucinations` | 完整的压缩比/循环/去重/幻觉过滤 |
+| 后处理 | anime cleaner + 共享的重叠/闪字幕清理 | 共享清理 + Qwen 失控重复折叠；想要 Whisper 那套过滤用 `--qwen-filter-hallucinations` | 完整的压缩比/循环/去重/幻觉过滤 |
 | 显存 | anime-whisper + WhisperSeg；只有非 `vad_only` 诊断模式才加载 aligner | 1.7B + 0.6B，默认 `--qwen-batch-size 24` 约 11.5 GB | large-v3，约 10 GB |
 
 **推荐：** 当前 JAV/anime 风格素材默认使用 Anime 主线。局部误听明显时，用 `--asr qwen` 做对比；需要和旧流程比较，或没有 CUDA 显卡时，再用 Whisper（`--asr whisper`，需要二阶段补漏时加 `--gap-fill`）。
@@ -378,11 +379,13 @@ GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，�
 - Anime 定时模式：`vad_only`（`--anime-timestamp-mode vad_only`；aligner 诊断模式需要 `models/Qwen3-ForcedAligner-0.6B`）
 - Anime WhisperSeg frame 默认值：`max_group=5.0`、`chunk_threshold=0.5`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`
 - Anime cleaner：开启，清理省略号-only 片段和短重复伪迹；之后仍走共享字幕塑形，删除重叠和闪字幕
-- Qwen 对比线：用 `--asr qwen` 开启。Qwen VAD 切片默认开启（`--qwen-vad-chunks`；用 `--asr qwen --no-qwen-vad-chunks` 关闭），默认 `--qwen-vad-threshold 0.1`、`--qwen-chunk-seconds 30`、`--qwen-chunk-overlap-seconds 3`。
+- Qwen 对比线：用 `--asr qwen` 开启。现在默认使用 WhisperSeg frame（`--qwen-vad-backend whisperseg`），Qwen 参数为 `max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`；用 `--asr qwen --qwen-vad-backend current` 对比旧滑窗 VAD 路径，或用 `--asr qwen --no-qwen-vad-chunks` 做固定 30 秒平铺。
+- Qwen 定时与生成：默认 `--qwen-timestamp-mode aligner_fallback`、`--qwen-max-new-tokens 4096`、`--qwen-repetition-penalty 1.1`、`--qwen-max-tokens-per-second 20.0`。semantic scene 可用 `--qwen-scene-backend semantic` 打开，但默认关闭；step-down retry 已在共享子脚本实现，但不是顶层默认路径。
 - Qwen 空窗补捞：默认关闭（`--qwen-recapture-min-gap 0`），且只适用于 `--asr qwen`。需要高覆盖率的 Qwen 对比时，可设为正数，例如 `--qwen-recapture-min-gap 10`：主识别结束后，对满足长度的字幕空窗用更灵敏的 `--qwen-recapture-vad-threshold 0.05` 再做一遍 VAD；检出语音合计不少于 `--qwen-recapture-min-speech 2` 秒的空窗会趁模型还在显存里二次识别。
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--asr qwen --qwen-filter-hallucinations` 开启）
 - 纯语气词过滤：共享 qwen/anime 子脚本默认开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——默认 anime 线是两侧各有 `--anime-isolated-interjection-silence 3.0` 秒静默的孤立单条，或连续 3 条及以上的语气词链。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。anime 用 `--anime-isolated-interjection-silence 0` 关闭，qwen 用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）。
 - 语气词重复拼接折叠：共享 qwen/anime 子脚本默认开启。同一条 cue 里同一语气词的连续重复（「うんうんうん。」，或「うん、うん、うん、一人。」这种包着真实台词的）会被折成一个。重复 run 两端必须落在标点或 cue 边界才折叠，所以真词内部的重复（ああいう）绝不会被碰。anime 可用 `--no-anime-collapse-filler-repetition` 做 A/B，qwen 用 `--no-qwen-collapse-filler-repetition`。
+- 通用失控重复折叠：共享 qwen/anime 子脚本默认开启。类似「行く」连续重复很多次的短语 flood 会在最终字幕前折成两个，普通 2-3 次强调会保留。
 - 翻译后端：`galtransl`（`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`）；用 `--translator sakura` 切 Sakura-14B、`--translator hymt` 切 HY-MT
 - 识别语言：日语 `ja`
 - 翻译上下文：按后端使用不同默认值（galtransl/sakura 默认前 6 轮；hymt 默认前 2 条中文译文作为 Hy-MT2 背景信息）；设为 0 则逐句独立翻译
@@ -392,10 +395,10 @@ GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，�
 - 质量报告：默认开启
 - 抽取音频：默认保留 WAV，方便复查和调参
 
-使用 `--asr qwen` 时，Qwen 默认只跑 VAD 切片主识别；开启 `--qwen-recapture-min-gap` 后，才会在主识别之后对字幕空窗做一次更灵敏的 VAD+ASR 补捞。用 `--qwen-vad-threshold`
-（默认 0.1，调低捞回更多轻声）和 `--qwen-vad-max-cluster-gap`（默认 2.0，调高把邻近语音
-并成更少更长的切片、跑得更快）在召回和切片数之间权衡。需要不依赖 VAD 语音簇的兜底对比时，用
-`--asr qwen --no-qwen-vad-chunks`。
+使用 `--asr qwen` 时，Qwen 默认只跑 WhisperSeg-framed 主识别；开启 `--qwen-recapture-min-gap` 后，才会在主识别之后对字幕空窗做一次更灵敏的 VAD+ASR 补捞。用
+`--qwen-whisperseg-threshold`、`--qwen-whisperseg-max-group`、`--qwen-whisperseg-chunk-threshold`
+在召回和切片数之间权衡；只有想对比旧滑窗 VAD 路径时才使用
+`--asr qwen --qwen-vad-backend current` 以及 `--qwen-vad-threshold` 等旧参数。需要不依赖语音簇的兜底对比时，用 `--asr qwen --no-qwen-vad-chunks`。
 
 ### Whisper 后端默认值（`--asr whisper`）
 
@@ -515,7 +518,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
 
 ### 召回与补捞
 
-Qwen 后端用固定均匀平铺代替 VAD 切片（更快，漂移略大）：
+Qwen 后端用固定均匀平铺代替 WhisperSeg/VAD 切片（适合作为 framing 兜底对比，通常漂移更大）：
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen --no-qwen-vad-chunks
@@ -781,10 +784,12 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 
 ### 字幕有漏识别
 
-`--asr qwen` 的 VAD 决定哪些语音切片会送入 Qwen。默认阈值较宽松
-（`--qwen-vad-threshold 0.1`），但如果整段语音岛被漏掉，它仍可能没有进入识别。可以调低阈值，
-或调高 `--qwen-vad-max-cluster-gap`（默认 2.0）把邻近语音并起来。作为兜底，
-`--asr qwen --no-qwen-vad-chunks` 会均匀平铺整条时间轴，不跳过任何区域。
+`--asr qwen` 默认由 WhisperSeg 决定哪些语音切片会送入 Qwen。如果整段语音岛被漏掉，先尝试调低
+`--qwen-whisperseg-threshold`，或调整 `--qwen-whisperseg-max-group` /
+`--qwen-whisperseg-chunk-threshold`。只有要对比旧滑窗 VAD 路径时，才使用
+`--asr qwen --qwen-vad-backend current` 以及 `--qwen-vad-threshold`、
+`--qwen-vad-max-cluster-gap` 这些参数。作为兜底，`--asr qwen --no-qwen-vad-chunks`
+会均匀平铺整条时间轴，不跳过任何区域。
 
 `--asr whisper` 时，主识别已经用滑窗局部 VAD 扫描整段 WAV。想提高召回，可以降低
 `--main-local-vad-threshold`（默认 0.6）或提高 `--main-local-vad-max-cluster-gap`
