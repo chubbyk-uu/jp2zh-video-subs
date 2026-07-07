@@ -141,6 +141,7 @@ hf download litagin/anime-whisper \
 mkdir -p models/whisperseg
 hf download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx \
   model.onnx \
+  --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c \
   --local-dir models/whisperseg
 
 # Qwen 对比线（识别 + 强制对齐；anime forced-aligner 诊断也会用）

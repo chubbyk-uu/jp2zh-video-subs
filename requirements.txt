@@ -5,6 +5,12 @@
 #   pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio
 qwen-asr==0.0.6
 
+# --- Default anime ASR backend: WhisperSeg ONNX weak-speech VAD ---
+# whisperseg_vad.py imports onnxruntime directly and is NOT pulled in by qwen-asr.
+# GPU wheel matches the CUDA anime default; on a CPU-only host use `onnxruntime` instead.
+# scikit-learn / scipy (semantic scene clustering) arrive transitively via librosa.
+onnxruntime-gpu==1.27.0
+
 # --- Legacy ASR backend (--asr whisper): faster-whisper sliding pass + gap fill ---
 faster-whisper==1.2.1
 
