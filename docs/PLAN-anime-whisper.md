@@ -396,12 +396,17 @@ Validation for the split:
 - **Stage 5.9 — config split:** done. `AnimeAsrConfig` is first-class, top-level
   `--anime-*` flags exist, qwen defaults are qwen-only, and compatibility aliases/tests
   cover the formerly anime-tuning flags under `--qwen-*`.
-- **Stage 6.0 — probe:** feed one `build_whisperseg_jobs` clip to
-  `Qwen3ASRModel.transcribe(return_time_stamps=True)`; confirm `time_stamps.items` are
-  clip-relative and `assess_alignment_quality` flags a known long-clip collapse. Also confirm
-  the real `generation_config` attribute chain and `model.max_new_tokens` behavior on the
-  transformers backend. Explicitly test dynamic token budgets with `batch_size > 1`, because
-  our current bundled qwen path calls `model.transcribe()` on multiple clips at once.
+- **Stage 6.0 — probe:** done. `scripts/probe_qwen_stage6.py` builds qwen-style
+  WhisperSeg jobs, runs `Qwen3ASRModel.transcribe(return_time_stamps=True)`, reports
+  clip-relative timestamp checks, sentinel metrics, generation-config path, and dynamic
+  token-budget decisions. Host probe on `work/01/01.wav` confirmed:
+  - WhisperSeg uses CUDA provider.
+  - qwen bundled aligner `time_stamps.items` are clip-relative.
+  - `repetition_penalty` can be applied at `model.model.thinker.generation_config`.
+  - `model.max_new_tokens` is batch-level in the bundled path, so Stage 6.2 must use
+    batch-safe budgeting (batch=1 for dynamic mode, max-per-batch, or budget grouping).
+  The probe samples did not produce a collapsed long clip, so Stage 6.1 should still test
+  sentinel/recovery with synthetic items and real collapsed samples when available.
 - **Stage 6.1 — framing + sentinel/recovery:** in `transcribe_qwen()` honor
   qwen-only `vad_backend`/`scene_backend` when explicitly selected (dispatch
   `build_whisperseg_jobs`) and run sentinel/recovery on `time_stamps.items` before
@@ -447,7 +452,8 @@ Validation for the split:
 
 ## Validation
 
-Current repository validation after the anime/WhisperSeg/semantic/config-split changes:
+Current repository validation after the anime/WhisperSeg/semantic/config-split and
+Stage 6.0 probe changes:
 
 ```bash
 python -m pytest tests -q
@@ -458,7 +464,7 @@ git diff --check
 Latest observed result:
 
 ```text
-250 passed
+256 passed
 ```
 
 ## Key Files
@@ -469,11 +475,13 @@ Modified:
 - `scripts/cli_config.py`
 - `scripts/video_to_zh_srt.py`
 - `scripts/transcribe_ja_srt_qwen.py`
+- `scripts/probe_qwen_stage6.py`
 - `README.md`
 - `README-CN.md`
 - `tests/test_cli_config.py`
 - `tests/test_pipeline.py`
 - `tests/test_transcribe_qwen.py`
+- `tests/test_probe_qwen_stage6.py`
 
 Added:
 
