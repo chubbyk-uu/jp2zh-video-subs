@@ -470,8 +470,16 @@ Validation for the split:
   `vad_grouped.py::reframe` just re-runs the segmenter with that value; `stepdown_initial_group`
   is stored but unused). We kept the default WJ-faithful (inert); the ablation (6.4) tests
   tighter `stepdown_fallback_group` (e.g. 3.0) where it actually reduces collapse.
-  AssemblyTextCleaner stays **PENDING (待定)**. Remaining: run the benchmark on GPU to record
-  the faithful WJ-qwen baseline.
+  AssemblyTextCleaner stays **PENDING (待定)**.
+
+  **Faithful WJ-qwen baseline (DLDSS-492, vs WJ-anime + WJ-qwen refs):** `qwen_wj_core` =
+  consensus **91.8%** (435/474), weak-speech **9.3%** (19/205), cues=1093 short=4 long=0 ov=0.
+  Step-down *fired* on the full film (`collapsed_jobs=53 reframed=55 entries_added=78`,
+  fallback 6.0) yet the score is **identical** to the Stage 6.3 no-step-down `qwen_wj_core`
+  (91.8%/9.3%) — empirical confirmation that step-down at `fallback == main` (6.0) re-decodes
+  the same-granularity clip and does not fix collapse. Semantic ON also costs weak-speech here
+  (9.3% vs semantic-OFF `qwen_whisperseg_gen` 14.6%); resolving that is the Stage 6.4 ablation,
+  not an alignment change.
 - **Stage 6.4 — ablation optimization (after alignment):** from the aligned WJ-qwen baseline,
   ablate one axis at a time on the benchmark (semantic on/off *with* step-down present,
   step-down on/off, generation knobs, WhisperSeg params, and whether AssemblyTextCleaner beats
