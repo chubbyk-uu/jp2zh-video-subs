@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from quality_report import (
@@ -8,6 +9,8 @@ from quality_report import (
     parse_srt,
     percentile,
     possible_japanese_text_left,
+    reference_recall,
+    reference_segments,
     repeated_fill_phrase_warnings,
 )
 
@@ -118,6 +121,21 @@ def _report_args(tmp_path):
         zh_srt=None,
         audio=None,
         fills_metadata=_fills_tsv(tmp_path),
+        qwen_metadata=None,
+        reference_srt=[],
+        vad_backend="silero",
+        vad_threshold=0.05,
+        vad_min_silence_ms=500,
+        vad_speech_pad_ms=400,
+        whisperseg_model="models/whisperseg/model.onnx",
+        whisperseg_max_speech=5.0,
+        whisperseg_max_group=5.0,
+        whisperseg_chunk_threshold=0.5,
+        whisperseg_threshold=0.35,
+        whisperseg_min_frame_seconds=0.1,
+        min_gap_seconds=10.0,
+        min_speech_seconds=2.0,
+        subtitle_pad_seconds=0.5,
         warn_avg_logprob_below=-0.80,
         warn_no_speech_prob_above=0.50,
         warn_compression_ratio_above=2.20,
@@ -228,6 +246,89 @@ def test_build_report_lists_qwen_metadata(tmp_path):
     assert "empty_text_chunks: 1" in report
     assert "segments_from_chunks: 2" in report
     assert "entries_after_postprocess: 3" in report
+
+
+def test_build_report_can_use_metadata_speech_regions_for_audio_gaps(tmp_path):
+    ja = tmp_path / "candidate.ja.srt"
+    ja.write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\n最初\n\n"
+        "2\n00:00:06,000 --> 00:00:07,000\n最後\n\n",
+        encoding="utf-8",
+    )
+    qwen_meta = tmp_path / "candidate.ja.srt.meta.json"
+    qwen_meta.write_text(
+        json.dumps(
+            {
+                "chunks": [
+                    {
+                        "start": 2.0,
+                        "end": 5.0,
+                        "text": "抜け候補",
+                        "segments": 1,
+                        "seconds": 0.1,
+                        "speech_regions": [[0.5, 2.5]],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    args = _report_args(tmp_path)
+    args.ja_srt = ja
+    args.fills_metadata = None
+    args.qwen_metadata = qwen_meta
+    args.vad_backend = "metadata"
+    args.min_gap_seconds = 1.0
+    args.min_speech_seconds = 1.0
+
+    metrics: dict = {}
+    report = build_report(args, metrics)
+
+    assert "[Audio-aware subtitle gaps]" in report
+    assert "vad_backend: metadata" in report
+    assert "vad_speech_total_s: 2.0" in report
+    assert "subtitle_gaps_with_vad_speech: 1" in report
+    assert metrics["vad_backend"] == "metadata"
+    assert metrics["gaps_with_vad_speech"] == 1
+
+
+def test_reference_recall_uses_reading_normalization():
+    candidate = [Entry("1", 1.0, 2.0, "乾杯")]
+    reference = reference_segments([Entry("1", 1.0, 2.0, "かんぱい")], min_reading=3)
+
+    hit, total, missed = reference_recall(candidate, reference, pad=0.5, threshold=0.34)
+
+    assert (hit, total, missed) == (1, 1, [])
+
+
+def test_build_report_lists_reference_aware_comparison(tmp_path):
+    ja = tmp_path / "candidate.ja.srt"
+    ja.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\n乾杯\n\n",
+        encoding="utf-8",
+    )
+    ref = tmp_path / "ref.srt"
+    ref.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nかんぱい\n\n"
+        "2\n00:00:05,000 --> 00:00:06,000\nまたね\n\n",
+        encoding="utf-8",
+    )
+    args = _report_args(tmp_path)
+    args.ja_srt = ja
+    args.fills_metadata = None
+    args.reference_srt = [f"ref={ref}"]
+    args.reference_pad_seconds = 0.5
+    args.reference_match_threshold = 0.34
+    args.reference_min_reading_chars = 3
+
+    metrics: dict = {}
+    report = build_report(args, metrics)
+
+    assert "[Reference-aware ASR comparison]" in report
+    assert "ref: recall=50.0% (1/2)" in report
+    assert "missed ref 00:00:05.000 -> 00:00:06.000 またね" in report
+    assert metrics["reference_ref_recall"] == 0.5
 
 
 def test_build_report_fills_metrics_dict(tmp_path):

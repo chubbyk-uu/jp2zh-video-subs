@@ -7,6 +7,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from cli_config import add_dataclass_arguments
@@ -22,6 +23,7 @@ from srt_utils import (
 )
 
 KANA_RE = re.compile(r"[ぁ-ゟ゠-ヿ]")
+READING_STRIP_RE = re.compile(r"[。、，,！？!?…♪〜~ー・「」『』（）()\[\]【】\s]")
 # Conservative candidates for Japanese/traditional CJK left in Simplified Chinese
 # output. These are review hints only; they are never used to filter subtitles.
 # Keep this intentionally small: prefer missing some kanji-only leftovers over
@@ -55,6 +57,82 @@ class FillMetadataRow:
     no_speech_prob: float | None
     compression_ratio: float | None
     text: str
+
+
+@lru_cache(maxsize=200000)
+def reading_text(text: str) -> str:
+    """Hiragana reading used for reference-aware ASR comparison.
+
+    This mirrors subtitle_benchmark.py: comparing readings instead of raw strings avoids
+    treating kana/kanji variants as misses.
+    """
+    return "".join(item["hira"] for item in _kakasi().convert(READING_STRIP_RE.sub("", text)))
+
+
+@lru_cache(maxsize=1)
+def _kakasi():
+    import pykakasi
+
+    return pykakasi.kakasi()
+
+
+def reading_bigrams(text: str) -> set[str]:
+    reading = reading_text(text)
+    return {reading[i : i + 2] for i in range(len(reading) - 1)}
+
+
+def reading_overlap(needles: set[str], haystack: set[str]) -> float:
+    return len(needles & haystack) / len(needles) if needles else 0.0
+
+
+def window_reading_bigrams(entries: list[Entry], start: float, end: float, pad: float) -> set[str]:
+    text = " ".join(item.text for item in entries if item.end >= start - pad and item.start <= end + pad)
+    return reading_bigrams(text)
+
+
+def parse_named_srt(value: str) -> tuple[str, Path]:
+    if "=" in value:
+        name, path = value.split("=", 1)
+        return name.strip() or Path(path).stem, Path(path)
+    path = Path(value)
+    return path.stem, path
+
+
+def reference_segments(
+    entries: list[Entry],
+    min_reading: int,
+) -> list[tuple[Entry, set[str]]]:
+    segments: list[tuple[Entry, set[str]]] = []
+    for entry in entries:
+        if len(reading_text(entry.text)) < min_reading:
+            continue
+        bigrams = reading_bigrams(entry.text)
+        if bigrams:
+            segments.append((entry, bigrams))
+    return segments
+
+
+def reference_recall(
+    candidate: list[Entry],
+    segments: list[tuple[Entry, set[str]]],
+    pad: float,
+    threshold: float,
+) -> tuple[int, int, list[Entry]]:
+    hits = 0
+    missed: list[Entry] = []
+    for entry, bigrams in segments:
+        score = reading_overlap(bigrams, window_reading_bigrams(candidate, entry.start, entry.end, pad))
+        if score >= threshold:
+            hits += 1
+        else:
+            missed.append(entry)
+    return hits, len(segments), missed
+
+
+def fmt_fraction(hit: int, total: int) -> str:
+    if total == 0:
+        return f"n/a ({hit}/{total})"
+    return f"{hit / total:.1%} ({hit}/{total})"
 
 
 def parse_srt(path: Path | None) -> list[Entry]:
@@ -144,7 +222,35 @@ def padded_intervals(entries: list[Entry], padding: float) -> list[Interval]:
     )
 
 
-def speech_intervals_from_audio(
+def speech_intervals_from_metadata(qwen_metadata: dict) -> list[Interval]:
+    intervals: list[Interval] = []
+    chunks = qwen_metadata.get("chunks", [])
+    if not isinstance(chunks, list):
+        return []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        regions = chunk.get("speech_regions")
+        if not isinstance(regions, list):
+            continue
+        try:
+            base = float(chunk.get("start", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            base = 0.0
+        for region in regions:
+            if not isinstance(region, (list, tuple)) or len(region) < 2:
+                continue
+            try:
+                start = base + float(region[0])
+                end = base + float(region[1])
+            except (TypeError, ValueError):
+                continue
+            if end > start:
+                intervals.append(Interval(max(0.0, start), end))
+    return merge_intervals(intervals)
+
+
+def speech_intervals_from_silero_audio(
     audio_path: Path,
     threshold: float,
     min_silence_ms: int,
@@ -163,6 +269,88 @@ def speech_intervals_from_audio(
     )
     timestamps = get_speech_timestamps(audio, options, sampling_rate=16000)
     return [Interval(item["start"] / 16000, item["end"] / 16000) for item in timestamps]
+
+
+def speech_intervals_from_whisperseg_audio(
+    audio_path: Path,
+    model_path: str,
+    threshold: float,
+    max_speech: float,
+    max_group: float,
+    chunk_threshold: float,
+    min_frame_seconds: float,
+    audio=None,
+) -> list[Interval]:
+    from faster_whisper.audio import decode_audio
+    from whisperseg_vad import WhisperSegVAD, resolve_model_path
+
+    if audio is None:
+        audio = decode_audio(str(audio_path), sampling_rate=16000)
+    vad = WhisperSegVAD(
+        model_path=resolve_model_path(model_path),
+        threshold=threshold,
+        max_speech_duration_s=max_speech,
+        max_group_duration_s=max_group,
+        chunk_threshold_s=chunk_threshold,
+    )
+    try:
+        groups = vad.segment(audio, 16000)
+    finally:
+        cleanup = getattr(vad, "cleanup", None)
+        if callable(cleanup):
+            cleanup()
+    intervals: list[Interval] = []
+    for group in groups:
+        if not group:
+            continue
+        frame_start = min(item.start for item in group)
+        frame_end = max(item.end for item in group)
+        if frame_end - frame_start < min_frame_seconds:
+            continue
+        for item in group:
+            if item.end > item.start:
+                intervals.append(Interval(max(0.0, item.start), item.end))
+    return merge_intervals(intervals)
+
+
+def speech_intervals_for_report(
+    args: argparse.Namespace,
+    qwen_metadata: dict,
+) -> tuple[list[Interval], str]:
+    backend = getattr(args, "vad_backend", "silero")
+    metadata_intervals = speech_intervals_from_metadata(qwen_metadata)
+    if backend in ("auto", "metadata") and metadata_intervals:
+        return metadata_intervals, "metadata"
+    if backend == "metadata":
+        return [], "metadata(empty)"
+
+    if backend == "auto":
+        backend = "silero"
+    audio_path = getattr(args, "audio", None)
+    if audio_path is None or not audio_path.exists():
+        return [], f"{backend}(audio_missing)"
+    if backend == "whisperseg":
+        return (
+            speech_intervals_from_whisperseg_audio(
+                audio_path,
+                getattr(args, "whisperseg_model", "models/whisperseg/model.onnx"),
+                getattr(args, "whisperseg_threshold", 0.35),
+                getattr(args, "whisperseg_max_speech", 5.0),
+                getattr(args, "whisperseg_max_group", 5.0),
+                getattr(args, "whisperseg_chunk_threshold", 0.5),
+                getattr(args, "whisperseg_min_frame_seconds", 0.1),
+            ),
+            "whisperseg",
+        )
+    return (
+        speech_intervals_from_silero_audio(
+            audio_path,
+            getattr(args, "vad_threshold", 0.05),
+            getattr(args, "vad_min_silence_ms", 500),
+            getattr(args, "vad_speech_pad_ms", 400),
+        ),
+        "silero",
+    )
 
 
 def adjacent_duplicate_candidates(ja_entries: list[Entry], zh_entries: list[Entry]) -> list[str]:
@@ -220,6 +408,7 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
     zh_entries = parse_srt(args.zh_srt)
     fills_metadata = parse_fills_metadata(getattr(args, "fills_metadata", None))
     qwen_metadata = load_json(getattr(args, "qwen_metadata", None))
+    reference_args = getattr(args, "reference_srt", None) or []
     warn_avg_logprob_below = getattr(args, "warn_avg_logprob_below", -0.80)
     warn_no_speech_prob_above = getattr(args, "warn_no_speech_prob_above", 0.50)
     warn_compression_ratio_above = getattr(args, "warn_compression_ratio_above", 2.20)
@@ -268,13 +457,8 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
             lines.append(f"gap_max_s: {max(item.end - item.start for item in gaps):.1f}")
         lines.append("")
 
-        if args.audio and args.audio.exists():
-            speech_intervals = speech_intervals_from_audio(
-                args.audio,
-                args.vad_threshold,
-                args.vad_min_silence_ms,
-                args.vad_speech_pad_ms,
-            )
+        if (args.audio and args.audio.exists()) or qwen_metadata:
+            speech_intervals, vad_backend_used = speech_intervals_for_report(args, qwen_metadata)
             subtitle_intervals = padded_intervals(ja_entries, args.subtitle_pad_seconds)
             speech_total = sum(item.end - item.start for item in speech_intervals)
             speech_covered = sum(overlap_seconds(item, subtitle_intervals) for item in speech_intervals)
@@ -288,12 +472,15 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
                 if speech_seconds >= args.min_speech_seconds:
                     suspicious.append((gap, speech_seconds))
             metrics.update(
+                vad_backend=vad_backend_used,
                 vad_speech_total_s=round(speech_total, 1),
                 vad_speech_uncovered_s=round(speech_uncovered, 1),
                 vad_speech_coverage=round(speech_covered / speech_total, 3) if speech_total > 0 else None,
                 gaps_with_vad_speech=len(suspicious),
             )
             lines.append("[Audio-aware subtitle gaps]")
+            lines.append("note: VAD-only hints can overcount breath/music/filtered fillers; use reference-aware checks when reference SRTs are available.")
+            lines.append(f"vad_backend: {vad_backend_used}")
             lines.append(f"vad_speech_segments: {len(speech_intervals)}")
             lines.append(f"vad_speech_total_s: {speech_total:.1f}")
             lines.append(f"vad_speech_covered_by_subtitles_s: {speech_covered:.1f}")
@@ -306,6 +493,51 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
                     f"gap={gap.end - gap.start:.1f}s vad_speech={speech_seconds:.1f}s"
                 )
             lines.append("")
+
+    if ja_entries and reference_args:
+        reference_pad = getattr(args, "reference_pad_seconds", 4.0)
+        reference_threshold = getattr(args, "reference_match_threshold", 0.34)
+        reference_min_reading = getattr(args, "reference_min_reading_chars", 3)
+        reference_data: list[tuple[str, list[Entry], list[tuple[Entry, set[str]]]]] = []
+        for item in reference_args:
+            name, path = parse_named_srt(item)
+            entries = parse_srt(path)
+            reference_data.append((name, entries, reference_segments(entries, reference_min_reading)))
+
+        lines.append("[Reference-aware ASR comparison]")
+        lines.append(
+            f"reading_match_threshold: {reference_threshold} "
+            f"pad_seconds: {reference_pad} min_reading_chars: {reference_min_reading}"
+        )
+        for name, entries, segments in reference_data:
+            hit, total, missed = reference_recall(ja_entries, segments, reference_pad, reference_threshold)
+            lines.append(f"{name}: recall={fmt_fraction(hit, total)} entries={len(entries)} scored_segments={total}")
+            for entry in missed[:max_samples]:
+                lines.append(f"- missed {name} {format_time(entry.start)} -> {format_time(entry.end)} {entry.text[:80]}")
+            metrics[f"reference_{name}_recall"] = round(hit / total, 3) if total else None
+            metrics[f"reference_{name}_segments"] = total
+
+        if len(reference_data) >= 2:
+            base_name, _, base_segments = reference_data[0]
+            other_refs = [entries for _, entries, _ in reference_data[1:]]
+            consensus: list[tuple[Entry, set[str]]] = []
+            for entry, bigrams in base_segments:
+                confirmed = any(
+                    reading_overlap(
+                        bigrams,
+                        window_reading_bigrams(ref_entries, entry.start, entry.end, reference_pad),
+                    ) >= reference_threshold
+                    for ref_entries in other_refs
+                )
+                if confirmed:
+                    consensus.append((entry, bigrams))
+            hit, total, missed = reference_recall(ja_entries, consensus, reference_pad, reference_threshold)
+            lines.append(f"cross_reference_consensus_from_{base_name}: recall={fmt_fraction(hit, total)}")
+            for entry in missed[:max_samples]:
+                lines.append(f"- missed consensus {format_time(entry.start)} -> {format_time(entry.end)} {entry.text[:80]}")
+            metrics["reference_consensus_recall"] = round(hit / total, 3) if total else None
+            metrics["reference_consensus_segments"] = total
+        lines.append("")
 
     if zh_entries:
         lines.append("[Chinese SRT]")
@@ -481,6 +713,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--fills-metadata", type=Path)
     parser.add_argument("--qwen-metadata", type=Path)
+    parser.add_argument(
+        "--reference-srt",
+        action="append",
+        help="Optional name=path reference SRT for reading-normalized ASR recall checks; repeatable.",
+    )
+    parser.add_argument("--reference-pad-seconds", type=float, default=4.0)
+    parser.add_argument("--reference-match-threshold", type=float, default=0.34)
+    parser.add_argument("--reference-min-reading-chars", type=int, default=3)
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--metrics-jsonl",

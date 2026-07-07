@@ -356,12 +356,21 @@ def build_quality_command(
     fills_metadata: Path | None,
     qwen_metadata: Path | None,
 ) -> list[str]:
-    # Only the two shared VAD knobs are forwarded; the rest of QualityReportConfig sits at
-    # its canonical defaults (serialized explicitly, equivalent to the sub-script defaults).
     cfg = QualityReportConfig(
         vad_min_silence_ms=args.vad_min_silence_ms,
         vad_speech_pad_ms=args.vad_speech_pad_ms,
     )
+    if getattr(args, "asr", None) == "anime":
+        qwen_defaults = QwenAsrConfig()
+        cfg.vad_backend = "whisperseg"
+        cfg.whisperseg_model = qwen_defaults.whisperseg_model
+        cfg.whisperseg_max_speech = qwen_defaults.whisperseg_max_speech
+        cfg.whisperseg_max_group = qwen_defaults.whisperseg_max_group
+        cfg.whisperseg_chunk_threshold = qwen_defaults.whisperseg_chunk_threshold
+        cfg.whisperseg_threshold = qwen_defaults.whisperseg_threshold
+        cfg.whisperseg_min_frame_seconds = qwen_defaults.whisperseg_min_frame_seconds
+    if getattr(args, "quality_vad_backend", None):
+        cfg.vad_backend = args.quality_vad_backend
     command = [
         sys.executable,
         str(QUALITY_REPORT_SCRIPT),
@@ -635,6 +644,11 @@ def main() -> None:
         "The ASS/quality-report stages always rerun (cheap, no model).",
     )
     parser.add_argument("--skip-quality-report", action="store_true", help="Do not write a quality report")
+    parser.add_argument(
+        "--quality-vad-backend",
+        choices=("auto", "metadata", "silero", "whisperseg"),
+        help="VAD source used only by the quality report (default: anime uses whisperseg, others auto)",
+    )
     parser.add_argument(
         "--gap-fill",
         action="store_true",

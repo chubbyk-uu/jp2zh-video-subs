@@ -182,6 +182,54 @@ def test_build_qwen_command_asr_anime_selects_anime_backend(tmp_path):
     assert cmd[cmd.index("--scene-backend") + 1] == "semantic"
 
 
+def test_build_quality_command_asr_anime_uses_whisperseg_backend(tmp_path):
+    import argparse
+
+    from video_to_zh_srt import build_quality_command
+
+    ns = argparse.Namespace(asr="anime", vad_min_silence_ms=500, vad_speech_pad_ms=200)
+    cmd = build_quality_command(
+        ns,
+        tmp_path / "in.ja.srt",
+        tmp_path / "in.zh.srt",
+        tmp_path / "in.wav",
+        tmp_path / "quality.txt",
+        tmp_path / "metrics.jsonl",
+        "sample",
+        None,
+        tmp_path / "in.ja.srt.meta.json",
+    )
+
+    assert cmd[cmd.index("--vad-backend") + 1] == "whisperseg"
+    assert cmd[cmd.index("--whisperseg-model") + 1] == "models/whisperseg/model.onnx"
+
+
+def test_build_quality_command_can_override_quality_vad_backend(tmp_path):
+    import argparse
+
+    from video_to_zh_srt import build_quality_command
+
+    ns = argparse.Namespace(
+        asr="anime",
+        vad_min_silence_ms=500,
+        vad_speech_pad_ms=200,
+        quality_vad_backend="metadata",
+    )
+    cmd = build_quality_command(
+        ns,
+        tmp_path / "in.ja.srt",
+        tmp_path / "in.zh.srt",
+        tmp_path / "in.wav",
+        tmp_path / "quality.txt",
+        tmp_path / "metrics.jsonl",
+        "sample",
+        None,
+        tmp_path / "in.ja.srt.meta.json",
+    )
+
+    assert cmd[cmd.index("--vad-backend") + 1] == "metadata"
+
+
 def test_build_qwen_command_asr_anime_can_select_aligner_mode(tmp_path):
     import argparse
 

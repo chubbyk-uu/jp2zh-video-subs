@@ -167,13 +167,25 @@ class QualityReportConfig:
     """Tuning knobs shared with quality_report.py.
 
     IO/per-run args (the SRT/audio paths, --output, --fills-metadata, --qwen-metadata,
-    --metrics-jsonl, --metrics-label) stay manual. The orchestrator forwards only the two
-    shared VAD knobs; the rest sit at these canonical defaults but are now equally tunable.
+    --metrics-jsonl, --metrics-label) stay manual. The audio-aware gap section can use
+    ASR metadata speech regions, Silero/faster-whisper VAD, or WhisperSeg so reports can
+    match the ASR line that produced the subtitles.
     """
 
+    vad_backend: str = arg_field(
+        "auto",
+        choices=("auto", "metadata", "silero", "whisperseg"),
+        help="VAD source for audio-aware gap checks",
+    )
     vad_threshold: float = arg_field(0.05, help="VAD speech probability threshold")
     vad_min_silence_ms: int = arg_field(500, help="VAD min silence to split")
     vad_speech_pad_ms: int = arg_field(400, help="VAD speech padding")
+    whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
+    whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
+    whisperseg_max_group: float = arg_field(5.0, help="WhisperSeg max frame group duration (s)")
+    whisperseg_chunk_threshold: float = arg_field(0.5, help="WhisperSeg frame grouping silence threshold (s)")
+    whisperseg_threshold: float = arg_field(0.35, help="WhisperSeg onset probability threshold")
+    whisperseg_min_frame_seconds: float = arg_field(0.1, help="Drop WhisperSeg frames shorter than this")
     min_gap_seconds: float = arg_field(10.0, help="Min gap to flag as a suspicious uncovered span")
     min_speech_seconds: float = arg_field(2.0, help="Min VAD speech in a gap to flag it")
     subtitle_pad_seconds: float = arg_field(0.5, help="Padding added around cues for coverage")
