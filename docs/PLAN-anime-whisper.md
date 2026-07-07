@@ -510,6 +510,46 @@ Validation for the split:
   `finalize_qwen_entries` (Base config `collapse_repeats`, both lines). We did NOT port WJ's
   hallucination phrase list (Whisper-era) or sentence dedup (we have near-dup).
 
+### Collapse & drift resolution — the original qwen pain point (DLDSS-492)
+
+The project started from two qwen weaknesses: forced-aligner **collapse** (a clip's words
+squashed to one timestamp → cues pile up) and **timeline drift**. Measured on DLDSS-492 with
+the raw sentinel/recovery dumps:
+
+**Aligner-level collapse (sentinel status per chunk):**
+
+| config | collapse rate | recovered | residual collapse |
+|---|---:|---:|---:|
+| Silero baseline (aligner_only, no recovery) | 10.2% (64/628) | 0 | **64 (all leak to SRT)** |
+| current default (whisperseg + aligner_fallback recovery) | 5.7% (51/894) | 51/51 | **0** |
+
+WhisperSeg short frames roughly halve the collapse rate; VAD-guided recovery fixes 100% of
+the remainder → **zero residual collapse**.
+
+**Final-SRT timing hygiene (collapse "piling up" = short/overlap/same-start):**
+
+| config | cues | short <0.4s | overlaps | same-start piles |
+|---|---:|---:|---:|---:|
+| Silero baseline | 923 | 12 | 0 | 0 |
+| **current default** | 1078 | **3** | **0** | **0** |
+| WJ-qwen | 954 | **175** | **29** | 4 |
+
+Our cues do not pile up; WJ-qwen's own output carries the collapse (175 short + 29 overlaps).
+
+**Drift vs the detected speech onset (ground-truth-ish; cue start − WhisperSeg speech onset):**
+
+| config | median offset | p90 \|offset\| | collapsed-cue p90 \|offset\| |
+|---|---:|---:|---:|
+| Silero baseline | +0.20s | 3.00s | **6.92s** |
+| **current default** | +0.32s | **1.12s** | **0.00s** |
+
+Worst-case drift is cut (3.00s → 1.12s), and **recovery anchors collapsed cues exactly onto
+detected speech (6.92s → 0.00s)**. The residual +0.3s median is WhisperSeg's `speech_pad`
+convention — a consistent lead, not chaotic drift (a global shift would zero it if desired).
+
+Verdict: collapse and collapse-driven drift are resolved; the current qwen line is cleaner on
+timing than WJ-qwen itself, at ~2pt lower raw recall (see Stage 6.4).
+
 ### Files (Stage 6.1)
 
 - `scripts/pipeline_configs.py` — split `QwenAsrConfig` / `AnimeAsrConfig`; keep qwen and
