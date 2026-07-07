@@ -30,7 +30,7 @@
 4. 默认生成中日双语 ASS（中文在上、日文在下），并复制到输入视频同目录。
 5. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
 
-默认的 anime 后端采用 WJ-style 路线：semantic scene 先切 12-48 秒场景，WhisperSeg 在场景内生成短语音 frame，`litagin/anime-whisper` 出文本，默认 `vad_only` 把文本分布到语音区间上。这样可以避开 anime 文本走 forced aligner 时出现的碎片化/坍缩，同时继续使用本项目的字幕塑形、翻译、去重叠和 ASS 生成链。Qwen 仍可用 `--asr qwen` 作为更干净的对比线；anime 也可以用 `--qwen-timestamp-mode aligner_fallback` 或 `aligner_only` 强制走对齐器做诊断。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
+默认的 anime 后端采用 WJ-style 路线：semantic scene 先切 12-48 秒场景，WhisperSeg 在场景内生成短语音 frame，`litagin/anime-whisper` 出文本，默认 `vad_only` 把文本分布到语音区间上。这样可以避开 anime 文本走 forced aligner 时出现的碎片化/坍缩，同时继续使用本项目的字幕塑形、翻译、去重叠和 ASS 生成链。Qwen 仍可用 `--asr qwen` 作为更干净的对比线；anime 也可以用 `--anime-timestamp-mode aligner_fallback` 或 `aligner_only` 强制走对齐器做诊断。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
 
 用 `--asr whisper` 时，第 2 步走 Whisper 滑窗主识别，`--gap-fill` 再加一个音频补漏阶段捞回更多轻声/漏识别语音（更慢，也更容易引入幻觉或听错的字幕，重要输出建议复查质量报告和补漏元数据）。
 
@@ -235,7 +235,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4
 python scripts/video_to_zh_srt.py path/to/input.mp4
 
 # 默认 anime 识别，但关闭 semantic scene 做 A/B 对比
-python scripts/video_to_zh_srt.py path/to/input.mp4 --qwen-scene-backend none
+python scripts/video_to_zh_srt.py path/to/input.mp4 --anime-scene-backend none
 
 # Qwen 对比线，并开启 Qwen 空窗补捞（不是 Whisper 的 --gap-fill）
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen \
@@ -318,7 +318,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 3. `litagin/anime-whisper` 逐 frame 识别文本，anime cleaner 清理省略号-only 和短重复伪迹。
 4. 默认 `vad_only` 定时把文本分布到检测到的语音区间上，避免 anime 文本走 Qwen forced aligner 时的坍缩/碎片化。
 
-需要对比时可以用 `--asr qwen`；也可用 `--qwen-scene-backend none` 关闭 semantic scene 做 A/B。
+需要对比时可以用 `--asr qwen`；也可用 `--anime-scene-backend none` 关闭 semantic scene 做 A/B。
 
 ### Qwen 主线的工作方式
 
@@ -374,15 +374,15 @@ GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，�
 一键流程默认使用：
 
 - 识别后端：`anime`（`models/anime-whisper` + `models/whisperseg/model.onnx`）
-- Anime semantic scene 预切分：开启（`--qwen-scene-backend semantic`；用 `--qwen-scene-backend none` 关闭）
-- Anime 定时模式：`vad_only`（`--qwen-timestamp-mode vad_only`；aligner 诊断模式需要 `models/Qwen3-ForcedAligner-0.6B`）
+- Anime semantic scene 预切分：开启（`--anime-scene-backend semantic`；用 `--anime-scene-backend none` 关闭）
+- Anime 定时模式：`vad_only`（`--anime-timestamp-mode vad_only`；aligner 诊断模式需要 `models/Qwen3-ForcedAligner-0.6B`）
 - Anime WhisperSeg frame 默认值：`max_group=5.0`、`chunk_threshold=0.5`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`
 - Anime cleaner：开启，清理省略号-only 片段和短重复伪迹；之后仍走共享字幕塑形，删除重叠和闪字幕
 - Qwen 对比线：用 `--asr qwen` 开启。Qwen VAD 切片默认开启（`--qwen-vad-chunks`；用 `--asr qwen --no-qwen-vad-chunks` 关闭），默认 `--qwen-vad-threshold 0.1`、`--qwen-chunk-seconds 30`、`--qwen-chunk-overlap-seconds 3`。
 - Qwen 空窗补捞：默认关闭（`--qwen-recapture-min-gap 0`），且只适用于 `--asr qwen`。需要高覆盖率的 Qwen 对比时，可设为正数，例如 `--qwen-recapture-min-gap 10`：主识别结束后，对满足长度的字幕空窗用更灵敏的 `--qwen-recapture-vad-threshold 0.05` 再做一遍 VAD；检出语音合计不少于 `--qwen-recapture-min-speech 2` 秒的空窗会趁模型还在显存里二次识别。
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--asr qwen --qwen-filter-hallucinations` 开启）
-- 纯语气词过滤：共享 Qwen/anime 子脚本默认开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——要么是两侧各有 `--qwen-isolated-interjection-silence 3.0` 秒静默的孤立单条，要么是连续 3 条及以上的语气词链。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）。
-- 语气词重复拼接折叠：共享 Qwen/anime 子脚本默认开启。同一条 cue 里同一语气词的连续重复（「うんうんうん。」，或「うん、うん、うん、一人。」这种包着真实台词的）会被折成一个。重复 run 两端必须落在标点或 cue 边界才折叠，所以真词内部的重复（ああいう）绝不会被碰。可用 `--no-qwen-collapse-filler-repetition` 做 A/B 对比。
+- 纯语气词过滤：共享 qwen/anime 子脚本默认开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——默认 anime 线是两侧各有 `--anime-isolated-interjection-silence 3.0` 秒静默的孤立单条，或连续 3 条及以上的语气词链。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。anime 用 `--anime-isolated-interjection-silence 0` 关闭，qwen 用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）。
+- 语气词重复拼接折叠：共享 qwen/anime 子脚本默认开启。同一条 cue 里同一语气词的连续重复（「うんうんうん。」，或「うん、うん、うん、一人。」这种包着真实台词的）会被折成一个。重复 run 两端必须落在标点或 cue 边界才折叠，所以真词内部的重复（ああいう）绝不会被碰。anime 可用 `--no-anime-collapse-filler-repetition` 做 A/B，qwen 用 `--no-qwen-collapse-filler-repetition`。
 - 翻译后端：`galtransl`（`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`）；用 `--translator sakura` 切 Sakura-14B、`--translator hymt` 切 HY-MT
 - 识别语言：日语 `ja`
 - 翻译上下文：按后端使用不同默认值（galtransl/sakura 默认前 6 轮；hymt 默认前 2 条中文译文作为 Hy-MT2 背景信息）；设为 0 则逐句独立翻译

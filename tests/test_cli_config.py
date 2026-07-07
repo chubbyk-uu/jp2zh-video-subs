@@ -13,7 +13,7 @@ from cli_config import (
     config_from_prefixed,
     config_to_cli_args,
 )
-from pipeline_configs import QwenAsrConfig
+from pipeline_configs import AnimeAsrConfig, QwenAsrConfig
 from pipeline_configs import (
     BilingualAssConfig,
     FillConfig,
@@ -97,6 +97,30 @@ def test_qwen_config_round_trips_through_subscript_parser():
     parser = qwen_build_parser()
     ns = parser.parse_args(["a.wav", "out.srt", *config_to_cli_args(cfg)])
     assert config_from_namespace(ns, QwenAsrConfig) == cfg
+
+
+def test_anime_config_round_trips_through_shared_qwen_subscript_parser():
+    cfg = AnimeAsrConfig()
+    parser = qwen_build_parser()
+    ns = parser.parse_args(["a.wav", "out.srt", *config_to_cli_args(cfg)])
+    assert config_from_namespace(ns, AnimeAsrConfig) == cfg
+
+
+def test_qwen_and_anime_backend_defaults_are_separate():
+    qwen = QwenAsrConfig()
+    anime = AnimeAsrConfig()
+
+    assert qwen.text_backend == "qwen"
+    assert qwen.timestamp_mode == "aligner_fallback"
+    assert qwen.vad_backend == "current"
+    assert qwen.scene_backend == "none"
+
+    assert anime.text_backend == "anime"
+    assert anime.timestamp_mode == "vad_only"
+    assert anime.vad_backend == "whisperseg"
+    assert anime.scene_backend == "semantic"
+    assert qwen.whisperseg_chunk_threshold == 1.0
+    assert anime.whisperseg_chunk_threshold == 0.5
 
 
 def test_qwen_config_round_trips_with_toggled_bools():

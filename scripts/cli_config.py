@@ -34,6 +34,10 @@ def _flag(name: str) -> str:
     return "--" + name.replace("_", "-")
 
 
+def _prefixed_flag(prefix: str, name: str) -> str:
+    return "--" + (prefix + name).replace("_", "-")
+
+
 def _base_type(hint):
     """Strip Optional[X] -> X so argparse gets a concrete converter."""
     if typing.get_origin(hint) is typing.Union:
@@ -45,21 +49,47 @@ def _base_type(hint):
 
 def add_dataclass_arguments(parser: argparse.ArgumentParser, cls) -> None:
     """Add one argparse argument per dataclass field, named ``--kebab-case``."""
+    _add_dataclass_arguments(parser, cls, prefix="", skip=set())
+
+
+def add_prefixed_dataclass_arguments(
+    parser: argparse.ArgumentParser,
+    cls,
+    prefix: str,
+    *,
+    skip: set[str] | tuple[str, ...] = (),
+    default_none: bool = False,
+) -> None:
+    """Add one argparse argument per dataclass field, named ``--<prefix>kebab-case``."""
+    _add_dataclass_arguments(parser, cls, prefix=prefix, skip=set(skip), default_none=default_none)
+
+
+def _add_dataclass_arguments(
+    parser: argparse.ArgumentParser,
+    cls,
+    prefix: str,
+    skip: set[str],
+    default_none: bool = False,
+) -> None:
     hints = typing.get_type_hints(cls)
     for field in dataclasses.fields(cls):
-        flag = _flag(field.name)
+        if field.name in skip:
+            continue
+        flag = _prefixed_flag(prefix, field.name) if prefix else _flag(field.name)
+        dest = prefix + field.name if prefix else field.name
         meta = field.metadata
         action = meta.get("action")
         help_text = meta.get("help", "")
+        default = None if default_none else field.default
         if action == "store_true":
-            parser.add_argument(flag, dest=field.name, action="store_true",
-                                default=field.default, help=help_text)
+            parser.add_argument(flag, dest=dest, action="store_true",
+                                default=default, help=help_text)
         elif action == "boolean_optional":
-            parser.add_argument(flag, dest=field.name,
+            parser.add_argument(flag, dest=dest,
                                 action=argparse.BooleanOptionalAction,
-                                default=field.default, help=help_text)
+                                default=default, help=help_text)
         else:
-            kwargs = dict(dest=field.name, default=field.default,
+            kwargs = dict(dest=dest, default=default,
                           type=_base_type(hints[field.name]), help=help_text)
             if meta.get("choices"):
                 kwargs["choices"] = meta["choices"]
@@ -71,7 +101,17 @@ def config_from_namespace(args: argparse.Namespace, cls):
     return cls(**{f.name: getattr(args, f.name) for f in dataclasses.fields(cls)})
 
 
-def config_from_prefixed(args: argparse.Namespace, cls, prefix: str, overrides: dict | None = None):
+_MISSING = object()
+
+
+def config_from_prefixed(
+    args: argparse.Namespace,
+    cls,
+    prefix: str,
+    overrides: dict | None = None,
+    *,
+    none_means_default: bool = False,
+):
     """Build a config dataclass from a parsed namespace whose attrs are ``<prefix><field>``.
 
     Lets the orchestrator keep its own flag surface (e.g. ``--qwen-batch-size`` ->
@@ -90,7 +130,10 @@ def config_from_prefixed(args: argparse.Namespace, cls, prefix: str, overrides: 
         if field.name in overrides:
             values[field.name] = overrides[field.name]
         else:
-            values[field.name] = getattr(args, prefix + field.name, getattr(defaults, field.name))
+            value = getattr(args, prefix + field.name, _MISSING)
+            if value is _MISSING or (none_means_default and value is None):
+                value = getattr(defaults, field.name)
+            values[field.name] = value
     return cls(**values)
 
 

@@ -12,8 +12,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from cli_config import apply_config_file, config_from_prefixed, config_to_cli_args, format_config_toml
+from cli_config import (
+    add_prefixed_dataclass_arguments,
+    apply_config_file,
+    config_from_prefixed,
+    config_to_cli_args,
+    format_config_toml,
+)
 from pipeline_configs import (
+    AnimeAsrConfig,
     BilingualAssConfig,
     FillConfig,
     GalTranslTranslateConfig,
@@ -55,6 +62,8 @@ VIDEO_EXTENSIONS = {
     ".m4v",
     ".ts",
 }
+
+ANIME_PREFIX_SKIP = {"language", "min_cue_seconds", "text_backend"}
 
 
 class JobLog:
@@ -250,24 +259,56 @@ def work_dir_for(video: Path, input_path: Path, work_dir: Path, recursive: bool)
     return (work_dir / video.stem).resolve()
 
 
-def build_qwen_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> list[str]:
-    """Assemble the Qwen transcription sub-command.
+def _asr_language(args: argparse.Namespace) -> str:
+    language = getattr(args, "language", "ja")
+    return "Japanese" if language == "ja" else language
 
-    Every tuning knob is forwarded generically from a QwenAsrConfig, so a new sub-script
-    knob (a new QwenAsrConfig field + a matching --qwen-<field> arg) reaches the sub-script
-    without editing this function. The orchestrator's --qwen-* args map onto config fields
-    by name; the two unprefixed exceptions are supplied as overrides.
-    """
-    cfg = config_from_prefixed(
+
+def _anime_compat_overrides(args: argparse.Namespace) -> dict:
+    """Map old anime-tuning --qwen-* aliases only when the new --anime-* value is unset."""
+    overrides: dict = {}
+    if getattr(args, "anime_timestamp_mode", None) is None and getattr(args, "qwen_timestamp_mode", None) is not None:
+        overrides["timestamp_mode"] = args.qwen_timestamp_mode
+    if getattr(args, "anime_scene_backend", None) is None and getattr(args, "qwen_scene_backend", None) is not None:
+        overrides["scene_backend"] = args.qwen_scene_backend
+    return overrides
+
+
+def asr_config_for_command(args: argparse.Namespace) -> QwenAsrConfig | AnimeAsrConfig:
+    if args.asr == "anime":
+        overrides = {
+            "language": _asr_language(args),
+            "min_cue_seconds": getattr(args, "min_cue_seconds", 0.3),
+            "text_backend": "anime",
+            **_anime_compat_overrides(args),
+        }
+        return config_from_prefixed(
+            args,
+            AnimeAsrConfig,
+            prefix="anime_",
+            overrides=overrides,
+            none_means_default=True,
+        )
+    return config_from_prefixed(
         args,
         QwenAsrConfig,
         prefix="qwen_",
         overrides={
-            "language": "Japanese" if args.language == "ja" else args.language,
-            "min_cue_seconds": args.min_cue_seconds,
-            "text_backend": "anime" if args.asr == "anime" else "qwen",
+            "language": _asr_language(args),
+            "min_cue_seconds": getattr(args, "min_cue_seconds", 0.3),
+            "text_backend": "qwen",
         },
+        none_means_default=True,
     )
+
+
+def build_qwen_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> list[str]:
+    """Assemble the Qwen transcription sub-command.
+
+    The qwen and anime backends share the same sub-script but use separate top-level
+    config surfaces, so backend defaults cannot leak across lines.
+    """
+    cfg = asr_config_for_command(args)
     return [
         sys.executable,
         str(QWEN_TRANSCRIBE_SCRIPT),
@@ -361,14 +402,14 @@ def build_quality_command(
         vad_speech_pad_ms=args.vad_speech_pad_ms,
     )
     if getattr(args, "asr", None) == "anime":
-        qwen_defaults = QwenAsrConfig()
+        anime_cfg = asr_config_for_command(args)
         cfg.vad_backend = "whisperseg"
-        cfg.whisperseg_model = qwen_defaults.whisperseg_model
-        cfg.whisperseg_max_speech = qwen_defaults.whisperseg_max_speech
-        cfg.whisperseg_max_group = qwen_defaults.whisperseg_max_group
-        cfg.whisperseg_chunk_threshold = qwen_defaults.whisperseg_chunk_threshold
-        cfg.whisperseg_threshold = qwen_defaults.whisperseg_threshold
-        cfg.whisperseg_min_frame_seconds = qwen_defaults.whisperseg_min_frame_seconds
+        cfg.whisperseg_model = anime_cfg.whisperseg_model
+        cfg.whisperseg_max_speech = anime_cfg.whisperseg_max_speech
+        cfg.whisperseg_max_group = anime_cfg.whisperseg_max_group
+        cfg.whisperseg_chunk_threshold = anime_cfg.whisperseg_chunk_threshold
+        cfg.whisperseg_threshold = anime_cfg.whisperseg_threshold
+        cfg.whisperseg_min_frame_seconds = anime_cfg.whisperseg_min_frame_seconds
     if getattr(args, "quality_vad_backend", None):
         cfg.vad_backend = args.quality_vad_backend
     command = [
@@ -715,8 +756,8 @@ def main() -> None:
         help="Transcription backend (default anime). 'anime' uses litagin/anime-whisper "
         "text + WhisperSeg framing + semantic scenes + vad_only timing; 'qwen' uses "
         "Qwen3-ASR with VAD-cut clips (no gap fill); 'whisper' is the legacy "
-        "sliding+gap-fill pipeline. anime shares the qwen sub-script and its --qwen-* "
-        "tuning knobs. Downstream stages are shared.",
+        "sliding+gap-fill pipeline. anime shares the qwen sub-script implementation but "
+        "uses its own --anime-* tuning surface. Downstream stages are shared.",
     )
     parser.add_argument("--qwen-batch-size", type=int, default=24)
     parser.add_argument("--qwen-device", default="cuda:0")
@@ -765,14 +806,14 @@ def main() -> None:
     parser.add_argument(
         "--qwen-timestamp-mode",
         choices=("aligner_fallback", "aligner_only", "vad_only"),
-        default="vad_only",
-        help="Anime timing mode: default vad_only; aligner modes require Qwen3-ForcedAligner.",
+        default=None,
+        help="Qwen timing mode; also accepted as a deprecated anime alias when --asr anime and --anime-timestamp-mode is unset.",
     )
     parser.add_argument(
         "--qwen-scene-backend",
         choices=("none", "semantic"),
-        default="semantic",
-        help="Anime scene pre-segmentation (default semantic; use none for A/B tests).",
+        default=None,
+        help="Qwen scene pre-segmentation; also accepted as a deprecated anime alias when --asr anime and --anime-scene-backend is unset.",
     )
     parser.add_argument("--qwen-collapse-filler-repetition", dest="qwen_collapse_filler_repetition",
                         action=argparse.BooleanOptionalAction, default=True,
@@ -791,6 +832,14 @@ def main() -> None:
         "--qwen-filter-hallucinations",
         action="store_true",
         help="Apply the Whisper-style hallucination/near-duplicate filters to Qwen output (off by default).",
+    )
+    anime_group = parser.add_argument_group("Anime ASR")
+    add_prefixed_dataclass_arguments(
+        anime_group,
+        AnimeAsrConfig,
+        "anime_",
+        skip=ANIME_PREFIX_SKIP,
+        default_none=True,
     )
     parser.add_argument("--min-duration", type=float, default=1.0)
     parser.add_argument("--max-duration", type=float, default=10.0)
@@ -889,8 +938,9 @@ def main() -> None:
         raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")
 
     if args.asr == "anime":
-        require_file(ANIME_ASR_MODEL, "anime-whisper model")
-        if args.qwen_timestamp_mode != "vad_only":
+        anime_cfg = asr_config_for_command(args)
+        require_file(Path(anime_cfg.text_model), "anime-whisper model")
+        if anime_cfg.timestamp_mode != "vad_only":
             require_file(QWEN_ALIGNER_MODEL, "Qwen3 forced aligner")
         require_file(QWEN_TRANSCRIBE_SCRIPT, "transcription script")
     elif args.asr == "qwen":

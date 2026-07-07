@@ -40,7 +40,7 @@ frames, anime-whisper text, and `vad_only` pseudo timing. This avoids the forced
 fragmentation seen on anime-whisper text while keeping this project's subtitle shaping,
 translation, overlap cleanup, and ASS generation. Qwen remains available with
 `--asr qwen` for cleaner text/timing comparisons, and anime can still be forced through
-the aligner for diagnostics with `--qwen-timestamp-mode aligner_fallback` or
+the aligner for diagnostics with `--anime-timestamp-mode aligner_fallback` or
 `aligner_only`. The translation step runs in its own process so the ASR and translation
 models never share VRAM. All generated SRTs are sorted and de-overlapped so cues never
 overlap or go out of order.
@@ -264,7 +264,7 @@ quality report. Common variants:
 python scripts/video_to_zh_srt.py path/to/input.mp4
 
 # Default anime ASR, but disable semantic scene pre-segmentation for A/B testing
-python scripts/video_to_zh_srt.py path/to/input.mp4 --qwen-scene-backend none
+python scripts/video_to_zh_srt.py path/to/input.mp4 --anime-scene-backend none
 
 # Qwen comparison line, with Qwen gap recapture enabled (not Whisper --gap-fill)
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen \
@@ -361,7 +361,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # legacy Whi
 4. Default `vad_only` timing distributes text over the detected speech regions, avoiding
    Qwen forced-aligner collapse/fragmentation on anime-whisper text.
 
-Use `--qwen-scene-backend none` for A/B tests, or run the Qwen comparison line with
+Use `--anime-scene-backend none` for A/B tests, or run the Qwen comparison line with
 `--asr qwen`.
 
 ### How the Qwen line works
@@ -440,15 +440,15 @@ or `--translator hymt` for more formal/general material.
 The one-command pipeline uses:
 
 - ASR backend: `anime` (`models/anime-whisper` + `models/whisperseg/model.onnx`)
-- Anime semantic scene pre-segmentation: on (`--qwen-scene-backend semantic`; disable with `--qwen-scene-backend none`)
-- Anime timing mode: `vad_only` (`--qwen-timestamp-mode vad_only`; aligner modes are diagnostic and require `models/Qwen3-ForcedAligner-0.6B`)
+- Anime semantic scene pre-segmentation: on (`--anime-scene-backend semantic`; disable with `--anime-scene-backend none`)
+- Anime timing mode: `vad_only` (`--anime-timestamp-mode vad_only`; aligner modes are diagnostic and require `models/Qwen3-ForcedAligner-0.6B`)
 - Anime WhisperSeg frame defaults: `max_group=5.0`, `chunk_threshold=0.5`, `max_speech=5.0`, `min_frame=0.1`, `threshold=0.35`
 - Anime cleaner: on for ellipsis-only fragments and short repetition artifacts; shared subtitle shaping then removes overlaps and flash cues
 - Qwen comparison line: available with `--asr qwen`. Its VAD-cut clips are on by default (`--qwen-vad-chunks`; disable with `--asr qwen --no-qwen-vad-chunks`), using `--qwen-vad-threshold 0.1`, `--qwen-chunk-seconds 30`, and `--qwen-chunk-overlap-seconds 3`.
 - Qwen gap recapture: off by default (`--qwen-recapture-min-gap 0`) and only applies to `--asr qwen`. For high-coverage Qwen runs, set a positive gap threshold such as `--qwen-recapture-min-gap 10`: after the main pass, matching subtitle gaps get a second VAD look at the more sensitive `--qwen-recapture-vad-threshold 0.05`; gaps with at least `--qwen-recapture-min-speech 2` seconds of detected speech are re-transcribed while the model is still loaded.
 - Whisper-style hallucination filtering on Qwen output: off (opt in with `--asr qwen --qwen-filter-hallucinations`)
-- Bare filler-interjection dropping: on for the shared Qwen/anime sub-script. Cues that reduce entirely to a single filler mora (うん/ん/ねえ/あ …) and carry no dialogue are removed — either an isolated blip walled by `--qwen-isolated-interjection-silence 3.0` seconds of silence on both sides, or a chain of 3+ such fillers in a row. Only cues that are *entirely* a filler are eligible, so any line containing real words always survives. Disable with `--qwen-isolated-interjection-silence 0` (also turns off the chain rule).
-- Filler-repetition collapse: on for the shared Qwen/anime sub-script. A run of the same filler repeated inside one cue (うんうんうん。, or うん、うん、うん、一人。 padding real speech) collapses to a single instance at the token-alignment level. The run only collapses when both edges sit on punctuation or the cue boundary, so repetition inside real words (ああいう) is never touched. Pass `--no-qwen-collapse-filler-repetition` for A/B comparison.
+- Bare filler-interjection dropping: on for the shared qwen/anime sub-script. Cues that reduce entirely to a single filler mora (うん/ん/ねえ/あ …) and carry no dialogue are removed — either an isolated blip walled by `--anime-isolated-interjection-silence 3.0` seconds of silence on both sides in the default anime line, or a chain of 3+ such fillers in a row. Only cues that are *entirely* a filler are eligible, so any line containing real words always survives. Disable with `--anime-isolated-interjection-silence 0` for anime or `--qwen-isolated-interjection-silence 0` for qwen (also turns off the chain rule).
+- Filler-repetition collapse: on for the shared qwen/anime sub-script. A run of the same filler repeated inside one cue (うんうんうん。, or うん、うん、うん、一人。 padding real speech) collapses to a single instance at the token-alignment level. The run only collapses when both edges sit on punctuation or the cue boundary, so repetition inside real words (ああいう) is never touched. Pass `--no-anime-collapse-filler-repetition` for anime or `--no-qwen-collapse-filler-repetition` for qwen A/B comparison.
 - Translation backend: `galtransl` (`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`); use `--translator sakura` for Sakura-14B or `--translator hymt` for HY-MT
 - Source language: Japanese, `ja`
 - Translation context: backend-specific default context (galtransl/sakura: previous 6 turns; hymt: previous 2 Chinese translations as Hy-MT2 background information). `--context-size 0` translates each line standalone

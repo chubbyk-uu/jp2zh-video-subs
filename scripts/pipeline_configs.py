@@ -13,12 +13,13 @@ from cli_config import arg_field
 
 
 @dataclass
-class QwenAsrConfig:
-    """Tunable knobs forwarded to transcribe_ja_srt_qwen.py.
+class BaseAsrConfig:
+    """Shared Qwen/anime ASR knobs.
 
     IO/positional args (audio, output, --model, --forced-aligner, --meta-output,
     --raw-output, --from-raw) are not here: they are not pipeline tuning knobs and the
-    sub-script/orchestrator handle them explicitly.
+    sub-script/orchestrator handle them explicitly. Keep cue shaping, VAD clip construction,
+    filtering, and runtime knobs here so qwen/anime do not drift.
     """
 
     language: str = arg_field("Japanese", help="ASR language label")
@@ -30,40 +31,6 @@ class QwenAsrConfig:
     chunk_overlap_seconds: float = arg_field(3.0, help="ASR window overlap")
     context: str = arg_field("", help="Extra ASR hotwords/context appended to the built-in list")
     no_default_context: bool = arg_field(False, action="store_true", help="Drop the built-in ASR context")
-
-    # ASR text backend. Despite the QwenAsrConfig name, this hosts both text sources:
-    #   qwen  — Qwen3-ASR text with bundled/standalone forced alignment.
-    #   anime — anime-whisper text with WhisperSeg + vad_only by default; standalone
-    #           Qwen3 forced alignment is available only for diagnostic timestamp modes.
-    text_backend: str = arg_field("qwen", choices=("qwen", "anime"), help="ASR text source")
-    text_model: str = arg_field("models/anime-whisper", help="anime-whisper model path (text_backend=anime)")
-    timestamp_mode: str = arg_field(
-        "vad_only", choices=("aligner_fallback", "aligner_only", "vad_only"),
-        help="anime timing: aligner_fallback recovers collapse, aligner_only trusts the aligner, vad_only skips aligner",
-    )
-    collapse_recovery: bool = arg_field(
-        True, action="boolean_optional", help="Recover collapsed forced alignment (anime backend)",
-    )
-    no_repeat_ngram_size: int = arg_field(0, help="anime-whisper n-gram repeat guard (0 = model-card default)")
-
-    # Speech segmentation backend for anime jobs (Stage 3):
-    #   current    — existing Silero build_vad_jobs (long clips, more aligner collapse).
-    #   whisperseg — short, speech-pure ONNX frames (fewer long clips, less collapse).
-    vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="anime speech segmentation backend")
-    whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
-    whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
-    whisperseg_max_group: float = arg_field(5.0, help="WhisperSeg max frame group duration (s)")
-    whisperseg_chunk_threshold: float = arg_field(0.5, help="WhisperSeg frame grouping silence threshold (s)")
-    whisperseg_threshold: float = arg_field(0.35, help="WhisperSeg onset probability threshold")
-    whisperseg_min_frame_seconds: float = arg_field(0.1, help="Drop WhisperSeg frames shorter than this")
-
-    # Optional semantic scene pre-segmentation (Stage 4). When "semantic", the audio is
-    # first cut into acoustic-texture scenes and WhisperSeg runs per-scene so frames do
-    # not cross texture boundaries. Only meaningful with vad_backend=whisperseg.
-    scene_backend: str = arg_field("semantic", choices=("none", "semantic"), help="anime scene pre-segmentation")
-    scene_min_seconds: float = arg_field(12.0, help="semantic scene min duration (s)")
-    scene_max_seconds: float = arg_field(48.0, help="semantic scene max duration (s)")
-    scene_clustering_threshold: float = arg_field(18.0, help="semantic agglomerative distance threshold")
 
     # VAD clip construction (used when vad_chunks is on).
     vad_chunks: bool = arg_field(True, action="boolean_optional", help="Cut clips on silence (VAD)")
@@ -115,6 +82,66 @@ class QwenAsrConfig:
     hallucination_repeat_avg_logprob: float = arg_field(-1.0, help="avg_logprob gate for repeats")
     hallucination_high_risk_max_repeats: int = arg_field(2, help="Absolute repeat cap for high-risk phrases")
     filter_hallucinations: bool = arg_field(False, action="store_true", help="Apply Whisper-style hallucination filters")
+
+
+@dataclass
+class QwenAsrConfig(BaseAsrConfig):
+    """Qwen3-ASR backend defaults forwarded to transcribe_ja_srt_qwen.py."""
+
+    text_backend: str = arg_field("qwen", choices=("qwen", "anime"), help="ASR text source")
+    text_model: str = arg_field("models/anime-whisper", help="anime-whisper model path (ignored by qwen)")
+    timestamp_mode: str = arg_field(
+        "aligner_fallback", choices=("aligner_fallback", "aligner_only", "vad_only"),
+        help="qwen timing mode; aligner_fallback will enable WJ-style VAD fallback once implemented",
+    )
+    collapse_recovery: bool = arg_field(
+        True, action="boolean_optional", help="Recover collapsed forced alignment when fallback timing is enabled",
+    )
+    no_repeat_ngram_size: int = arg_field(0, help="anime-whisper n-gram repeat guard (ignored by qwen)")
+
+    # Qwen baseline stays on the existing VAD path. WhisperSeg/semantic become opt-in
+    # qwen experiments, using WJ qwen-style grouping defaults when selected.
+    vad_backend: str = arg_field("current", choices=("current", "whisperseg"), help="qwen speech segmentation backend")
+    whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
+    whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
+    whisperseg_max_group: float = arg_field(6.0, help="WhisperSeg max frame group duration (s)")
+    whisperseg_chunk_threshold: float = arg_field(1.0, help="WhisperSeg frame grouping silence threshold (s)")
+    whisperseg_threshold: float = arg_field(0.35, help="WhisperSeg onset probability threshold")
+    whisperseg_min_frame_seconds: float = arg_field(0.1, help="Drop WhisperSeg frames shorter than this")
+
+    scene_backend: str = arg_field("none", choices=("none", "semantic"), help="qwen scene pre-segmentation")
+    scene_min_seconds: float = arg_field(12.0, help="semantic scene min duration (s)")
+    scene_max_seconds: float = arg_field(48.0, help="semantic scene max duration (s)")
+    scene_clustering_threshold: float = arg_field(18.0, help="semantic agglomerative distance threshold")
+
+
+@dataclass
+class AnimeAsrConfig(BaseAsrConfig):
+    """anime-whisper backend defaults forwarded to the shared qwen/anime sub-script."""
+
+    text_backend: str = arg_field("anime", choices=("qwen", "anime"), help="ASR text source")
+    text_model: str = arg_field("models/anime-whisper", help="anime-whisper model path")
+    timestamp_mode: str = arg_field(
+        "vad_only", choices=("aligner_fallback", "aligner_only", "vad_only"),
+        help="anime timing mode: vad_only skips forced alignment; aligner modes are diagnostics",
+    )
+    collapse_recovery: bool = arg_field(
+        True, action="boolean_optional", help="Recover collapsed forced alignment in anime aligner modes",
+    )
+    no_repeat_ngram_size: int = arg_field(0, help="anime-whisper n-gram repeat guard (0 = model-card default)")
+
+    vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="anime speech segmentation backend")
+    whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
+    whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
+    whisperseg_max_group: float = arg_field(5.0, help="WhisperSeg max frame group duration (s)")
+    whisperseg_chunk_threshold: float = arg_field(0.5, help="WhisperSeg frame grouping silence threshold (s)")
+    whisperseg_threshold: float = arg_field(0.35, help="WhisperSeg onset probability threshold")
+    whisperseg_min_frame_seconds: float = arg_field(0.1, help="Drop WhisperSeg frames shorter than this")
+
+    scene_backend: str = arg_field("semantic", choices=("none", "semantic"), help="anime scene pre-segmentation")
+    scene_min_seconds: float = arg_field(12.0, help="semantic scene min duration (s)")
+    scene_max_seconds: float = arg_field(48.0, help="semantic scene max duration (s)")
+    scene_clustering_threshold: float = arg_field(18.0, help="semantic agglomerative distance threshold")
 
 
 @dataclass

@@ -134,7 +134,7 @@ The top-level video pipeline now selects anime by default; Qwen remains availabl
 Implemented:
 
 - `--scene-backend none | semantic`
-- top-level `--qwen-scene-backend none | semantic`
+- top-level `--anime-scene-backend none | semantic`
 - `--scene-min-seconds`
 - `--scene-max-seconds`
 - `--scene-clustering-threshold`
@@ -151,7 +151,7 @@ scene_max_seconds = 48.0
 
 This matches the WhisperJAV ChronosJAV anime outer-shell default. Semantic scene is still
 a normal CLI knob and can be disabled from the top-level pipeline with
-`--qwen-scene-backend none` (or `--scene-backend none` when calling the sub-script
+`--anime-scene-backend none` (or `--scene-backend none` when calling the sub-script
 directly) for A/B testing.
 
 ## Current Evidence
@@ -226,7 +226,7 @@ This suggests that clip boundaries and context length materially affect anime-wh
 
 Semantic scene helps weak-speech recall but can increase fragmentation and does not consistently improve wording.
 
-It should stay easy to disable (`--qwen-scene-backend none` at the top level,
+It should stay easy to disable (`--anime-scene-backend none` at the top level,
 `--scene-backend none` in the sub-script) while local window experiments verify which
 scene/VAD settings are best.
 
@@ -286,8 +286,154 @@ Only implement after the audit identifies a cause:
 After anime stabilizes:
 
 - Keep README / README-CN default-command docs in sync with the anime default.
-- Consider moving selected WJ improvements back to the Qwen text backend.
-- Consider Qwen text-only assembly, dynamic token budget, repetition penalty, or semantic+WhisperSeg framing for Qwen only after anime evidence is understood.
+- Split qwen and anime configuration surfaces before porting WJ features to the qwen
+  line. The current shared `QwenAsrConfig` was useful for bootstrapping anime, but
+  its anime defaults (`vad_only`, WhisperSeg 5.0/0.5, semantic scenes) are wrong
+  defaults for the qwen comparison line.
+- Bring selected WJ improvements to the Qwen line — see "## Qwen line (Stage 6): WJ feature audit and plan" below for the line-cited audit and per-feature add/do-not-add decision.
+
+## Qwen line (Stage 6): WJ feature audit and plan
+
+Status: Stage 5.9 config split is implemented; Stage 6 qwen WJ feature port is planned,
+not implemented. Stage 6 should bring the WJ qwen wins that are actually feasible on our
+stack: weak-speech recall + collapse recovery (reusing existing infra) plus generation
+safety knobs (repetition_penalty, dynamic token budget) that the transformers backend exposes.
+WhisperJAV's code is layered
+(deprecated modes, generic defaults vs generator overrides vs v4 YAML vs CLI defaults), so
+this is a line-cited audit, not a blanket port. AssemblyTextCleaner / step-down /
+text-only decoupling stay gated (higher cost, unproven), and nothing is package-blocked.
+
+### Stage 5.9 prerequisite: split qwen and anime configs
+
+Implemented. This was required before any qwen WJ port.
+
+Problem addressed:
+
+- `scripts/pipeline_configs.py::QwenAsrConfig` currently hosts both qwen and anime knobs.
+- Top-level `--asr anime` uses the shared qwen sub-script with `text_backend=anime`.
+- Anime defaults now live in the shared config: `timestamp_mode=vad_only`,
+  `vad_backend=whisperseg`, `whisperseg_max_group=5.0`,
+  `whisperseg_chunk_threshold=0.5`, and `scene_backend=semantic`.
+- If `transcribe_qwen()` starts honoring `vad_backend` / `scene_backend` for qwen without
+  splitting config first, `--asr qwen` would silently inherit anime defaults. That would
+  break the baseline comparison line and make Stage 6 results hard to interpret.
+
+Implemented shape:
+
+- Do not duplicate the full ASR config. Most fields are shared by both lines:
+  language/batch/device/dtype, fixed/VAD clip construction, cue shaping, filler and
+  near-duplicate filters, hallucination gates, recapture knobs, and common postprocess
+  thresholds. Duplicating these fields into two 60+ field dataclasses would drift.
+- `BaseAsrConfig` holds shared fields. `QwenAsrConfig(BaseAsrConfig)` and
+  `AnimeAsrConfig(BaseAsrConfig)` add/override only backend-selection defaults
+  (`text_backend`, text model, timestamp mode, VAD backend, WhisperSeg params,
+  scene params, anime generation knobs, and future qwen WJ knobs).
+- `QwenAsrConfig`: qwen-only backend defaults and help text. Keep current qwen baseline
+  behavior unchanged until benchmarks justify a default flip.
+- `AnimeAsrConfig`: anime-only backend defaults and help text. Keep the current anime
+  default: anime-whisper text, WhisperSeg 5.0/0.5, semantic scene, `vad_only` timing.
+- Top-level CLI:
+  - `--qwen-*` affects only `--asr qwen`.
+  - `--anime-*` affects only `--asr anime`.
+  - Temporary deprecated aliases still map existing anime-tuning flags named
+    `--qwen-timestamp-mode` / `--qwen-scene-backend` when `--asr anime` and the
+    corresponding `--anime-*` flag is unset.
+- Sub-script implementation can remain `scripts/transcribe_ja_srt_qwen.py` initially.
+  The split is about config/CLI semantics first; physically splitting an
+  `transcribe_ja_srt_anime.py` script is optional later.
+- Quality report config should follow the selected ASR line: anime defaults to
+  WhisperSeg/metadata-compatible reporting, qwen stays baseline unless the qwen WJ mode
+  is explicitly selected.
+
+Validation for the split:
+
+- `tests/test_cli_config.py`: separate round trips for `QwenAsrConfig` and `AnimeAsrConfig`.
+- `tests/test_pipeline.py`: `--asr qwen` command keeps qwen defaults; `--asr anime` command
+  keeps anime defaults; deprecated aliases still map as intended.
+- README / README-CN command docs use `--anime-*` for anime tuning.
+
+### Verified facts
+
+- **We are already on the transformers backend, and WJ uses the SAME package.** The
+  `qwen_asr` PyPI package has two backends (`inference/qwen3_asr.py`): `from_pretrained`
+  → **transformers** backend (L176–217, `backend="transformers"`), inference at L510 is a
+  plain HF `self.model.generate(**inputs, max_new_tokens=self.max_new_tokens)`; vLLM is a
+  separate opt-in constructor (L237+, needs `qwen-asr[vllm]`) that we do NOT use. WJ's
+  `whisperjav/modules/qwen_asr.py` is a wrapper around this **same package**
+  (`from qwen_asr import Qwen3ASRModel`, L581/608) plus `stable_whisper` for regrouping; it
+  reaches into `Qwen3ASRModel.model` (the HF `Qwen3ASRForConditionalGeneration`) / `.thinker`
+  to drive generation. So the generation knobs below are reachable via the inner HF model —
+  NOT blocked. (Earlier text in this file wrongly called ours "vLLM-based"; corrected here.)
+- **WJ qwen3 line's actual parameters** (CLI path `whisperjav/main.py` L1159–1226; the
+  anime-only override is L1216–1224 and does NOT apply to qwen3): framer `vad-grouped`
+  (L1182); scene `semantic` 12–48 (`whisperjav/pipelines/qwen_pipeline.py` L109/213–214);
+  segmenter `whisperseg`
+  **max_group 6.0 / chunk_threshold 1.0** (L119–120 — qwen values; anime overrides to 5.0/0.5);
+  `timestamp_mode = aligner_vad_fallback` (L1175) = trust aligner, fall back to VAD timing on
+  collapse; `stepdown_enabled=True` 6.0/6.0 (L152–154); `assembly_cleaner=True`;
+  `repetition_penalty=1.1` (L157); `max_tokens_per_audio_second=20.0` (L158); `max_new_tokens=4096`.
+- **Reusable infra already present:** `build_whisperseg_jobs` (populates clip-relative
+  `job.speech`), `alignment_recovery.assess_alignment_quality` / `redistribute_collapsed_words`,
+  the `_time_anime_job` sentinel wrapper, `semantic_scene.detect_scenes`, `whisperseg_vad`,
+  `chunk_entries`, `finalize_qwen_entries`, `subtitle_benchmark.py`.
+
+### Per-feature decision
+
+| WJ qwen feature | WJ actual value | Decision | Why / how |
+|---|---|---|---|
+| Config split | n/a | **ADD FIRST** | Prevents anime defaults from leaking into qwen. Add `AnimeAsrConfig`, qwen-only defaults, `--anime-*` top-level flags, and compatibility aliases. |
+| WhisperSeg vad-grouped framing | max_group **6.0**, chunk_threshold **1.0** | **ADD opt-in first** | Fixes qwen weak-speech recall if WJ behavior transfers. Reuse `build_whisperseg_jobs`; use qwen values 6.0/1.0 (not anime 5.0/0.5). |
+| Semantic scene 12–48 | semantic 12–48 | **ADD opt-in first** | Same `detect_scenes` infra as anime, but do not flip qwen default until benchmarked. |
+| aligner_vad_fallback timing | aligner + VAD fallback on collapse | **ADD opt-in first** | We already have this mechanism (sentinel + `redistribute_collapsed_words` w/ `job.speech`). Apply to bundled `time_stamps.items`. Single most valuable fix (kills the collapse → short-sub problem). |
+| repetition_penalty 1.1 | generate() sampling | **ADD after probe** | Feasible on our transformers backend, but the exact attribute chain must be probed. WJ sets the thinker's HF `generation_config`; implementation should set the verified chain and warn if unavailable. |
+| dynamic token budget (20 tok/s) | `_compute_dynamic_token_limit` | **ADD after batch-design decision** | `max_new_tokens` is settable, but our current `transcribe_qwen()` batches multiple clips per call. A per-clip budget needs batch=1, max-per-batch budgeting, or budget-based grouping. |
+| text-only assembly + `merge_master_with_timestamps` | decoupled gen→align→merge | **OPTIONAL (not required)** | Feasible — `transcribe(return_time_stamps=False)` for text + our existing standalone `Qwen3ForcedAligner` for timing (both already used by anime). But NOT needed for the two knobs above (they work in bundled mode), and bundled already merges text+align. Only adopt if we want WJ-style separation or to unify qwen+anime under one two-phase path. |
+| AssemblyTextCleaner | pre-align text clean | **DEFER (gated)** | We already run `finalize_qwen_entries` + filler/near-dup filters. Port only if the benchmark shows residual qwen-unique text noise. |
+| step-down retry | on, 6.0/6.0 | **DEFER (gated, low priority)** | Costly re-transcribe loop; our sentinel+recovery salvages collapse without re-decoding. Add only if recovery proves insufficient. |
+
+### Staged approach
+
+- **Stage 5.9 — config split:** done. `AnimeAsrConfig` is first-class, top-level
+  `--anime-*` flags exist, qwen defaults are qwen-only, and compatibility aliases/tests
+  cover the formerly anime-tuning flags under `--qwen-*`.
+- **Stage 6.0 — probe:** feed one `build_whisperseg_jobs` clip to
+  `Qwen3ASRModel.transcribe(return_time_stamps=True)`; confirm `time_stamps.items` are
+  clip-relative and `assess_alignment_quality` flags a known long-clip collapse. Also confirm
+  the real `generation_config` attribute chain and `model.max_new_tokens` behavior on the
+  transformers backend. Explicitly test dynamic token budgets with `batch_size > 1`, because
+  our current bundled qwen path calls `model.transcribe()` on multiple clips at once.
+- **Stage 6.1 — framing + sentinel/recovery:** in `transcribe_qwen()` honor
+  qwen-only `vad_backend`/`scene_backend` when explicitly selected (dispatch
+  `build_whisperseg_jobs`) and run sentinel/recovery on `time_stamps.items` before
+  `chunk_entries` (factor `_time_anime_job` into a backend-agnostic helper shared by anime
+  + qwen). Upgrade qwen raw dump / `--from-raw`. Qwen WhisperSeg parameters are 6.0/1.0
+  (distinct from anime 5.0/0.5). Keep opt-in first; qwen defaults unchanged.
+- **Stage 6.2 — generation knobs (cheap, feasible):** set `repetition_penalty` (1.1, via the
+  verified inner model generation config) and a dynamic token budget. Add qwen-only
+  `repetition_penalty` / `max_tokens_per_second` config fields. Choose one batch-safe token
+  budget design before implementation: batch=1 for dynamic mode, one max budget per batch,
+  or group clips by similar budget.
+- **Stage 6.3 — benchmark + defaults:** `subtitle_benchmark.py` on DLDSS-492: qwen-current
+  (Silero) vs +whisperseg vs +whisperseg+sentinel vs +generation-knobs vs anime vs WJ-qwen
+  (consensus recall / weak-speech recall / timing / collapse count). Decide which become the qwen default.
+- **Stage 6.4 — gated / optional:** AssemblyTextCleaner, step-down retry, and text-only decoupling
+  only if Stage 6.3 shows a remaining gap they'd close. None are package-blocked; they are simply
+  higher-cost and unproven for our stack.
+
+### Files (Stage 6.1)
+
+- `scripts/pipeline_configs.py` — split `QwenAsrConfig` / `AnimeAsrConfig`; keep qwen and
+  anime defaults separate; add qwen-only generation fields after Stage 6.0 probe.
+- `scripts/video_to_zh_srt.py` — route `--asr qwen` through qwen config and `--asr anime`
+  through anime config; expose `--anime-*` flags; keep compatibility aliases temporarily.
+- `scripts/transcribe_ja_srt_qwen.py` — `transcribe_qwen()` framing dispatch + sentinel/recovery
+  on bundled items + raw-dump upgrade; factor `_time_anime_job` into a shared helper; set
+  generation knobs only after Stage 6.0 validates the exact model attribute path and batch
+  behavior.
+- `tests/test_transcribe_qwen.py` — framing dispatch, sentinel-on-bundled-items, raw schema,
+  generation-knob wiring.
+- `tests/test_cli_config.py` / `tests/test_pipeline.py` — separate qwen/anime config
+  round trips and top-level command default tests.
 
 ## Out Of Scope For Now
 
@@ -301,7 +447,7 @@ After anime stabilizes:
 
 ## Validation
 
-Current repository validation after the anime/WhisperSeg/semantic changes:
+Current repository validation after the anime/WhisperSeg/semantic/config-split changes:
 
 ```bash
 python -m pytest tests -q
@@ -312,7 +458,7 @@ git diff --check
 Latest observed result:
 
 ```text
-232 passed
+250 passed
 ```
 
 ## Key Files
@@ -320,7 +466,13 @@ Latest observed result:
 Modified:
 
 - `scripts/pipeline_configs.py`
+- `scripts/cli_config.py`
+- `scripts/video_to_zh_srt.py`
 - `scripts/transcribe_ja_srt_qwen.py`
+- `README.md`
+- `README-CN.md`
+- `tests/test_cli_config.py`
+- `tests/test_pipeline.py`
 - `tests/test_transcribe_qwen.py`
 
 Added:

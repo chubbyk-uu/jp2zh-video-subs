@@ -164,6 +164,9 @@ def test_build_qwen_command_survives_unexposed_config_fields(tmp_path):
     assert str(tmp_path / "audio.wav") in cmd
     assert "--text-backend" in cmd          # unexposed field serialized from its default
     assert cmd[cmd.index("--text-backend") + 1] == "qwen"  # --asr qwen stays on qwen
+    assert cmd[cmd.index("--timestamp-mode") + 1] == "aligner_fallback"
+    assert cmd[cmd.index("--vad-backend") + 1] == "current"
+    assert cmd[cmd.index("--scene-backend") + 1] == "none"
 
 
 def test_build_qwen_command_asr_anime_selects_anime_backend(tmp_path):
@@ -176,10 +179,66 @@ def test_build_qwen_command_asr_anime_selects_anime_backend(tmp_path):
     cmd = build_qwen_command(ns, tmp_path / "audio.wav", tmp_path / "out.ja.srt")
 
     assert cmd[cmd.index("--text-backend") + 1] == "anime"
-    # anime defaults reach the sub-script through the shared QwenAsrConfig serialization
+    # anime defaults reach the shared sub-script through AnimeAsrConfig serialization
     assert cmd[cmd.index("--vad-backend") + 1] == "whisperseg"
     assert cmd[cmd.index("--timestamp-mode") + 1] == "vad_only"
     assert cmd[cmd.index("--scene-backend") + 1] == "semantic"
+    assert cmd[cmd.index("--whisperseg-chunk-threshold") + 1] == "0.5"
+
+
+def test_build_qwen_command_asr_anime_uses_anime_prefixed_overrides(tmp_path):
+    import argparse
+
+    from video_to_zh_srt import build_qwen_command
+
+    ns = argparse.Namespace(
+        language="ja",
+        min_cue_seconds=0.3,
+        asr="anime",
+        anime_batch_size=7,
+        anime_timestamp_mode="aligner_fallback",
+        anime_scene_backend="none",
+        anime_whisperseg_chunk_threshold=0.75,
+    )
+    cmd = build_qwen_command(ns, tmp_path / "audio.wav", tmp_path / "out.ja.srt")
+
+    assert cmd[cmd.index("--text-backend") + 1] == "anime"
+    assert cmd[cmd.index("--batch-size") + 1] == "7"
+    assert cmd[cmd.index("--timestamp-mode") + 1] == "aligner_fallback"
+    assert cmd[cmd.index("--scene-backend") + 1] == "none"
+    assert cmd[cmd.index("--whisperseg-chunk-threshold") + 1] == "0.75"
+
+
+def test_build_qwen_command_asr_anime_legacy_alias_yields_to_anime_prefix(tmp_path):
+    import argparse
+
+    from cli_config import add_prefixed_dataclass_arguments
+    from pipeline_configs import AnimeAsrConfig
+    from video_to_zh_srt import ANIME_PREFIX_SKIP, build_qwen_command
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--qwen-timestamp-mode", choices=("aligner_fallback", "aligner_only", "vad_only"), default=None)
+    parser.add_argument("--asr", default="anime")
+    parser.add_argument("--language", default="ja")
+    parser.add_argument("--min-cue-seconds", type=float, default=0.3)
+    add_prefixed_dataclass_arguments(
+        parser,
+        AnimeAsrConfig,
+        "anime_",
+        skip=ANIME_PREFIX_SKIP,
+        default_none=True,
+    )
+
+    legacy = parser.parse_args(["--qwen-timestamp-mode", "aligner_fallback"])
+    cmd = build_qwen_command(legacy, tmp_path / "audio.wav", tmp_path / "out.ja.srt")
+    assert cmd[cmd.index("--timestamp-mode") + 1] == "aligner_fallback"
+
+    explicit = parser.parse_args([
+        "--qwen-timestamp-mode", "aligner_fallback",
+        "--anime-timestamp-mode", "vad_only",
+    ])
+    cmd = build_qwen_command(explicit, tmp_path / "audio.wav", tmp_path / "out.ja.srt")
+    assert cmd[cmd.index("--timestamp-mode") + 1] == "vad_only"
 
 
 def test_build_quality_command_asr_anime_uses_whisperseg_backend(tmp_path):
