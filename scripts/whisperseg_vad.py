@@ -23,8 +23,12 @@ _SAMPLE_RATE = 16000
 _FRAME_MS = 20
 _CHUNK_MS = 30000
 
-# Pinned upstream source metadata; runtime loading uses the project-local models/
-# directory like the rest of this repository's model assets.
+# Upstream provenance only — NOT used at runtime. Unlike WhisperJAV (which downloads
+# via hf_hub_download(revision=...) so the pin takes effect at load time), this backend
+# loads model.onnx from the local models/ dir and does not download or verify a hash.
+# The revision pin is therefore enforced by the README download command
+# (`hf download ... --revision 6ac29e2c...`), which fetches the exact commit the code
+# was validated against and prevents silent upstream model.onnx changes.
 _HF_REPO = "TransWithAI/Whisper-Vad-EncDec-ASMR-onnx"
 _HF_REVISION = "6ac29e2cbf2f4f8e9b639861766a8639dd666e9c"
 _ONNX_FILENAME = "model.onnx"
