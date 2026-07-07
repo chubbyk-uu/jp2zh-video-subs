@@ -881,6 +881,53 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
     return jobs
 
 
+def reframe_collapsed_jobs(audio, samplerate: int, collapsed_jobs: list[ChunkJob], args: argparse.Namespace) -> list[ChunkJob]:
+    """Step-down retry: re-frame each collapsed qwen job with a tighter WhisperSeg
+    max_group and return absolute-coord sub-jobs (WJ re-frames the scene; our jobs are
+    frame-level, so this is the per-job analog). Each sub-job preserves the collapsed
+    job's outer keep window at its edges so cue ownership stays contiguous.
+
+    WJ ships `stepdown_fallback_group == main max_group` (6.0), which produces the same
+    frames and re-decodes identically on our deterministic path (inert but faithful);
+    the ablation tests tighter fallback values.
+    """
+    from whisperseg_vad import WhisperSegVAD, resolve_model_path
+
+    if samplerate != 16000:
+        return []
+    fallback = float(getattr(args, "stepdown_fallback_group", args.whisperseg_max_group))
+    vad = WhisperSegVAD(
+        model_path=resolve_model_path(str(args.whisperseg_model)),
+        threshold=args.whisperseg_threshold,
+        max_speech_duration_s=min(float(args.whisperseg_max_speech), fallback),
+        max_group_duration_s=fallback,
+        chunk_threshold_s=args.whisperseg_chunk_threshold,
+    )
+    min_frame = float(args.whisperseg_min_frame_seconds)
+    sub_jobs: list[ChunkJob] = []
+    for job in collapsed_jobs:
+        clip = audio[int(job.start * samplerate) : int(job.end * samplerate)]
+        if len(clip) < int(min_frame * samplerate):
+            continue
+        frames = [
+            (g[0].start, g[-1].end, g)
+            for g in vad.segment(clip, samplerate)
+            if (g[-1].end - g[0].start) >= min_frame
+        ]
+        if not frames:
+            continue
+        last = len(frames) - 1
+        for k, (fs, fe, g) in enumerate(frames):
+            a, e = job.start + fs, job.start + fe
+            keep_lo = job.keep_lo if k == 0 else a
+            keep_hi = job.keep_hi if k == last else e
+            sub = ChunkJob(a, e, keep_lo, keep_hi)
+            sub.speech = [Interval(s.start - fs, s.end - fs) for s in g]
+            sub_jobs.append(sub)
+    vad.cleanup()
+    return sub_jobs
+
+
 def build_qwen_jobs(audio, samplerate: int, duration: float, args: argparse.Namespace) -> tuple[list[ChunkJob], str]:
     """Build qwen clips without changing its default framing.
 
@@ -1079,6 +1126,8 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
         and getattr(args, "timestamp_mode", "aligner_fallback") == "aligner_only"
     )
     for ch in raw["chunks"]:
+        if ch.get("superseded_by_stepdown"):
+            continue  # step-down re-framed this collapsed chunk; its cues live in later "stepdown" chunks
         if "clean_text" in ch:
             # anime schema: text is already cleaned; no context echo to strip.
             text = ch["clean_text"]
@@ -1449,7 +1498,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
         flush=True,
     )
 
-    def run_jobs(job_list: list[ChunkJob], label: str) -> int:
+    def run_jobs(job_list: list[ChunkJob], label: str, records: list | None = None) -> int:
         added = 0
         for group_start in range(0, len(job_list), args.batch_size):
             group = job_list[group_start : group_start + args.batch_size]
@@ -1484,27 +1533,29 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                 )
                 entries.extend(kept)
                 added += len(kept)
-                raw_chunks.append(
-                    {
-                        "start": job.start,
-                        "end": job.end,
-                        "keep_lo": job.keep_lo,
-                        "keep_hi": None if job.keep_hi == float("inf") else job.keep_hi,
-                        "language": str(result.language),
-                        "text": text,
-                        "recapture": label == "recapture",
-                        "speech_regions": [[iv.start, iv.end] for iv in job.speech],
-                        "raw_items": _serialize_items(raw_items),
-                        "recovered_items": _serialize_items(out_items) if recovery.get("applied") else [],
-                        "sentinel": sentinel,
-                        "recovery": recovery,
-                        "token_budget": {
-                            "max_new_tokens": token_budget["batch_budget"],
-                            "max_tokens_per_second": float(getattr(args, "max_tokens_per_second", 0.0)),
-                        },
-                        "items": _serialize_items(out_items),
-                    }
-                )
+                chunk_record = {
+                    "start": job.start,
+                    "end": job.end,
+                    "keep_lo": job.keep_lo,
+                    "keep_hi": None if job.keep_hi == float("inf") else job.keep_hi,
+                    "language": str(result.language),
+                    "text": text,
+                    "pass": label,
+                    "recapture": label == "recapture",
+                    "speech_regions": [[iv.start, iv.end] for iv in job.speech],
+                    "raw_items": _serialize_items(raw_items),
+                    "recovered_items": _serialize_items(out_items) if recovery.get("applied") else [],
+                    "sentinel": sentinel,
+                    "recovery": recovery,
+                    "token_budget": {
+                        "max_new_tokens": token_budget["batch_budget"],
+                        "max_tokens_per_second": float(getattr(args, "max_tokens_per_second", 0.0)),
+                    },
+                    "items": _serialize_items(out_items),
+                }
+                raw_chunks.append(chunk_record)
+                if records is not None:
+                    records.append((job, kept, sentinel.get("status"), chunk_record))
                 chunk_results.append(
                     ChunkResult(
                         start=job.start,
@@ -1524,7 +1575,32 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             )
         return added
 
-    run_jobs(jobs, "main")
+    main_records: list = []
+    run_jobs(jobs, "main", records=main_records)
+
+    # Step-down retry (WJ qwen default): re-frame each collapsed job with a tighter
+    # WhisperSeg max_group and re-run transcribe, replacing the collapsed job's cues.
+    stepdown_stats: dict = {}
+    if getattr(args, "stepdown", True) and mode in {"vad", "whisperseg"}:
+        collapsed = [rec for rec in main_records if rec[2] == "COLLAPSED"]
+        if collapsed:
+            drop = {id(e) for _, kept, _, _ in collapsed for e in kept}
+            entries[:] = [e for e in entries if id(e) not in drop]
+            for _, _, _, chunk_record in collapsed:
+                chunk_record["superseded_by_stepdown"] = True
+            sub_jobs = reframe_collapsed_jobs(audio, samplerate, [rec[0] for rec in collapsed], args)
+            added = run_jobs(sub_jobs, "stepdown") if sub_jobs else 0
+            stepdown_stats = {
+                "collapsed_jobs": len(collapsed),
+                "reframed_clips": len(sub_jobs),
+                "entries_added": added,
+                "fallback_max_group": float(getattr(args, "stepdown_fallback_group", args.whisperseg_max_group)),
+            }
+            print(
+                f"Step-down: collapsed_jobs={len(collapsed)} reframed={len(sub_jobs)} "
+                f"entries_added={added} fallback={stepdown_stats['fallback_max_group']}s",
+                flush=True,
+            )
 
     recapture_stats: dict = {}
     if args.recapture_min_gap > 0:
@@ -1565,6 +1641,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             "budget_strategy": "per_batch_max",
         },
         "recapture": recapture_stats,
+        "stepdown": stepdown_stats,
         "chunks": raw_chunks,
     }
     return entries, chunk_results, raw

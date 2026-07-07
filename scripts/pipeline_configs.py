@@ -103,9 +103,10 @@ class QwenAsrConfig(BaseAsrConfig):
     max_tokens_per_second: float = arg_field(20.0, help="Dynamic Qwen token budget per audio second (0 disables)")
     min_tokens_floor: int = arg_field(256, help="Minimum dynamic Qwen token budget per batch")
 
-    # Stage 6.3 benchmark selected WhisperSeg+generation as the qwen default candidate.
-    # Semantic scenes remain opt-in for qwen because the same benchmark did not show a
-    # weak-speech gain from enabling them.
+    # Stage 6.3.5 aligns the qwen default to the WJ qwen line: WhisperSeg 6.0/1.0,
+    # aligner-fallback recovery, generation knobs, semantic scenes ON, and step-down retry.
+    # (The interim Stage 6.3 default kept scene off from a partial, no-step-down benchmark;
+    # superseded — re-evaluate scene/step-down value in the post-alignment ablation.)
     vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="qwen speech segmentation backend")
     whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
     whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
@@ -114,9 +115,16 @@ class QwenAsrConfig(BaseAsrConfig):
     whisperseg_threshold: float = arg_field(0.35, help="WhisperSeg onset probability threshold")
     whisperseg_min_frame_seconds: float = arg_field(0.1, help="Drop WhisperSeg frames shorter than this")
 
-    scene_backend: str = arg_field("none", choices=("none", "semantic"), help="qwen scene pre-segmentation")
+    scene_backend: str = arg_field("semantic", choices=("none", "semantic"), help="qwen scene pre-segmentation")
     scene_min_seconds: float = arg_field(12.0, help="semantic scene min duration (s)")
     scene_max_seconds: float = arg_field(48.0, help="semantic scene max duration (s)")
+    # Step-down retry (WJ qwen default ON). On sentinel-detected collapse of a job, re-frame
+    # that clip with a tighter WhisperSeg max_group and re-run transcribe, replacing the
+    # collapsed job's cues. WJ ships fallback == main max_group (6.0), which does not tighten
+    # and is effectively inert on our deterministic bundled path; kept faithful to WJ, the
+    # ablation will test tighter fallback values.
+    stepdown: bool = arg_field(True, action="boolean_optional", help="qwen step-down retry on alignment collapse")
+    stepdown_fallback_group: float = arg_field(6.0, help="WhisperSeg max_group used when re-framing a collapsed qwen clip (s)")
     scene_clustering_threshold: float = arg_field(18.0, help="semantic agglomerative distance threshold")
 
 

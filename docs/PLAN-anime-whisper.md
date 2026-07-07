@@ -393,7 +393,7 @@ Validation for the split:
 | dynamic token budget (20 tok/s) | `_compute_dynamic_token_limit` | **DEFAULT after Stage 6.3** | Implemented as batch-safe `per_batch_max`; DLDSS-492 showed a small qwen recall gain when combined with WhisperSeg. |
 | text-only assembly + `merge_master_with_timestamps` | decoupled gen→align→merge | **OPTIONAL (not required)** | Feasible — `transcribe(return_time_stamps=False)` for text + our existing standalone `Qwen3ForcedAligner` for timing (both already used by anime). But NOT needed for the two knobs above (they work in bundled mode), and bundled already merges text+align. Only adopt if we want WJ-style separation or to unify qwen+anime under one two-phase path. |
 | AssemblyTextCleaner | pre-align text clean | **PENDING (待定)** | WJ qwen default has it ON, but we already run `finalize_qwen_entries` + filler/near-dup filters. Decide during the ablation whether porting it adds value over our existing cleaners; NOT part of the initial WJ-alignment pass. |
-| step-down retry | on, 6.0/6.0 | **ALIGN WJ (implement)** | WJ qwen default has step-down ON (`--qwen-stepdown` default True, main.py L615/1159). Not in our code — must implement: on sentinel-detected collapse, re-frame that scene with a tighter `max_group` and re-run `transcribe` on it, then re-time. Required for a faithful WJ-qwen baseline before ablation. |
+| step-down retry | on, 6.0/6.0 | **IMPLEMENTED (WJ-faithful, default inert)** | `reframe_collapsed_jobs` + step-down pass in `transcribe_qwen`: collapsed jobs re-framed via WhisperSeg at `stepdown_fallback_group` and re-transcribed, cues replaced. WJ's default `fallback == main` (6.0) does not tighten → inert re-decode on our deterministic path; kept faithful. Ablation (6.4) tests tighter fallback (e.g. 3.0). |
 
 ### Staged approach
 
@@ -455,13 +455,23 @@ Validation for the split:
 
   Decision (revised): do NOT flip the qwen default from this partial benchmark. First align
   qwen fully to the WJ qwen default, then ablate. See Stage 6.3.5 / 6.4.
-- **Stage 6.3.5 — full WJ-qwen alignment (next):** make the qwen default match WJ qwen
-  exactly. Already in place: `vad_backend=whisperseg` 6.0/1.0, `timestamp_mode=aligner_fallback`
-  (≡ WJ `aligner_vad_fallback`), `repetition_penalty=1.1`, dynamic token 20 tok/s. To do:
-  flip `scene_backend` `none → semantic` (12–48), and **implement step-down** (new; not in our
-  code): on sentinel-detected collapse, re-frame that scene with a tighter `max_group` and
-  re-run `transcribe`, then re-time. AssemblyTextCleaner stays **PENDING (待定)** — not in
-  this pass. Goal: a faithful WJ-qwen baseline to ablate from.
+- **Stage 6.3.5 — full WJ-qwen alignment: DONE (code; benchmark pending GPU).** qwen default
+  now matches WJ qwen: `vad_backend=whisperseg` 6.0/1.0, `timestamp_mode=aligner_fallback`
+  (≡ WJ `aligner_vad_fallback`), `repetition_penalty=1.1`, dynamic token 20 tok/s, and
+  `scene_backend` flipped `none → semantic` (12–48). **Step-down implemented**
+  (`reframe_collapsed_jobs` + a step-down pass in `transcribe_qwen`): after the main pass, each
+  job whose sentinel is `COLLAPSED` is re-framed via WhisperSeg at `stepdown_fallback_group`
+  and re-transcribed, its cues replaced (and its raw chunk marked `superseded_by_stepdown` so
+  `--from-raw` stays consistent). Config: `stepdown` (default True), `stepdown_fallback_group`
+  (default **6.0**). **Important WJ finding:** WJ ships `fallback == main max_group` (6.0), so
+  `reframe` re-creates the same frames and re-decodes identically on our deterministic path —
+  i.e. WJ's default step-down is effectively **inert** (proof: `qwen_pipeline.py` L412 main
+  framer = `segmenter_max_group_duration` 6.0; `StepDownConfig.fallback_max_group_s` 6.0;
+  `vad_grouped.py::reframe` just re-runs the segmenter with that value; `stepdown_initial_group`
+  is stored but unused). We kept the default WJ-faithful (inert); the ablation (6.4) tests
+  tighter `stepdown_fallback_group` (e.g. 3.0) where it actually reduces collapse.
+  AssemblyTextCleaner stays **PENDING (待定)**. Remaining: run the benchmark on GPU to record
+  the faithful WJ-qwen baseline.
 - **Stage 6.4 — ablation optimization (after alignment):** from the aligned WJ-qwen baseline,
   ablate one axis at a time on the benchmark (semantic on/off *with* step-down present,
   step-down on/off, generation knobs, WhisperSeg params, and whether AssemblyTextCleaner beats

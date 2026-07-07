@@ -20,6 +20,7 @@ from transcribe_ja_srt_qwen import (
     entries_from_raw,
     qwen_batch_token_budget,
     qwen_aligner_language,
+    reframe_collapsed_jobs,
     resolve_qwen_generation_config,
     sentences_from_alignment,
     split_into_units,
@@ -757,6 +758,78 @@ def test_entries_from_raw_qwen_schema_uses_final_items():
     assert entries
     assert entries[0].start == pytest.approx(12.0)
     assert "おはよう" in "".join(e.text for e in entries)
+
+
+def test_reframe_collapsed_jobs_preserves_outer_keep_window(monkeypatch):
+    """Step-down re-frame: sub-jobs use absolute coords and inherit the collapsed job's
+    outer keep window at the first/last edge, with interior boundaries their own frames."""
+    class _Seg:
+        def __init__(self, start, end):
+            self.start, self.end = start, end
+
+    class _FakeVAD:
+        def __init__(self, **kwargs):
+            pass
+
+        def segment(self, clip, sample_rate):
+            # two sub-frames inside the collapsed 10s clip: [0.5,3.0] and [4.0,6.0]
+            return [[_Seg(0.5, 3.0)], [_Seg(4.0, 6.0)]]
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", lambda **kw: _FakeVAD())
+    monkeypatch.setattr(whisperseg_vad, "resolve_model_path", lambda p: p)
+
+    job = ChunkJob(10.0, 20.0, 10.0, float("inf"))  # last frame → keep_hi open
+    args = _shaping_args(
+        whisperseg_model="x.onnx", whisperseg_threshold=0.35, whisperseg_max_speech=5.0,
+        whisperseg_max_group=6.0, whisperseg_chunk_threshold=1.0,
+        whisperseg_min_frame_seconds=0.1, stepdown_fallback_group=3.0,
+    )
+    subs = reframe_collapsed_jobs(np.zeros(16000 * 20, dtype=np.float32), 16000, [job], args)
+
+    assert len(subs) == 2
+    assert subs[0].start == pytest.approx(10.5)   # 10.0 + 0.5, absolute
+    assert subs[1].end == pytest.approx(16.0)     # 10.0 + 6.0
+    assert subs[0].keep_lo == 10.0                # first sub inherits job.keep_lo
+    assert subs[1].keep_hi == float("inf")        # last sub inherits job.keep_hi (open)
+    assert subs[0].keep_hi == pytest.approx(13.0)  # interior boundary = own frame end
+    assert subs[1].keep_lo == pytest.approx(14.0)  # interior boundary = own frame start
+    # speech stored clip-relative to each sub-frame
+    assert subs[0].speech[0].start == pytest.approx(0.0)
+
+
+def test_entries_from_raw_skips_superseded_stepdown_chunk():
+    """--from-raw must drop a collapsed chunk that step-down replaced, so replay matches
+    the live pipeline (which removed the collapsed cues). The superseded chunk carries
+    well-timed items on purpose: without the skip it would emit cues, proving the skip."""
+    raw = {
+        "text_backend": "qwen", "timestamp_mode": "aligner_fallback",
+        "chunk_seconds": 30.0, "chunk_overlap_seconds": 3.0, "duration": 20.0,
+        "context": "",
+        "chunks": [
+            {  # original collapsed frame, replaced by step-down
+                "start": 10.0, "end": 20.0, "keep_lo": 10.0, "keep_hi": 20.0,
+                "language": "Japanese", "text": "だめだめまた", "pass": "main",
+                "superseded_by_stepdown": True,
+                "items": [{"text": c, "start": 1.0 + i * 0.2, "end": 1.1 + i * 0.2}
+                          for i, c in enumerate("だめだめまた")],
+            },
+            {  # tighter step-down re-frame
+                "start": 12.0, "end": 15.0, "keep_lo": 12.0, "keep_hi": 15.0,
+                "language": "Japanese", "text": "ただいま", "pass": "stepdown",
+                "items": [{"text": c, "start": 0.5 + i * 0.2, "end": 0.6 + i * 0.2}
+                          for i, c in enumerate("ただいま")],
+            },
+        ],
+    }
+
+    entries = entries_from_raw(raw, _shaping_args())
+    joined = "".join(e.text for e in entries)
+
+    assert "だめ" not in joined  # superseded chunk skipped despite well-timed items
+    assert "ただいま" in joined  # step-down cues kept
 
 
 def test_entries_from_raw_qwen_aligner_only_uses_raw_items():
