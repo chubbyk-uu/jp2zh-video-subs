@@ -108,8 +108,12 @@ class QwenAsrConfig(BaseAsrConfig):
 
     # qwen default = Stage 6.5 long-context recognition with short-anchor timing:
     # WhisperSeg 6.0/1.0 atomic frames are merged into fixed-pad context windows
-    # (gap=2.0, soft target=18s, hard cap=30s, pre/post=2s), while cue ownership
-    # and VAD fallback timing stay tied to the original owned speech regions.
+    # (gap=2.0, soft target=18s, after-target gap=0.2s, hard cap=35s, pre/post=2s),
+    # while cue ownership and VAD fallback timing stay tied to the original owned
+    # speech regions. Past the soft target the merge tolerance tightens to the
+    # after-target gap so groups end at a natural pause; the hard cap only bounds
+    # genuinely gap-free speech (measured max continuous run ~33.7s on DLDSS-492, so
+    # 35s eliminates mid-speech hard cuts without over-long windows).
     # Semantic scene and step-down remain selectable but off by default.
     vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="qwen speech segmentation backend")
     whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
@@ -125,8 +129,9 @@ class QwenAsrConfig(BaseAsrConfig):
     whisperseg_context_pre_seconds: float = arg_field(2.0, help="Qwen WhisperSeg context audio prepended in pad/merge modes")
     whisperseg_context_post_seconds: float = arg_field(2.0, help="Qwen WhisperSeg context audio appended in pad/merge modes")
     whisperseg_context_merge_gap: float = arg_field(2.0, help="Max gap between WhisperSeg frames to merge for qwen context mode")
-    whisperseg_context_target_seconds: float = arg_field(18.0, help="Soft target span for qwen merged WhisperSeg context")
-    whisperseg_context_hard_max_seconds: float = arg_field(30.0, help="Hard max span for qwen merged WhisperSeg context")
+    whisperseg_context_target_seconds: float = arg_field(18.0, help="Soft target span for qwen merged WhisperSeg context: past this span, only pauses <= --whisperseg-context-after-target-gap keep merging, so groups end at a natural break instead of the hard cap")
+    whisperseg_context_after_target_gap: float = arg_field(0.2, help="Tighter merge-gap tolerance once a merged group passes the soft target (s); keeps continuous speech merging while breaking at the next real pause to avoid mid-speech hard cuts")
+    whisperseg_context_hard_max_seconds: float = arg_field(35.0, help="Hard max span for qwen merged WhisperSeg context")
     whisperseg_context_pad_mode: str = arg_field(
         "fixed", choices=("fixed", "ratio"), help="Qwen WhisperSeg context padding mode: fixed pre/post or ratio of merged span",
     )

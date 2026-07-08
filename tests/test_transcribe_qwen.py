@@ -802,27 +802,7 @@ def test_whisperseg_context_merge_combines_adjacent_frames_with_owned_speech(mon
     assert [(r.start, r.end) for r in second.speech] == pytest.approx([(0.25, 1.25)])
 
 
-def test_whisperseg_context_merge_target_is_soft_and_hard_max_splits(monkeypatch, tmp_path):
-    class FakeWhisperSegVAD:
-        def __init__(self, **_kwargs):
-            pass
-
-        def segment(self, _audio, _sample_rate):
-            return [
-                [SpeechSegment(0.0, 4.0)],
-                [SpeechSegment(5.0, 9.0)],
-                [SpeechSegment(10.0, 14.0)],
-                [SpeechSegment(15.0, 19.0)],
-                [SpeechSegment(20.0, 24.0)],
-            ]
-
-        def cleanup(self):
-            pass
-
-    model = tmp_path / "model.onnx"
-    model.write_bytes(b"onnx")
-    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", FakeWhisperSegVAD)
-
+def _whisperseg_merge_args(model, **overrides):
     args = argparse.Namespace(
         whisperseg_model=str(model),
         whisperseg_threshold=0.35,
@@ -835,17 +815,64 @@ def test_whisperseg_context_merge_target_is_soft_and_hard_max_splits(monkeypatch
         whisperseg_context_post_seconds=0.0,
         whisperseg_context_merge_gap=1.0,
         whisperseg_context_target_seconds=12.0,
+        whisperseg_context_after_target_gap=0.5,
         whisperseg_context_hard_max_seconds=20.0,
         scene_backend="none",
     )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+def _fake_whisperseg(monkeypatch, tmp_path, segments):
+    class FakeWhisperSegVAD:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, _audio, _sample_rate):
+            return [[SpeechSegment(s, e)] for s, e in segments]
+
+        def cleanup(self):
+            pass
+
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"onnx")
+    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", FakeWhisperSegVAD)
+    return model
+
+
+def test_whisperseg_context_merge_soft_target_breaks_at_next_pause(monkeypatch, tmp_path):
+    # Five 4 s frames separated by 1 s pauses. merge_gap 1.0 would greedily merge all of
+    # them until hard_max (20 s) forced a mid-speech split after 19 s. With the soft target
+    # at 12 s the group instead ends at the first pause past 12 s (after the frame ending
+    # at 14 s), so the boundary lands on silence, not a hard cut.
+    model = _fake_whisperseg(
+        monkeypatch, tmp_path,
+        [(0.0, 4.0), (5.0, 9.0), (10.0, 14.0), (15.0, 19.0), (20.0, 24.0)],
+    )
+    args = _whisperseg_merge_args(model)
 
     jobs = build_whisperseg_jobs(np.zeros(16000 * 30, dtype=np.float32), 16000, 30.0, args)
 
     assert len(jobs) == 2
-    assert (jobs[0].start, jobs[0].end) == pytest.approx((0.0, 19.0))
-    assert (jobs[0].keep_lo, jobs[0].keep_hi) == pytest.approx((0.0, 19.0))
-    assert (jobs[1].start, jobs[1].end) == pytest.approx((20.0, 24.0))
+    assert (jobs[0].start, jobs[0].end) == pytest.approx((0.0, 14.0))
+    assert (jobs[0].keep_lo, jobs[0].keep_hi) == pytest.approx((0.0, 14.0))
+    assert (jobs[1].start, jobs[1].end) == pytest.approx((15.0, 24.0))
     assert jobs[1].keep_hi == float("inf")
+
+
+def test_whisperseg_context_merge_hard_max_still_splits_continuous_speech(monkeypatch, tmp_path):
+    # Sub-after_target_gap pauses (0.2 s) never trigger a soft break, so genuinely
+    # continuous speech keeps merging until hard_max (20 s) forces the split.
+    segments = [(i * 4.2, i * 4.2 + 4.0) for i in range(6)]  # ~4 s frames, 0.2 s gaps
+    model = _fake_whisperseg(monkeypatch, tmp_path, segments)
+    args = _whisperseg_merge_args(model)
+
+    jobs = build_whisperseg_jobs(np.zeros(16000 * 40, dtype=np.float32), 16000, 40.0, args)
+
+    spans = [j.end - j.start for j in jobs]
+    assert max(spans) <= 20.0 + 1e-6  # hard_max respected
+    assert len(jobs) >= 2  # continuous run was split rather than kept whole
 
 
 def test_whisperseg_context_ratio_padding_uses_merged_span_with_clamp(monkeypatch, tmp_path):

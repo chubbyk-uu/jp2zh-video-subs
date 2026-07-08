@@ -836,6 +836,8 @@ def main() -> None:
                         help="Max gap between frames to merge when --qwen-whisperseg-context-mode merge.")
     parser.add_argument("--qwen-whisperseg-context-target-seconds", type=float, default=None,
                         help="Soft target recognition span when --qwen-whisperseg-context-mode merge.")
+    parser.add_argument("--qwen-whisperseg-context-after-target-gap", type=float, default=None,
+                        help="Tighter merge-gap tolerance once a merged group passes the soft target, to break at a pause instead of a mid-speech hard cut.")
     parser.add_argument("--qwen-whisperseg-context-hard-max-seconds", type=float, default=None,
                         help="Hard max recognition span when --qwen-whisperseg-context-mode merge.")
     parser.add_argument(

@@ -375,8 +375,8 @@ Use `--anime-scene-backend none` for A/B tests, or run the Qwen comparison line 
    `max_speech=5.0`, `min_frame=0.1`, and `threshold=0.35`.
 2. The atomic WhisperSeg frames are merged into longer Qwen recognition clips by default:
    `--qwen-whisperseg-context-mode merge`, `merge_gap=2.0`, soft `target=18`,
-   `hard_max=30`, and fixed `pre/post=2.0` seconds. This gives Qwen more context while
-   keeping cue ownership tied to the original speech frames.
+   `after_target_gap=0.2`, `hard_max=35`, and fixed `pre/post=2.0` seconds. This gives Qwen
+   more context while keeping cue ownership tied to the original speech frames.
 3. Merged clips are transcribed in batches by `Qwen3-ASR-1.7B` with the WJ-style
    generation knobs `max_new_tokens=4096`, `repetition_penalty=1.1`, and a dynamic
    budget of `20` tokens per audio second.
@@ -458,7 +458,7 @@ The one-command pipeline uses:
 - Anime does not use Qwen's WhisperSeg context `pad` / `merge` path. With `vad_only` timing, extra neighboring context cannot be filtered by an aligner ownership pass, and current anime evaluations do not show a need for it.
 - Anime cleaner: on for ellipsis-only fragments and short repetition artifacts; shared subtitle shaping then removes overlaps and flash cues
 - Qwen comparison line: available with `--asr qwen`. It defaults to WhisperSeg framing (`--qwen-vad-backend whisperseg`) with Qwen values `max_group=6.0`, `chunk_threshold=1.0`, `max_speech=5.0`, `min_frame=0.1`, `threshold=0.35`; use `--asr qwen --qwen-vad-backend current` for the older VAD path, or `--asr qwen --no-qwen-vad-chunks` for fixed 30 s tiling.
-- Qwen long-context recognition: on by default. Atomic WhisperSeg frames are merged with `--qwen-whisperseg-context-mode merge`, `--qwen-whisperseg-context-merge-gap 2.0`, soft `--qwen-whisperseg-context-target-seconds 18`, `--qwen-whisperseg-context-hard-max-seconds 30`, and fixed `--qwen-whisperseg-context-pre-seconds 2.0` / `--qwen-whisperseg-context-post-seconds 2.0`.
+- Qwen long-context recognition: on by default. Atomic WhisperSeg frames are merged with `--qwen-whisperseg-context-mode merge`, `--qwen-whisperseg-context-merge-gap 2.0`, soft `--qwen-whisperseg-context-target-seconds 18`, `--qwen-whisperseg-context-after-target-gap 0.2`, `--qwen-whisperseg-context-hard-max-seconds 35`, and fixed `--qwen-whisperseg-context-pre-seconds 2.0` / `--qwen-whisperseg-context-post-seconds 2.0`.
 - Qwen timing and generation: default `--qwen-timestamp-mode aligner_fallback`, `--qwen-max-new-tokens 4096`, `--qwen-repetition-penalty 1.1`, and `--qwen-max-tokens-per-second 20.0`. Semantic scene splitting is available with `--qwen-scene-backend semantic` but is off by default; step-down retry is implemented in the shared sub-script but not exposed as a top-level default path.
 - Qwen `vad_only` timing is diagnostic only. If you explicitly set `--qwen-timestamp-mode vad_only`, also set `--qwen-whisperseg-context-mode none`; pure VAD timing cannot filter text recognized from padded/merged neighboring context, so the pipeline rejects that combination.
 - Qwen gap recapture: off by default (`--qwen-recapture-min-gap 0`) and only applies to `--asr qwen`. For high-coverage Qwen runs, set a positive gap threshold such as `--qwen-recapture-min-gap 10`: after the main pass, matching subtitle gaps get a second VAD look at the more sensitive `--qwen-recapture-vad-threshold 0.05`; gaps with at least `--qwen-recapture-min-speech 2` seconds of detected speech are re-transcribed while the model is still loaded.
@@ -487,9 +487,11 @@ Qwen long-context recovery keeps the timing protections while giving Qwen more a
 context. It is now the default Qwen path. Use `--qwen-whisperseg-context-mode none` to
 return to one WhisperSeg frame per Qwen clip, `pad` to add bounded pre/post context
 without merging frames, or `merge` to tune adjacent-frame merging. The target is a soft
-target: once a merged window reaches it, the merger waits for the next natural gap over
-`merge-gap` instead of cutting inside a short-gap chain; `--qwen-whisperseg-context-hard-max-seconds`
-is the real safety cap. The pre/post context flags also apply in `merge` mode. For
+target: below it the merger bridges gaps up to `merge-gap`, but once a merged window passes
+it the tolerance tightens to `--qwen-whisperseg-context-after-target-gap` (0.2s) so the clip
+ends at the next real pause instead of being cut mid-speech when the hard cap is reached;
+`--qwen-whisperseg-context-hard-max-seconds` (35s) is the real safety cap and only bounds
+genuinely gap-free speech. The pre/post context flags also apply in `merge` mode. For
 dynamic context experiments, set `--qwen-whisperseg-context-pad-mode ratio` and tune
 `--qwen-whisperseg-context-pad-ratio` plus min/max pad clamps.
 

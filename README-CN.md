@@ -327,7 +327,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 ### Qwen 主线的工作方式
 
 1. Qwen 默认用 WhisperSeg 做 frame（`--qwen-vad-backend whisperseg`），使用 WJ qwen 风格参数：`max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`。
-2. 原子 WhisperSeg frame 默认会先合并成更长的 Qwen 识别窗口：`--qwen-whisperseg-context-mode merge`、`merge_gap=2.0`、软 `target=18`、`hard_max=30`、固定前后各 `2.0` 秒 pad。这样让 Qwen 听到更多上下文，但 cue 归属仍锁在原始语音 frame 上。
+2. 原子 WhisperSeg frame 默认会先合并成更长的 Qwen 识别窗口：`--qwen-whisperseg-context-mode merge`、`merge_gap=2.0`、软 `target=18`、`after_target_gap=0.2`、`hard_max=35`、固定前后各 `2.0` 秒 pad。这样让 Qwen 听到更多上下文，但 cue 归属仍锁在原始语音 frame 上。
 3. 合并后的切片分批送入 `Qwen3-ASR-1.7B`；生成参数默认也是 WJ 风格：`max_new_tokens=4096`、`repetition_penalty=1.1`、动态预算 `20` tokens/音频秒。
 4. 模型带标点的 `result.text` 作为权威文本内容；单独的 `Qwen3-ForcedAligner-0.6B` 给出逐字时间。句子按标点和较大的内部时间间隙切分，再由对齐器定时。
 5. 如果 forced aligner 把一个切片的词压到异常时间段里，Qwen 线会先用 VAD-guided fallback recovery 修复，再进入字幕塑形。semantic scene 和 step-down retry 都已实现但默认关闭；这是 Qwen 消融后的当前选择。
@@ -386,7 +386,7 @@ GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，�
 - Anime 不使用 Qwen 的 WhisperSeg context `pad` / `merge` 路径。`vad_only` 定时没有 aligner ownership pass 来过滤邻近上下文，而且目前 anime 评估也没有显示需要这层额外上下文。
 - Anime cleaner：开启，清理省略号-only 片段和短重复伪迹；之后仍走共享字幕塑形，删除重叠和闪字幕
 - Qwen 对比线：用 `--asr qwen` 开启。默认使用 WhisperSeg frame（`--qwen-vad-backend whisperseg`），Qwen 参数为 `max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`；用 `--asr qwen --qwen-vad-backend current` 对比旧滑窗 VAD 路径，或用 `--asr qwen --no-qwen-vad-chunks` 做固定 30 秒平铺。
-- Qwen 长上下文识别：默认开启。原子 WhisperSeg frame 会以 `--qwen-whisperseg-context-mode merge` 合并，默认 `--qwen-whisperseg-context-merge-gap 2.0`、软 `--qwen-whisperseg-context-target-seconds 18`、`--qwen-whisperseg-context-hard-max-seconds 30`，并固定前后各补 `--qwen-whisperseg-context-pre-seconds 2.0` / `--qwen-whisperseg-context-post-seconds 2.0` 秒。
+- Qwen 长上下文识别：默认开启。原子 WhisperSeg frame 会以 `--qwen-whisperseg-context-mode merge` 合并，默认 `--qwen-whisperseg-context-merge-gap 2.0`、软 `--qwen-whisperseg-context-target-seconds 18`、`--qwen-whisperseg-context-after-target-gap 0.2`、`--qwen-whisperseg-context-hard-max-seconds 35`，并固定前后各补 `--qwen-whisperseg-context-pre-seconds 2.0` / `--qwen-whisperseg-context-post-seconds 2.0` 秒。
 - Qwen 定时与生成：默认 `--qwen-timestamp-mode aligner_fallback`、`--qwen-max-new-tokens 4096`、`--qwen-repetition-penalty 1.1`、`--qwen-max-tokens-per-second 20.0`。semantic scene 可用 `--qwen-scene-backend semantic` 打开，但默认关闭；step-down retry 已在共享子脚本实现，但不是顶层默认路径。
 - Qwen `vad_only` 定时只作为诊断模式使用。显式设置 `--qwen-timestamp-mode vad_only` 时，必须同时设置 `--qwen-whisperseg-context-mode none`；纯 VAD 定时无法过滤从前后 pad/merge 上下文里听到的邻近文本，所以管线会拒绝这种组合。
 - Qwen 空窗补捞：默认关闭（`--qwen-recapture-min-gap 0`），且只适用于 `--asr qwen`。需要高覆盖率的 Qwen 对比时，可设为正数，例如 `--qwen-recapture-min-gap 10`：主识别结束后，对满足长度的字幕空窗用更灵敏的 `--qwen-recapture-vad-threshold 0.05` 再做一遍 VAD；检出语音合计不少于 `--qwen-recapture-min-speech 2` 秒的空窗会趁模型还在显存里二次识别。
@@ -413,8 +413,8 @@ Qwen 长上下文恢复现在是 Qwen 默认路径，用于让 Qwen 听到更多
 `--qwen-whisperseg-context-mode pad`；需要调相邻 frame 合并时，用
 `--qwen-whisperseg-context-mode merge` 配合
 `--qwen-whisperseg-context-target-seconds` / `--qwen-whisperseg-context-merge-gap`。
-`target-seconds` 是软目标：达到目标后不会在短间隔链中硬切，而是继续等到下一个大于 `merge-gap` 的自然断点；真正的安全上限由
-`--qwen-whisperseg-context-hard-max-seconds` 控制。前后补音频参数在 `merge`
+`target-seconds` 是软目标：未达目标时按 `merge-gap` 桥接间隔，一旦合并窗口超过软目标，容忍度收紧到 `--qwen-whisperseg-context-after-target-gap`（0.2 秒），从而在下一个真实停顿处收尾，而不是等撞到硬上限时被句中硬切；真正的安全上限由
+`--qwen-whisperseg-context-hard-max-seconds`（35 秒）控制，只约束真正无停顿的连续语音。前后补音频参数在 `merge`
 模式下同样生效；需要动态补音频实验时，使用
 `--qwen-whisperseg-context-pad-mode ratio`，再用
 `--qwen-whisperseg-context-pad-ratio` 和 min/max pad 限制范围。

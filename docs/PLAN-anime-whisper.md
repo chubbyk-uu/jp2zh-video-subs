@@ -306,9 +306,11 @@ Implementation plan:
    - `--qwen-whisperseg-context-mode none|pad|merge` (Qwen default: `merge`).
    - `pad`: widen each WhisperSeg job by bounded pre/post audio context, but keep
      `keep_lo/keep_hi` and `speech_regions` tied to the original frame.
-   - `merge`: merge adjacent WhisperSeg groups with `target_seconds` as a soft target.
-     After reaching the target, keep merging across gaps <= `merge_gap` until a natural
-     larger gap appears; `hard_max_seconds` is the true safety cap. Retain the original
+   - `merge`: merge adjacent WhisperSeg groups. Below `target_seconds` the merge tolerance
+     is `merge_gap`; **once a group passes the soft target the tolerance tightens to
+     `after_target_gap`** (default 0.2s), so the group ends at the next real pause instead
+     of greedily merging until `hard_max_seconds` forces a mid-speech cut. `hard_max_seconds`
+     is the true safety cap and only bounds genuinely gap-free speech. Retain the original
      component speech regions inside the merged clip.
    - Pre/post context is orthogonal to merging and applies in both `pad` and `merge`
      modes, so `merge + pad` is a supported benchmark candidate. Fixed pre/post padding
@@ -337,7 +339,8 @@ Implementation plan:
    - merge: e.g. soft target 12s, 18s, 24s with a small max inter-frame gap and a hard
      cap around 32-36s.
    - merge + pad: selected default is `merge_gap=2.0`, soft `target=18`,
-     `hard_max=30`, fixed `pre/post=2.0`; ratio padding stayed experimental.
+     `after_target_gap=0.2`, `hard_max=35`, fixed `pre/post=2.0`; ratio padding stayed
+     experimental.
    - optional diagnostic only: `vad_only` timing to separate text-window effects from
      forced-aligner effects. Follow-up A/B showed that `vad_only + merge/pad` can repeat
      whole neighboring lines because there is no aligner ownership filter to reject text
@@ -370,8 +373,8 @@ After anime stabilizes:
 Status: Stage 5.9 through 6.5 are implemented and benchmarked/manual-reviewed. The
 current project default remains the anime line. The current qwen default is Stage 6.5
 long-context recognition with short-anchor timing: WhisperSeg qwen framing (6.0/1.0),
-merge context `gap=2.0 / target=18 / hard_max=30 / fixed pre/post=2.0`, aligner
-fallback recovery, WJ-style generation knobs, semantic scene OFF, and step-down OFF.
+merge context `gap=2.0 / target=18 / after_target_gap=0.2 / hard_max=35 / fixed pre/post=2.0`,
+aligner fallback recovery, WJ-style generation knobs, semantic scene OFF, and step-down OFF.
 WhisperJAV's code is layered (deprecated modes, generic defaults vs generator overrides
 vs v4 YAML vs CLI defaults), so this section keeps the line-cited audit and experiment
 history, but final defaults come from post-alignment ablations and manual subtitle review
@@ -588,28 +591,50 @@ Validation for the split:
   clips are now often only about 5-6 seconds and appear to reduce Qwen recognition quality.
   Code now supports long-context recognition with short-anchor timing: qwen-only
   WhisperSeg context `pad` / `merge` modes, original-frame cue ownership, aligner timing when
-  healthy, and VAD-guided fallback over owned speech regions when collapsed. Merge now uses
-  `target_seconds` as a soft target and `hard_max_seconds` as the real cap, so continuous
-  short-gap speech is not forced apart exactly at the target. Pre/post context also applies
-  in `merge` mode, and ratio padding can scale context from the final merged span. Manual
-  review on the primary long-form clip selected fixed `merge_gap=2.0`, soft `target=18`, `hard_max=30`, and
-  `pre/post=2.0` as the Qwen default; ratio padding remains selectable but is not the default.
+  healthy, and VAD-guided fallback over owned speech regions when collapsed. Pre/post context
+  also applies in `merge` mode, and ratio padding can scale context from the final merged span.
 
-  Recent Stage 6.5 tuning results on the same clip:
+  **Soft target given real teeth + mid-speech hard-cut elimination (later Stage 6.5 pass).**
+  The first merge implementation validated and printed `target_seconds` but never used it in
+  the merge decision — only `merge_gap` and `hard_max` gated merging, so `target` was inert
+  (changing it 18↔24 produced identical frames). It now gates: below `target` the tolerance
+  is `merge_gap` (2.0s); once a group passes `target` the tolerance tightens to
+  `after_target_gap` (0.2s), so groups end at the next real pause instead of being forced
+  apart mid-speech when `hard_max` is reached. A `hard_cuts` counter (breaks forced by
+  `hard_max` despite a mergeable gap = mid-speech truncation) and `soft_breaks` counter are
+  now printed on the merge log line.
 
-  | candidate | context params | entries | short <=5 chars | VAD speech coverage | VAD gaps | JP left | dupes | chunks | note |
-  |---|---|---:|---:|---:|---:|---:|---:|---:|---|
-  | fixed gap2 target18 pad2 | `gap=2.0`, `target=18`, fixed `pre/post=2.0` | 897 | 237 (26.4%) | 84.9% | 5 | 0 | 0 | 493 | stable subtitle shape; lower coverage |
-  | fixed gap3 target24 pad2 | `gap=3.0`, `target=24`, fixed `pre/post=2.0` | 895 | 263 (29.4%) | 85.3% | 5 | 0 | 0 | 414 | over-merged; short-cue rate worse |
-  | ratio gap2 hard36 r0.10 | `gap=2.0`, `target=18`, `hard=36`, ratio `0.10`, clamp `1.0-3.0` | 935 | 263 (28.1%) | 85.6% | 6 | 2 | 0 | 449 | ratio context over-expanded; left residuals |
-  | ratio gap1.6 hard30 r0.08 | `gap=1.6`, `target=18`, `hard=30`, ratio `0.08`, clamp `1.0-2.5` | 931 | 252 (27.1%) | 85.6% | 5 | 0 | 2 | 480 | better than ratio r0.10 but still fragmented |
-  | fixed gap1.8 hard30 pad2 | `gap=1.8`, `target=18`, `hard=30`, fixed `pre/post=2.0` | 908 | 258 (28.4%) | 85.2% | 4 | 0 | 0 | 468 | lower gaps but more short cues |
-  | **selected fixed gap2 hard30 pad2** | `gap=2.0`, `target=18`, `hard=30`, fixed `pre/post=2.0` | **893** | **255 (28.6%)** | **85.2%** | **4** | **0** | **0** | **459** | selected default after manual review |
+  Framing sweep on DLDSS-492 (the densest primary clip; measured directly from
+  `build_whisperseg_jobs`, no model needed):
 
-  The automatic quality report is a regression guard, not the final judge: wording changes
-  can make semantically correct subtitles look worse to text-only metrics. Manual ASS review
-  selected fixed `gap=2 / target=18 / hard=30 / pre/post=2`; ratio padding stays available
-  for future A/B runs but is not the default.
+  | change | jobs | hard_cuts | note |
+  |---|---:|---:|---|
+  | original (no soft-target teeth), `hard_max=30` | 459 | 15 | 15 mid-speech seams |
+  | `after_target_gap=0.2`, `hard_max=30` | 462 | 6 | soft breaks relocate most cuts to pauses, ~free (jobs +3) |
+  | **`after_target_gap=0.2`, `hard_max=35` (selected)** | **460** | **0** | zero mid-speech cuts |
+
+  Key findings from the sweep: (1) lowering `after_target_gap` relocates hard cuts to pauses
+  with no fragmentation cost (jobs/owned-p90 unchanged) but floors at ~5 because a few runs
+  are genuinely gap-free >30s; (2) lowering `merge_gap` does **not** shorten the longest run
+  (its internal gaps are already <1.4s — it only fragments normal speech, dropping owned-p90
+  17.2s→15.2s); (3) `after_target_gap` is what controls the longest run (0.2→33.7s, 0.5→41.9s,
+  1.0→46.8s). The film's true longest gap-free run is 33.7s, so `hard_max=35` gives
+  `hard_cuts=0` while windows stay bounded by the speech itself (≤37.7s incl pad); 40/48 are
+  identical to 35 here. Selected default: `merge_gap=2.0 / target=18 / after_target_gap=0.2 /
+  hard_max=35 / fixed pre/post=2.0`.
+
+  Full-pipeline re-run on DLDSS-492 with the selected default (`--asr qwen`, galtransl):
+  887 cues, 9 short (<0.5s), **0 overlaps, 0 same-start piles, 0 cues >8s**, `hard_cuts=0` —
+  the framing change lands clean on the timeline.
+
+  Note on the earlier tuning table (removed): those rows varied `target` alongside `gap`
+  while `target` was still inert, so any effect attributed to `target` actually came from
+  `gap`/`hard_max`. The automatic quality report is a regression guard, not the final judge;
+  ratio padding stays selectable but is not the default.
+
+  All `whisperseg_context_*` getattr fallbacks in `transcribe_ja_srt_qwen.py` were aligned to
+  the dataclass defaults (previously `pre/post` fell back to 0.0 vs config 2.0, `merge_gap`
+  to 1.0 vs 2.0, `hard_max` to 36.0 vs config) to avoid phantom defaults on from-raw/test paths.
 
 ### Collapse & drift resolution — the original qwen pain point
 
@@ -650,6 +675,30 @@ convention — a consistent lead, not chaotic drift (a global shift would zero i
 
 Verdict: collapse and collapse-driven drift are resolved; the current qwen line is cleaner on
 timing than WJ-qwen itself, at ~2pt lower raw recall (see Stage 6.4).
+
+### Known limitation: name/word disambiguation at the ASR→translation boundary
+
+Example (DLDSS-492 @ 3:22): audio「まこと？」→ qwen ASR faithfully emits kana「まこと？」→
+galtransl renders it「真的吗?」. This is **not an ASR error** — qwen heard the sound
+correctly; 「まこと」is genuinely ambiguous (the name 誠 / Makoto vs 真 "really/truly"), and
+the name 誠 never appears as kanji anywhere in the film, so neither stage can anchor it.
+
+Neither translation-context lever fixes this specific case:
+- **Look-ahead is already implemented** via galtransl block mode (`translate_batch_size=8`,
+  grouping consecutive cues with gaps ≤ `HISTORY_RESET_SECONDS=10`; the whole block is
+  translated in one turn, so lines see each other both directions). This cue was already
+  batched with the following confession line「俺とやり直してくれないか」and still mistranslated.
+- **Bilingual history is off-distribution for galtransl v3** — its fine-tuned prompt takes
+  context as one user message with a 历史翻译 block of *prior Chinese translations only*
+  (`list[str]`), explicitly "must not be reused for other backends". The bilingual chat-pair
+  history (JA user / ZH assistant) already exists as the **sakura** backend
+  (`--translator sakura`), but this cue had its history reset by the preceding 18s gap, so no
+  history form helps here anyway.
+
+Conclusion: with no explicit name token anywhere, this is inherent ambiguity; the only
+reliable anchor would be a per-work character-name glossary, which is error-prone for
+「まこと」(would mistranslate legitimate 真 "really" uses). Left as an accepted low-frequency
+limitation rather than a translation-architecture change.
 
 ## Stage 7: Anime line follow-up
 

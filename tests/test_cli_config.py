@@ -123,7 +123,8 @@ def test_qwen_and_anime_backend_defaults_are_separate():
     assert qwen.whisperseg_context_post_seconds == 2.0
     assert qwen.whisperseg_context_merge_gap == 2.0
     assert qwen.whisperseg_context_target_seconds == 18.0
-    assert qwen.whisperseg_context_hard_max_seconds == 30.0
+    assert qwen.whisperseg_context_after_target_gap == 0.2
+    assert qwen.whisperseg_context_hard_max_seconds == 35.0
     assert qwen.whisperseg_context_pad_mode == "fixed"
     assert qwen.whisperseg_context_pad_ratio == 0.10
     assert qwen.whisperseg_context_min_pad_seconds == 1.0

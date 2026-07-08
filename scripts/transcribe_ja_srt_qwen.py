@@ -870,15 +870,16 @@ def build_vad_jobs(audio, samplerate: int, duration: float, args: argparse.Names
     return jobs
 
 
-def _validate_whisperseg_context_args(args: argparse.Namespace) -> tuple[str, float, float, float, float, float, str, float, float, float]:
+def _validate_whisperseg_context_args(args: argparse.Namespace) -> tuple[str, float, float, float, float, float, float, str, float, float, float]:
     mode = getattr(args, "whisperseg_context_mode", "none")
     if mode not in {"none", "pad", "merge"}:
         raise SystemExit("--whisperseg-context-mode must be one of: none, pad, merge")
-    pre = float(getattr(args, "whisperseg_context_pre_seconds", 0.0))
-    post = float(getattr(args, "whisperseg_context_post_seconds", 0.0))
-    merge_gap = float(getattr(args, "whisperseg_context_merge_gap", 1.0))
+    pre = float(getattr(args, "whisperseg_context_pre_seconds", 2.0))
+    post = float(getattr(args, "whisperseg_context_post_seconds", 2.0))
+    merge_gap = float(getattr(args, "whisperseg_context_merge_gap", 2.0))
     target = float(getattr(args, "whisperseg_context_target_seconds", 18.0))
-    hard_max = float(getattr(args, "whisperseg_context_hard_max_seconds", 36.0))
+    after_target_gap = float(getattr(args, "whisperseg_context_after_target_gap", 0.2))
+    hard_max = float(getattr(args, "whisperseg_context_hard_max_seconds", 35.0))
     pad_mode = getattr(args, "whisperseg_context_pad_mode", "fixed")
     pad_ratio = float(getattr(args, "whisperseg_context_pad_ratio", 0.10))
     min_pad = float(getattr(args, "whisperseg_context_min_pad_seconds", 1.0))
@@ -887,6 +888,8 @@ def _validate_whisperseg_context_args(args: argparse.Namespace) -> tuple[str, fl
         raise SystemExit("--whisperseg-context-pre/post-seconds must be non-negative")
     if merge_gap < 0:
         raise SystemExit("--whisperseg-context-merge-gap must be non-negative")
+    if after_target_gap < 0:
+        raise SystemExit("--whisperseg-context-after-target-gap must be non-negative")
     if target <= 0:
         raise SystemExit("--whisperseg-context-target-seconds must be positive")
     if hard_max < target:
@@ -899,7 +902,7 @@ def _validate_whisperseg_context_args(args: argparse.Namespace) -> tuple[str, fl
         raise SystemExit("--whisperseg-context-min/max-pad-seconds must be non-negative")
     if max_pad < min_pad:
         raise SystemExit("--whisperseg-context-max-pad-seconds must be >= --whisperseg-context-min-pad-seconds")
-    return mode, pre, post, merge_gap, target, hard_max, pad_mode, pad_ratio, min_pad, max_pad
+    return mode, pre, post, merge_gap, target, after_target_gap, hard_max, pad_mode, pad_ratio, min_pad, max_pad
 
 
 def validate_runtime_args(args: argparse.Namespace) -> None:
@@ -937,7 +940,7 @@ def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Names
     cue ownership and fallback speech regions tied to the owned WhisperSeg speech rather
     than to the extra context.
     """
-    mode, pre, post, merge_gap, target, hard_max, pad_mode, pad_ratio, min_pad, max_pad = _validate_whisperseg_context_args(args)
+    mode, pre, post, merge_gap, target, after_target_gap, hard_max, pad_mode, pad_ratio, min_pad, max_pad = _validate_whisperseg_context_args(args)
     atomic = [g for g in groups if g and (_whisperseg_group_bounds(g)[1] - _whisperseg_group_bounds(g)[0]) >= args.whisperseg_min_frame_seconds]
     if not atomic:
         return []
@@ -979,16 +982,26 @@ def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Names
     merged: list[list] = []
     cur: list | None = None
     cur_start = cur_end = 0.0
+    hard_cuts = 0  # breaks forced by hard_max despite a small (mergeable) gap = mid-speech truncation
+    soft_breaks = 0  # graceful breaks taken past the soft target at a natural pause
     for group in atomic:
         start, end = _whisperseg_group_bounds(group)
         if cur is None:
             cur = [group]
             cur_start, cur_end = start, end
             continue
-        if start - cur_end <= merge_gap and end - cur_start <= hard_max:
+        gap = start - cur_end
+        # Past the soft target, tighten the gap tolerance so the group ends at the next
+        # real pause instead of greedily merging until hard_max forces a mid-speech cut.
+        tol = merge_gap if (cur_end - cur_start) < target else min(merge_gap, after_target_gap)
+        if gap <= tol and end - cur_start <= hard_max:
             cur.append(group)
             cur_end = end
         else:
+            if gap <= tol:  # would have merged but hard_max forced the split
+                hard_cuts += 1
+            elif gap <= merge_gap:  # broke early only because we passed the soft target
+                soft_breaks += 1
             merged.append(cur)
             cur = [group]
             cur_start, cur_end = start, end
@@ -998,7 +1011,8 @@ def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Names
     jobs = [make_job(group_list, is_last=(i == len(merged) - 1)) for i, group_list in enumerate(merged)]
     print(
         f"WhisperSeg qwen context: mode=merge frames={len(atomic)} jobs={len(jobs)} "
-        f"gap={merge_gap}s target={target}s hard_max={hard_max}s "
+        f"gap={merge_gap}s target={target}s after_target_gap={after_target_gap}s hard_max={hard_max}s "
+        f"hard_cuts={hard_cuts} soft_breaks={soft_breaks} "
         f"pad_mode={pad_mode} pre={pre}s post={post}s pad_ratio={pad_ratio} "
         f"min_pad={min_pad}s max_pad={max_pad}s",
         flush=True,
@@ -1820,11 +1834,12 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
         },
         "whisperseg_context": {
             "mode": getattr(args, "whisperseg_context_mode", "none"),
-            "pre_seconds": float(getattr(args, "whisperseg_context_pre_seconds", 0.0)),
-            "post_seconds": float(getattr(args, "whisperseg_context_post_seconds", 0.0)),
-            "merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 1.0)),
+            "pre_seconds": float(getattr(args, "whisperseg_context_pre_seconds", 2.0)),
+            "post_seconds": float(getattr(args, "whisperseg_context_post_seconds", 2.0)),
+            "merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 2.0)),
             "target_seconds": float(getattr(args, "whisperseg_context_target_seconds", 18.0)),
-            "hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 36.0)),
+            "after_target_gap": float(getattr(args, "whisperseg_context_after_target_gap", 0.2)),
+            "hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 35.0)),
             "pad_mode": getattr(args, "whisperseg_context_pad_mode", "fixed"),
             "pad_ratio": float(getattr(args, "whisperseg_context_pad_ratio", 0.10)),
             "min_pad_seconds": float(getattr(args, "whisperseg_context_min_pad_seconds", 1.0)),
@@ -1931,11 +1946,12 @@ def main() -> None:
                 "vad_max_leading_silence": args.vad_max_leading_silence,
                 "vad_context_merge_gap": args.vad_context_merge_gap,
                 "whisperseg_context_mode": getattr(args, "whisperseg_context_mode", "none"),
-                "whisperseg_context_pre_seconds": float(getattr(args, "whisperseg_context_pre_seconds", 0.0)),
-                "whisperseg_context_post_seconds": float(getattr(args, "whisperseg_context_post_seconds", 0.0)),
-                "whisperseg_context_merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 1.0)),
+                "whisperseg_context_pre_seconds": float(getattr(args, "whisperseg_context_pre_seconds", 2.0)),
+                "whisperseg_context_post_seconds": float(getattr(args, "whisperseg_context_post_seconds", 2.0)),
+                "whisperseg_context_merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 2.0)),
                 "whisperseg_context_target_seconds": float(getattr(args, "whisperseg_context_target_seconds", 18.0)),
-                "whisperseg_context_hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 36.0)),
+                "whisperseg_context_after_target_gap": float(getattr(args, "whisperseg_context_after_target_gap", 0.2)),
+                "whisperseg_context_hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 35.0)),
                 "whisperseg_context_pad_mode": getattr(args, "whisperseg_context_pad_mode", "fixed"),
                 "whisperseg_context_pad_ratio": float(getattr(args, "whisperseg_context_pad_ratio", 0.10)),
                 "whisperseg_context_min_pad_seconds": float(getattr(args, "whisperseg_context_min_pad_seconds", 1.0)),
