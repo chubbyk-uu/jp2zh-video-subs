@@ -8,9 +8,10 @@ def test_ellipsis_only_dropped():
 
 
 def test_ellipsis_with_content_kept():
-    # 带语气的省略号不丢，只是句尾可能补句号
-    assert anime_clean_text("あ…") == "あ…"          # … 已是句末标点，不补
-    assert anime_clean_text("…あ") == "…あ。"         # 结尾是假名，补句号
+    # 句中/句末的省略号保留；句首的省略号删掉(软起始伪迹)。
+    assert anime_clean_text("あ…") == "あ…"          # 句末 …，保留，不补句号
+    assert anime_clean_text("…あ") == "あ。"          # 句首 … 删掉，结尾补句号
+    assert anime_clean_text("待って…") == "待って…"    # 句中/句末 …，保留
     assert is_ellipsis_only("あ…") is False
     assert is_ellipsis_only("…あ") is False
 

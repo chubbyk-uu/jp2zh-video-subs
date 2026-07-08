@@ -15,7 +15,7 @@ from alignment_recovery import (
     redistribute_collapsed_words,
     words_to_items,
 )
-from anime_text_clean import anime_clean_text
+from anime_text_clean import anime_clean_text, strip_leading_ellipsis
 from cli_config import add_dataclass_arguments
 from pipeline_configs import QwenAsrConfig
 from srt_utils import Interval
@@ -43,7 +43,11 @@ DEFAULT_ALIGNER = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 DEFAULT_ASR_CONTEXT = ""
 
 # Characters that end a sentence-level cue.
-SENTENCE_END_CHARS = "。！？!?…．."
+# Sentence-ending punctuation, matched to WhisperJAV's regroup set
+# (`sp=.* /。/?/？` → 。 ? ？ and ". "). Deliberately excludes ！/! and …: qwen
+# rarely emits them, and anime-whisper sprays … on soft pauses — treating those as
+# sentence ends would shatter one spoken line into many tiny cues.
+SENTENCE_END_CHARS = "。？?"
 # anime-whisper punctuates soft pauses with … liberally, so treating every … as a
 # hard sentence end shatters one spoken line into many tiny cues. In ellipsis-soft
 # mode (anime backend) … is NOT a hard ender — only 。！？ etc. are — and … instead
@@ -1358,18 +1362,72 @@ def vad_only_items_for_text(text: str, clip_duration: float, speech_regions: lis
     return items
 
 
-def anime_vad_only_frame_entry(text: str, start: float, end: float) -> list[SubtitleEntry]:
-    """WJ-style anime vad_only reconstruction: one subtitle per temporal frame.
+def wj_regroup_vad_only_split(text: str, comma_min_chars: int = 50, max_chars: int = 80) -> list[str]:
+    """WhisperJAV REGROUP_VAD_ONLY text split (anime / no-aligner branch).
 
-    WhisperJAV's anime preset uses no aligner. With regrouping off, each non-empty
-    anime-whisper frame becomes one subtitle segment; sentence punctuation inside
-    the frame does not create extra cue boundaries. Keep this separate from
-    chunk_entries(), whose sentence/char splitting is tuned for aligned streams.
+    Split at sentence enders (SENTENCE_END_CHARS = 。 ? ？), then split any segment
+    past comma_min_chars at a Japanese/ASCII comma (、，,), and hard-cut a comma-less
+    run past max_chars. ！ and … never split. (WhisperJAV's vad-only regroup nominally
+    runs this via stable-ts sp/sp2/sl; the wjav_out anime dump was produced with
+    regroup off = pure frame-native, so this is the "regroup on" variant for review.)
+    """
+    sents: list[str] = []
+    buf = ""
+    for ch in text:
+        buf += ch
+        if ch in SENTENCE_END_CHARS:
+            sents.append(buf)
+            buf = ""
+    if buf.strip():
+        sents.append(buf)
+
+    commas = "、，,"
+    pieces: list[str] = []
+    for s in sents:
+        if len(content_chars(s)) <= comma_min_chars:
+            pieces.append(s)
+            continue
+        sub = ""
+        for ch in s:
+            sub += ch
+            n = len(content_chars(sub))
+            if (ch in commas and n >= comma_min_chars) or n >= max_chars:
+                pieces.append(sub)
+                sub = ""
+        if sub:
+            pieces.append(sub)
+    return [p for p in pieces if content_chars(p)]
+
+
+def anime_vad_only_frame_entry(text: str, start: float, end: float) -> list[SubtitleEntry]:
+    """WJ-style anime vad_only reconstruction (REGROUP_VAD_ONLY).
+
+    WhisperJAV's anime preset uses no aligner; timestamps are proportional. Each
+    frame's text is split at sentence punctuation (。 ? ？), long segments split at
+    commas past 50 chars and hard-capped at 80 (see wj_regroup_vad_only_split), and
+    the frame's [start, end] is distributed across the pieces by content-char count.
+    ！ and … never split (anime-whisper sprays … on soft pauses).
     """
     display = text.strip()
     if not display or not content_chars(display) or end <= start:
         return []
-    return [SubtitleEntry(start, end, display)]
+    pieces = wj_regroup_vad_only_split(display)
+    if len(pieces) <= 1:
+        single = strip_leading_ellipsis(display)
+        return [SubtitleEntry(start, end, single)] if content_chars(single) else []
+    total = sum(len(content_chars(p)) for p in pieces) or 1
+    entries: list[SubtitleEntry] = []
+    cursor = start
+    acc = 0
+    for i, piece in enumerate(pieces):
+        acc += len(content_chars(piece))
+        piece_end = end if i == len(pieces) - 1 else start + (end - start) * acc / total
+        # Drop a leading … at each cue start (frame onset, or a new sentence after 。…).
+        display_piece = strip_leading_ellipsis(piece.strip())
+        if content_chars(display_piece) and piece_end > cursor:
+            entries.append(SubtitleEntry(cursor, piece_end, display_piece))
+        cursor = piece_end
+    return entries or [SubtitleEntry(start, end, display)]
 
 
 def _serialize_items(items) -> list[dict]:

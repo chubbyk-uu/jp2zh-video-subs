@@ -33,6 +33,7 @@ from transcribe_ja_srt_qwen import (
     transcribe_qwen,
     uncovered_gap_spans,
     vad_only_items_for_text,
+    wj_regroup_vad_only_split,
     validate_runtime_args,
 )
 import whisperseg_vad
@@ -1061,16 +1062,56 @@ def test_vad_only_items_distribute_across_speech_regions():
     assert any(items[i + 1].start_time - items[i].end_time > 2.0 for i in range(len(items) - 1))
 
 
-def test_anime_vad_only_frame_entry_keeps_frame_text_together():
+def test_anime_vad_only_frame_entry_splits_sentences():
+    # Split the frame at 。; proportional timing within [1, 6]; contiguous pieces.
     entries = anime_vad_only_frame_entry("あ。いいですね。", 1.0, 6.0)
-    assert len(entries) == 1
+    assert [e.text for e in entries] == ["あ。", "いいですね。"]
     assert entries[0].start == pytest.approx(1.0)
-    assert entries[0].end == pytest.approx(6.0)
-    assert entries[0].text == "あ。いいですね。"
+    assert entries[-1].end == pytest.approx(6.0)
+    assert entries[0].end == pytest.approx(entries[1].start)
+
+
+def test_anime_vad_only_frame_entry_strips_leading_ellipsis():
+    # Leading … at a cue start is dropped (frame onset and after a 。… split);
+    # a mid/trailing … is kept.
+    entries = anime_vad_only_frame_entry("…美濃部長です。…はい…", 0.0, 6.0)
+    assert entries[0].text == "美濃部長です。"
+    assert entries[1].text == "はい…"
+
+
+def test_anime_vad_only_frame_entry_keeps_ellipsis_run_whole():
+    # … is never a split point: a soft-pause ellipsis run stays one cue.
+    entries = anime_vad_only_frame_entry("あ…え…もう…", 1.0, 6.0)
+    assert len(entries) == 1
+    assert entries[0].text == "あ…え…もう…"
+
+
+def test_anime_vad_only_frame_entry_splits_long_frame_at_comma():
+    # A long frame (> 50 content chars) splits at a comma past the threshold and is
+    # timed proportionally; short frames never split.
+    text = "あ" * 55 + "、" + "い" * 10 + "。"
+    entries = anime_vad_only_frame_entry(text, 0.0, 8.0)
+    assert len(entries) == 2
+    assert entries[0].end == pytest.approx(entries[1].start)
+    assert entries[-1].end == pytest.approx(8.0)
 
 
 def test_anime_vad_only_frame_entry_drops_punctuation_only_frame():
     assert anime_vad_only_frame_entry("…", 1.0, 2.0) == []
+
+
+def test_wj_regroup_vad_only_split_sentence_then_length():
+    # Sentence split at 。/？; ！ and … do NOT split.
+    assert wj_regroup_vad_only_split("はい。うん？そう。") == ["はい。", "うん？", "そう。"]
+    assert wj_regroup_vad_only_split("だめ！ああ…もう") == ["だめ！ああ…もう"]
+    # A short sentence keeps its commas (under 50 chars).
+    assert wj_regroup_vad_only_split("あ、い、う。") == ["あ、い、う。"]
+    # Over 50 chars: split at a comma past the threshold.
+    long2 = "あ" * 55 + "、" + "い" * 10 + "。"
+    assert len(wj_regroup_vad_only_split(long2, comma_min_chars=50, max_chars=80)) == 2
+    # A comma-less run past max_chars is hard-cut.
+    long3 = "あ" * 90 + "。"
+    assert len(wj_regroup_vad_only_split(long3, comma_min_chars=50, max_chars=80)) == 2
 
 
 def test_entries_from_raw_anime_schema():
@@ -1338,9 +1379,10 @@ def test_entries_from_raw_qwen_aligner_only_uses_raw_items():
 
 # ---- anime ellipsis-soft sentence splitting ----
 
-def test_split_units_ellipsis_hard_default_splits_on_ellipsis():
-    # Qwen backend unchanged: … is a hard sentence end.
-    assert split_into_units("会長、やめて…て…", 26) == ["会長、やめて…", "て…"]
+def test_split_units_no_longer_splits_on_ellipsis():
+    # WJ-aligned punctuation: … is not a sentence end for either backend, so a
+    # short line stays whole instead of shattering at every ellipsis.
+    assert split_into_units("会長、やめて…て…", 26) == ["会長、やめて…て…"]
 
 
 def test_split_units_ellipsis_soft_keeps_line_whole():

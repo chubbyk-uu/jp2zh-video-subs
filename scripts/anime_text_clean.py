@@ -34,6 +34,15 @@ _HAS_DOT = re.compile(r'[…‥\.．]')
 # 连续省略号折叠为一个。
 _ELLIPSIS_RUN = re.compile(r'[…‥]{2,}')
 
+# 句首省略号(anime-whisper 的软起始伪迹):一句开头的 … 在字幕里读着别扭,删掉。
+# 句中/句末的 … 保留(如 "あ…"、"待って…くる")。
+_LEADING_ELLIPSIS = re.compile(r'^[\s…‥]+')
+
+
+def strip_leading_ellipsis(text: str) -> str:
+    """删除一条 cue/句子开头的省略号(及前导空白)。句中/句末 … 不动。"""
+    return _LEADING_ELLIPSIS.sub('', text)
+
 
 def is_ellipsis_only(text: str) -> bool:
     """True 表示纯省略号/非语音伪迹（无对白内容）。"""
@@ -68,6 +77,7 @@ def anime_clean_text(text: str) -> str:
     text = text.strip()
     if is_ellipsis_only(text):
         return ""
+    text = strip_leading_ellipsis(text)
     text = _remove_repetition(text)
     text = _fold_ellipsis_runs(text)
     text = _ensure_sentence_ending(text)
