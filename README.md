@@ -36,8 +36,8 @@ The one-command pipeline performs these steps:
 5. Optionally write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles when `--quality-report` is set.
 
 The default anime backend runs WJ-style: semantic scene boundaries, WhisperSeg grouped
-frames, anime-whisper text, and `vad_only` pseudo timing. This avoids the forced-aligner
-fragmentation seen on anime-whisper text while keeping this project's subtitle shaping,
+frames, anime-whisper text, and `vad_only` frame-native timing. This avoids the forced-aligner
+fragmentation and over-splitting seen on anime-whisper text while keeping this project's
 translation, overlap cleanup, and ASS generation. Qwen remains available with
 `--asr qwen` for cleaner text/timing comparisons, and anime can still be forced through
 the aligner for diagnostics with `--anime-timestamp-mode aligner_fallback` or
@@ -362,8 +362,9 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # legacy Whi
    `min_frame=0.1`.
 3. `litagin/anime-whisper` transcribes each frame. The anime text cleaner removes known
    ellipsis-only and short repetition artifacts.
-4. Default `vad_only` timing distributes text over the detected speech regions, avoiding
-   Qwen forced-aligner collapse/fragmentation on anime-whisper text.
+4. Default `vad_only` timing is frame-native: each non-empty anime-whisper frame becomes
+   one subtitle cue. This matches WhisperJAV anime behavior and avoids Qwen forced-aligner
+   collapse/fragmentation and sentence-level over-splitting on anime-whisper text.
 
 Use `--anime-scene-backend none` for A/B tests, or run the Qwen comparison line with
 `--asr qwen`.
@@ -383,10 +384,10 @@ Use `--anime-scene-backend none` for A/B tests, or run the Qwen comparison line 
 4. The model's punctuated `result.text` is the authoritative content; the separate
    `Qwen3-ForcedAligner-0.6B` supplies per-character timing. Sentences are split on
    punctuation and on large internal timing gaps, then timed from the aligner.
-5. If the aligner collapses a clip's words into a bad timestamp span, the Qwen line
-   uses VAD-guided fallback recovery before subtitle shaping. Semantic scene splitting
-   and step-down retry are implemented for experiments, but remain off by default after
-   the Qwen ablation.
+5. Semantic scene splitting is on by default for Qwen, so WhisperSeg frames do not cross
+   acoustic-scene boundaries. If the aligner collapses a clip's words into a bad timestamp
+   span, the Qwen line uses VAD-guided fallback recovery before subtitle shaping.
+   Step-down retry is implemented for experiments, but remains off by default.
 
 For Qwen A/B runs, disable WhisperSeg/VAD cutting (fall back to uniform 30 s tiling)
 with `--asr qwen --no-qwen-vad-chunks`, or explicitly compare the older VAD path with
@@ -455,11 +456,12 @@ The one-command pipeline uses:
 - Anime semantic scene pre-segmentation: on (`--anime-scene-backend semantic`; disable with `--anime-scene-backend none`)
 - Anime timing mode: `vad_only` (`--anime-timestamp-mode vad_only`; aligner modes are diagnostic and require `models/Qwen3-ForcedAligner-0.6B`)
 - Anime WhisperSeg frame defaults: `max_group=5.0`, `chunk_threshold=0.5`, `max_speech=5.0`, `min_frame=0.1`, `threshold=0.35`
+- Anime semantic scene ASR pad: `--anime-scene-asr-pad-seconds 0.35`, matching WhisperJAV's padded `asr_processing` scene windows while keeping timeline cues on the frame timestamps
 - Anime does not use Qwen's WhisperSeg context `pad` / `merge` path. With `vad_only` timing, extra neighboring context cannot be filtered by an aligner ownership pass, and current anime evaluations do not show a need for it.
-- Anime cleaner: on for ellipsis-only fragments and short repetition artifacts; shared subtitle shaping then removes overlaps and flash cues
+- Anime cleaner: on for ellipsis-only fragments and short repetition artifacts; default `vad_only` keeps one cue per content frame, then shared final hygiene removes overlaps and flash cues
 - Qwen comparison line: available with `--asr qwen`. It defaults to WhisperSeg framing (`--qwen-vad-backend whisperseg`) with Qwen values `max_group=6.0`, `chunk_threshold=1.0`, `max_speech=5.0`, `min_frame=0.1`, `threshold=0.35`; use `--asr qwen --qwen-vad-backend current` for the older VAD path, or `--asr qwen --no-qwen-vad-chunks` for fixed 30 s tiling.
 - Qwen long-context recognition: on by default. Atomic WhisperSeg frames are merged with `--qwen-whisperseg-context-mode merge`, `--qwen-whisperseg-context-merge-gap 2.0`, soft `--qwen-whisperseg-context-target-seconds 18`, `--qwen-whisperseg-context-after-target-gap 0.2`, `--qwen-whisperseg-context-hard-max-seconds 35`, and fixed `--qwen-whisperseg-context-pre-seconds 2.0` / `--qwen-whisperseg-context-post-seconds 2.0`.
-- Qwen timing and generation: default `--qwen-timestamp-mode aligner_fallback`, `--qwen-max-new-tokens 4096`, `--qwen-repetition-penalty 1.1`, and `--qwen-max-tokens-per-second 20.0`. Semantic scene splitting is available with `--qwen-scene-backend semantic` but is off by default; step-down retry is implemented in the shared sub-script but not exposed as a top-level default path.
+- Qwen timing and generation: default `--qwen-timestamp-mode aligner_fallback`, `--qwen-scene-backend semantic`, `--qwen-scene-asr-pad-seconds 0.35`, `--qwen-max-new-tokens 4096`, `--qwen-repetition-penalty 1.1`, and `--qwen-max-tokens-per-second 20.0`. Step-down retry is implemented in the shared sub-script but not exposed as a top-level default path.
 - Qwen `vad_only` timing is diagnostic only. If you explicitly set `--qwen-timestamp-mode vad_only`, also set `--qwen-whisperseg-context-mode none`; pure VAD timing cannot filter text recognized from padded/merged neighboring context, so the pipeline rejects that combination.
 - Qwen gap recapture: off by default (`--qwen-recapture-min-gap 0`) and only applies to `--asr qwen`. For high-coverage Qwen runs, set a positive gap threshold such as `--qwen-recapture-min-gap 10`: after the main pass, matching subtitle gaps get a second VAD look at the more sensitive `--qwen-recapture-vad-threshold 0.05`; gaps with at least `--qwen-recapture-min-speech 2` seconds of detected speech are re-transcribed while the model is still loaded.
 - Whisper-style hallucination filtering on Qwen output: off (opt in with `--asr qwen --qwen-filter-hallucinations`)

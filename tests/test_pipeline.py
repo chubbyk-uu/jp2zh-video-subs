@@ -172,7 +172,7 @@ def test_build_qwen_command_survives_unexposed_config_fields(tmp_path):
     assert cmd[cmd.index("--text-backend") + 1] == "qwen"  # --asr qwen stays on qwen
     assert cmd[cmd.index("--timestamp-mode") + 1] == "aligner_fallback"
     assert cmd[cmd.index("--vad-backend") + 1] == "whisperseg"
-    assert cmd[cmd.index("--scene-backend") + 1] == "none"
+    assert cmd[cmd.index("--scene-backend") + 1] == "semantic"
     assert cmd[cmd.index("--max-new-tokens") + 1] == "4096"
     assert cmd[cmd.index("--repetition-penalty") + 1] == "1.1"
     assert cmd[cmd.index("--max-tokens-per-second") + 1] == "20.0"

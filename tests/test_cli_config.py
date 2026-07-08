@@ -113,9 +113,10 @@ def test_qwen_and_anime_backend_defaults_are_separate():
     assert qwen.text_backend == "qwen"
     assert qwen.timestamp_mode == "aligner_fallback"
     assert qwen.vad_backend == "whisperseg"
-    # Stage 6.5 qwen default: long-context recognition with short-anchor timing;
-    # semantic scene and step-down remain selectable but off by default.
-    assert qwen.scene_backend == "none"
+    # Stage 6.5 qwen default: long-context recognition with short-anchor timing.
+    # Stage 6.6: semantic scene ON by default (big recognition-accuracy win);
+    # step-down remains selectable but off by default.
+    assert qwen.scene_backend == "semantic"
     assert qwen.stepdown is False
     assert qwen.stepdown_fallback_group == 6.0
     assert qwen.whisperseg_context_mode == "merge"

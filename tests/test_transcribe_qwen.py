@@ -15,6 +15,7 @@ from transcribe_ja_srt_qwen import (
     _interjection_core,
     _time_aligned_job,
     _time_anime_job,
+    anime_vad_only_frame_entry,
     apply_qwen_generation_config,
     build_qwen_jobs,
     build_whisperseg_jobs,
@@ -1018,6 +1019,18 @@ def test_vad_only_items_distribute_across_speech_regions():
     assert any(items[i + 1].start_time - items[i].end_time > 2.0 for i in range(len(items) - 1))
 
 
+def test_anime_vad_only_frame_entry_keeps_frame_text_together():
+    entries = anime_vad_only_frame_entry("あ。いいですね。", 1.0, 6.0)
+    assert len(entries) == 1
+    assert entries[0].start == pytest.approx(1.0)
+    assert entries[0].end == pytest.approx(6.0)
+    assert entries[0].text == "あ。いいですね。"
+
+
+def test_anime_vad_only_frame_entry_drops_punctuation_only_frame():
+    assert anime_vad_only_frame_entry("…", 1.0, 2.0) == []
+
+
 def test_entries_from_raw_anime_schema():
     raw = {
         "text_backend": "anime", "timestamp_mode": "aligner_fallback",
@@ -1050,11 +1063,11 @@ def test_entries_from_raw_anime_vad_only_rebuilds_from_speech_regions():
             "recovered_items": [], "sentinel": {}, "recovery": {"applied": False},
         }],
     }
-    entries = entries_from_raw(raw, _shaping_args(timestamp_mode="vad_only"))
-    assert entries
-    assert entries[0].start == pytest.approx(11.0)
-    assert entries[-1].end <= 14.0 + 1e-6
-    assert "おはよう" in "".join(e.text for e in entries)
+    entries = entries_from_raw(raw, _shaping_args(text_backend="anime", timestamp_mode="vad_only"))
+    assert len(entries) == 1
+    assert entries[0].start == pytest.approx(10.0)
+    assert entries[0].end == pytest.approx(20.0)
+    assert entries[0].text == "おはようございます。"
 
 
 def test_entries_from_raw_qwen_schema_uses_final_items():

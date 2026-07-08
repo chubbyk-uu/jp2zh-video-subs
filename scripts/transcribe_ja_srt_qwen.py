@@ -1048,16 +1048,28 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
             min_dur=args.scene_min_seconds, max_dur=args.scene_max_seconds,
             clustering_threshold=args.scene_clustering_threshold,
         )
-        print(f"semantic scenes: {len(scenes)} (min={args.scene_min_seconds}s max={args.scene_max_seconds}s)", flush=True)
+        scene_asr_pad = max(0.0, float(getattr(args, "scene_asr_pad_seconds", 0.0)))
+        print(
+            f"semantic scenes: {len(scenes)} (min={args.scene_min_seconds}s max={args.scene_max_seconds}s "
+            f"asr_pad={scene_asr_pad}s)",
+            flush=True,
+        )
         groups = []
         for ss, se in scenes:
-            seg_audio = audio[int(ss * samplerate) : int(se * samplerate)]
+            # WhisperJAV semantic scenes use strict timestamps for the timeline, but
+            # feed ASR/VAD with an overlapped "asr_processing" window (±0.35s).
+            # The pad changes WhisperSeg's 30s chunk origin and preserves soft
+            # boundary consonants/particles; without it anime-whisper sees worse
+            # cut points and misrecognizes otherwise stable phrases.
+            asr_start = max(0.0, ss - scene_asr_pad)
+            asr_end = min(duration, se + scene_asr_pad)
+            seg_audio = audio[int(asr_start * samplerate) : int(asr_end * samplerate)]
             if len(seg_audio) < int(0.1 * samplerate):
                 continue
             for g in vad.segment(seg_audio, samplerate):
                 for s in g:
-                    s.start += ss
-                    s.end += ss
+                    s.start += asr_start
+                    s.end += asr_start
                 groups.append(g)
     else:
         groups = vad.segment(audio, samplerate)
@@ -1288,6 +1300,20 @@ def vad_only_items_for_text(text: str, clip_duration: float, speech_regions: lis
     return items
 
 
+def anime_vad_only_frame_entry(text: str, start: float, end: float) -> list[SubtitleEntry]:
+    """WJ-style anime vad_only reconstruction: one subtitle per temporal frame.
+
+    WhisperJAV's anime preset uses no aligner. With regrouping off, each non-empty
+    anime-whisper frame becomes one subtitle segment; sentence punctuation inside
+    the frame does not create extra cue boundaries. Keep this separate from
+    chunk_entries(), whose sentence/char splitting is tuned for aligned streams.
+    """
+    display = text.strip()
+    if not display or not content_chars(display) or end <= start:
+        return []
+    return [SubtitleEntry(start, end, display)]
+
+
 def _serialize_items(items) -> list[dict]:
     return [
         {"text": item_text(it), "start": item_start(it), "end": item_end(it)}
@@ -1312,10 +1338,18 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
     for ch in raw["chunks"]:
         if ch.get("superseded_by_stepdown"):
             continue  # step-down re-framed this collapsed chunk; its cues live in later "stepdown" chunks
+        raw_backend = raw.get("text_backend", getattr(args, "text_backend", "qwen"))
+        anime_vad_only_raw = (
+            "clean_text" in ch
+            and raw_backend == "anime"
+            and getattr(args, "timestamp_mode", raw.get("timestamp_mode", "aligner_fallback")) == "vad_only"
+        )
         if "clean_text" in ch:
             # anime schema: text is already cleaned; no context echo to strip.
             text = ch["clean_text"]
-            if getattr(args, "timestamp_mode", "aligner_fallback") == "vad_only":
+            if anime_vad_only_raw:
+                items = []
+            elif getattr(args, "timestamp_mode", "aligner_fallback") == "vad_only":
                 regions = [Interval(float(s), float(e)) for s, e in ch.get("speech_regions", [])]
                 items = vad_only_items_for_text(text, ch["end"] - ch["start"], regions)
             else:
@@ -1340,12 +1374,15 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
             # Fallback for pre-VAD dumps that only recorded fixed-tiling chunks.
             keep_lo = ch["start"]
             keep_hi = float("inf") if ch["end"] >= duration - 1e-3 else ch["start"] + step
-        entries.extend(
-            chunk_entries(
-                text, items, start=ch["start"],
-                keep_lo=keep_lo, keep_hi=keep_hi, args=args,
+        if anime_vad_only_raw:
+            entries.extend(anime_vad_only_frame_entry(text, ch["start"], ch["end"]))
+        else:
+            entries.extend(
+                chunk_entries(
+                    text, items, start=ch["start"],
+                    keep_lo=keep_lo, keep_hi=keep_hi, args=args,
+                )
             )
-        )
     entries.sort(key=lambda e: (e.start, e.end))
     return entries
 
@@ -1586,9 +1623,12 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
         recovery = job_recovery.get(i, {"applied": False, "strategy": "none"})
         if recovery.get("applied"):
             n_recovered[recovery["strategy"]] = n_recovered.get(recovery["strategy"], 0) + 1
-        kept = chunk_entries(
-            clean, out_items, start=job.start, keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
-        )
+        if args.timestamp_mode == "vad_only":
+            kept = anime_vad_only_frame_entry(clean, job.start, job.end)
+        else:
+            kept = chunk_entries(
+                clean, out_items, start=job.start, keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
+            )
         entries.extend(kept)
         raw_chunks.append({
             "start": job.start,

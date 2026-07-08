@@ -30,7 +30,7 @@
 4. 默认生成中日双语 ASS（中文在上、日文在下），并复制到输入视频同目录。
 5. 调参/测试时可加 `--quality-report` 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
 
-默认的 anime 后端采用 WJ-style 路线：semantic scene 先切 12-48 秒场景，WhisperSeg 在场景内生成短语音 frame，`litagin/anime-whisper` 出文本，默认 `vad_only` 把文本分布到语音区间上。这样可以避开 anime 文本走 forced aligner 时出现的碎片化/坍缩，同时继续使用本项目的字幕塑形、翻译、去重叠和 ASS 生成链。Qwen 仍可用 `--asr qwen` 作为更干净的对比线；anime 也可以用 `--anime-timestamp-mode aligner_fallback` 或 `aligner_only` 强制走对齐器做诊断。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
+默认的 anime 后端采用 WJ-style 路线：semantic scene 先切 12-48 秒场景，WhisperSeg 在场景内生成短语音 frame，`litagin/anime-whisper` 出文本，默认 `vad_only` 按 frame 原生时间一帧一条输出。这样可以避开 anime 文本走 forced aligner 时出现的碎片化/坍缩，也避免我们旧的句末标点硬拆分把 WJ-style frame 再切碎，同时继续使用本项目的翻译、去重叠和 ASS 生成链。Qwen 仍可用 `--asr qwen` 作为更干净的对比线；anime 也可以用 `--anime-timestamp-mode aligner_fallback` 或 `aligner_only` 强制走对齐器做诊断。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
 
 用 `--asr whisper` 时，第 2 步走 Whisper 滑窗主识别，`--gap-fill` 再加一个音频补漏阶段捞回更多轻声/漏识别语音（更慢，也更容易引入幻觉或听错的字幕，重要输出建议复查质量报告和补漏元数据）。
 
@@ -320,7 +320,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 1. semantic scene 先把整段音频切成 12-48 秒的声学场景。
 2. WhisperSeg 在每个场景内检测并组合短语音 frame，anime 默认与 WJ 对齐：`max_group=5.0`、`chunk_threshold=0.5`、`max_speech=5.0`、`min_frame=0.1`。
 3. `litagin/anime-whisper` 逐 frame 识别文本，anime cleaner 清理省略号-only 和短重复伪迹。
-4. 默认 `vad_only` 定时把文本分布到检测到的语音区间上，避免 anime 文本走 Qwen forced aligner 时的坍缩/碎片化。
+4. 默认 `vad_only` 使用 frame-native 定时：每个非空 anime-whisper frame 输出一条字幕。这与 WhisperJAV anime 行为一致，避免 anime 文本走 Qwen forced aligner 时的坍缩/碎片化，也避免句末标点层面的过度拆分。
 
 需要对比时可以用 `--asr qwen`；也可用 `--anime-scene-backend none` 关闭 semantic scene 做 A/B。
 
@@ -330,7 +330,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 2. 原子 WhisperSeg frame 默认会先合并成更长的 Qwen 识别窗口：`--qwen-whisperseg-context-mode merge`、`merge_gap=2.0`、软 `target=18`、`after_target_gap=0.2`、`hard_max=35`、固定前后各 `2.0` 秒 pad。这样让 Qwen 听到更多上下文，但 cue 归属仍锁在原始语音 frame 上。
 3. 合并后的切片分批送入 `Qwen3-ASR-1.7B`；生成参数默认也是 WJ 风格：`max_new_tokens=4096`、`repetition_penalty=1.1`、动态预算 `20` tokens/音频秒。
 4. 模型带标点的 `result.text` 作为权威文本内容；单独的 `Qwen3-ForcedAligner-0.6B` 给出逐字时间。句子按标点和较大的内部时间间隙切分，再由对齐器定时。
-5. 如果 forced aligner 把一个切片的词压到异常时间段里，Qwen 线会先用 VAD-guided fallback recovery 修复，再进入字幕塑形。semantic scene 和 step-down retry 都已实现但默认关闭；这是 Qwen 消融后的当前选择。
+5. Qwen 默认开启 semantic scene，让 WhisperSeg frame 不跨声学场景边界。如果 forced aligner 把一个切片的词压到异常时间段里，Qwen 线会先用 VAD-guided fallback recovery 修复，再进入字幕塑形。step-down retry 已实现但默认关闭。
 
 Qwen A/B 对比时，如果想关掉 VAD 切片、回退到固定 30 秒均匀平铺，用
 `--asr qwen --no-qwen-vad-chunks`；如果想对比旧的滑窗 VAD 路径，用
@@ -383,11 +383,12 @@ GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，�
 - Anime semantic scene 预切分：开启（`--anime-scene-backend semantic`；用 `--anime-scene-backend none` 关闭）
 - Anime 定时模式：`vad_only`（`--anime-timestamp-mode vad_only`；aligner 诊断模式需要 `models/Qwen3-ForcedAligner-0.6B`）
 - Anime WhisperSeg frame 默认值：`max_group=5.0`、`chunk_threshold=0.5`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`
+- Anime semantic scene ASR pad：`--anime-scene-asr-pad-seconds 0.35`，匹配 WhisperJAV 的 padded `asr_processing` scene window，但最终时间轴仍使用 frame 时间
 - Anime 不使用 Qwen 的 WhisperSeg context `pad` / `merge` 路径。`vad_only` 定时没有 aligner ownership pass 来过滤邻近上下文，而且目前 anime 评估也没有显示需要这层额外上下文。
-- Anime cleaner：开启，清理省略号-only 片段和短重复伪迹；之后仍走共享字幕塑形，删除重叠和闪字幕
+- Anime cleaner：开启，清理省略号-only 片段和短重复伪迹；默认 `vad_only` 保持一帧一条，再由共享最终清理删除重叠和闪字幕
 - Qwen 对比线：用 `--asr qwen` 开启。默认使用 WhisperSeg frame（`--qwen-vad-backend whisperseg`），Qwen 参数为 `max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`；用 `--asr qwen --qwen-vad-backend current` 对比旧滑窗 VAD 路径，或用 `--asr qwen --no-qwen-vad-chunks` 做固定 30 秒平铺。
 - Qwen 长上下文识别：默认开启。原子 WhisperSeg frame 会以 `--qwen-whisperseg-context-mode merge` 合并，默认 `--qwen-whisperseg-context-merge-gap 2.0`、软 `--qwen-whisperseg-context-target-seconds 18`、`--qwen-whisperseg-context-after-target-gap 0.2`、`--qwen-whisperseg-context-hard-max-seconds 35`，并固定前后各补 `--qwen-whisperseg-context-pre-seconds 2.0` / `--qwen-whisperseg-context-post-seconds 2.0` 秒。
-- Qwen 定时与生成：默认 `--qwen-timestamp-mode aligner_fallback`、`--qwen-max-new-tokens 4096`、`--qwen-repetition-penalty 1.1`、`--qwen-max-tokens-per-second 20.0`。semantic scene 可用 `--qwen-scene-backend semantic` 打开，但默认关闭；step-down retry 已在共享子脚本实现，但不是顶层默认路径。
+- Qwen 定时与生成：默认 `--qwen-timestamp-mode aligner_fallback`、`--qwen-scene-backend semantic`、`--qwen-scene-asr-pad-seconds 0.35`、`--qwen-max-new-tokens 4096`、`--qwen-repetition-penalty 1.1`、`--qwen-max-tokens-per-second 20.0`。step-down retry 已在共享子脚本实现，但不是顶层默认路径。
 - Qwen `vad_only` 定时只作为诊断模式使用。显式设置 `--qwen-timestamp-mode vad_only` 时，必须同时设置 `--qwen-whisperseg-context-mode none`；纯 VAD 定时无法过滤从前后 pad/merge 上下文里听到的邻近文本，所以管线会拒绝这种组合。
 - Qwen 空窗补捞：默认关闭（`--qwen-recapture-min-gap 0`），且只适用于 `--asr qwen`。需要高覆盖率的 Qwen 对比时，可设为正数，例如 `--qwen-recapture-min-gap 10`：主识别结束后，对满足长度的字幕空窗用更灵敏的 `--qwen-recapture-vad-threshold 0.05` 再做一遍 VAD；检出语音合计不少于 `--qwen-recapture-min-speech 2` 秒的空窗会趁模型还在显存里二次识别。
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--asr qwen --qwen-filter-hallucinations` 开启）

@@ -112,9 +112,13 @@ class QwenAsrConfig(BaseAsrConfig):
     # while cue ownership and VAD fallback timing stay tied to the original owned
     # speech regions. Past the soft target the merge tolerance tightens to the
     # after-target gap so groups end at a natural pause; the hard cap only bounds
-    # genuinely gap-free speech (measured max continuous run ~33.7s on DLDSS-492, so
+    # genuinely gap-free speech (measured max continuous run ~33.7s on the primary clip, so
     # 35s eliminates mid-speech hard cuts without over-long windows).
-    # Semantic scene and step-down remain selectable but off by default.
+    # Semantic scene is ON by default (Stage 6.6): on the primary clip it cut qwen's
+    # cross-reference misrecognition rate ~10% -> 5.5% (near WJ-qwen's 4.7%) and fixed
+    # tail hallucinations like 頼む->タロウ, because WhisperSeg frames never cross an
+    # acoustic-scene boundary. It costs some weak-speech recall (Stage 6.4 measured
+    # ~6pt) but the recognition-accuracy win dominates. Step-down stays off by default.
     vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="qwen speech segmentation backend")
     whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
     whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
@@ -139,9 +143,10 @@ class QwenAsrConfig(BaseAsrConfig):
     whisperseg_context_min_pad_seconds: float = arg_field(1.0, help="Minimum dynamic Qwen WhisperSeg context padding")
     whisperseg_context_max_pad_seconds: float = arg_field(3.0, help="Maximum dynamic Qwen WhisperSeg context padding")
 
-    scene_backend: str = arg_field("none", choices=("none", "semantic"), help="qwen scene pre-segmentation")
+    scene_backend: str = arg_field("semantic", choices=("none", "semantic"), help="qwen scene pre-segmentation")
     scene_min_seconds: float = arg_field(12.0, help="semantic scene min duration (s)")
     scene_max_seconds: float = arg_field(48.0, help="semantic scene max duration (s)")
+    scene_asr_pad_seconds: float = arg_field(0.35, help="Pad semantic scene audio before ASR/VAD, matching WJ asr_processing windows")
     # Step-down retry (WJ qwen default ON). On sentinel-detected collapse of a job, re-frame
     # that clip with a tighter WhisperSeg max_group and re-run transcribe, replacing the
     # collapsed job's cues. WJ ships fallback == main max_group (6.0), which does not tighten
@@ -178,6 +183,7 @@ class AnimeAsrConfig(BaseAsrConfig):
     scene_backend: str = arg_field("semantic", choices=("none", "semantic"), help="anime scene pre-segmentation")
     scene_min_seconds: float = arg_field(12.0, help="semantic scene min duration (s)")
     scene_max_seconds: float = arg_field(48.0, help="semantic scene max duration (s)")
+    scene_asr_pad_seconds: float = arg_field(0.35, help="Pad semantic scene audio before ASR/VAD, matching WJ asr_processing windows")
     scene_clustering_threshold: float = arg_field(18.0, help="semantic agglomerative distance threshold")
 
 

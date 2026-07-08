@@ -1,6 +1,6 @@
 # WJ-style anime ASR migration plan
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
 ## Goal
 
@@ -14,17 +14,18 @@ The goal is not to copy WhisperJAV's final subtitles wholesale. The goal is to b
 The top-level default project pipeline is now `--asr anime`, which selects
 `--text-backend anime` in the shared Qwen/anime sub-script. The sub-script's raw
 `QwenAsrConfig.text_backend` default remains `qwen` so direct script use stays
-explicit. After Stage 6.3, qwen's own default framing is WhisperSeg + aligner
-fallback recovery + WJ-style generation knobs, with semantic scene splitting still
-opt-in for qwen. The normal video pipeline now uses the WJ-style anime path:
+explicit. After Stage 6.6, qwen's own default framing is WhisperSeg + semantic scene +
+merged long-context recognition + aligner fallback recovery + WJ-style generation knobs.
+The normal video pipeline now uses the WJ-style anime path:
 
 ```text
 audio
-  -> WhisperSeg grouped jobs
+  -> semantic scene with padded ASR/VAD windows
+  -> WhisperSeg grouped frames
   -> anime-whisper text
   -> anime text cleaner
-  -> vad_only pseudo timing
-  -> chunk_entries / finalize_qwen_entries
+  -> vad_only frame-native timing
+  -> final overlap/filler hygiene
   -> translate / ASS
 ```
 
@@ -46,8 +47,8 @@ Semantic scene is implemented and enabled by default for the anime path:
 semantic scene
   -> WhisperSeg per scene
   -> anime-whisper text
-  -> vad_only pseudo timing
-  -> existing subtitle shaping chain
+  -> vad_only frame-native timing
+  -> existing final hygiene chain
 ```
 
 ## Implemented
@@ -84,7 +85,7 @@ Implemented:
 The anime backend uses a two-phase structure:
 
 1. Generate all clip texts with anime-whisper.
-2. Either build VAD-only pseudo timing, or load the standalone Qwen aligner and align all non-empty clips.
+2. Either keep VAD-only frame-native timing, or load the standalone Qwen aligner and align all non-empty clips.
 
 The Qwen backend still uses the existing `Qwen3ASRModel.from_pretrained(..., forced_aligner=...)` path.
 
@@ -149,16 +150,43 @@ Current anime default is:
 scene_backend = semantic
 scene_min_seconds = 12.0
 scene_max_seconds = 48.0
+scene_asr_pad_seconds = 0.35
 ```
 
-This matches the WhisperJAV ChronosJAV anime outer-shell default. Semantic scene is still
-a normal CLI knob and can be disabled from the top-level pipeline with
+This matches the WhisperJAV ChronosJAV anime outer-shell default. The `scene_asr_pad_seconds`
+value mirrors WhisperJAV's padded `asr_processing` scene windows: scene boundaries remain the
+timeline reference, while ASR/VAD sees a small overlap around scene edges. Semantic scene is
+still a normal CLI knob and can be disabled from the top-level pipeline with
 `--anime-scene-backend none` (or `--scene-backend none` when calling the sub-script
 directly) for A/B testing.
 
 ## Current Evidence
 
 All measurements below are from the same primary long-form evaluation clip using the same source audio and Japanese SRT outputs. The similarity score is a rough diagnostic against WhisperJAV anime output; it is useful for relative changes, but it can underrate semantically equivalent wording.
+
+### Latest anime parity check (2026-07-08)
+
+After matching WhisperJAV's padded semantic scene `asr_processing` windows and changing
+anime `vad_only` reconstruction to frame-native output, the default anime line is now close
+to WhisperJAV anime on the primary long-form clip:
+
+```text
+ours anime ASS        712 dialogue cues, 0 overlaps
+WhisperJAV anime ASS  737 dialogue cues, 41 overlaps
+Japanese line sequence similarity: 0.9648
+Exact Japanese matches after sequence alignment: 699 lines
+Matched-line start time within 0.02s: 694 / 699
+```
+
+The remaining cue-count gap is mostly short filler/moan/interjection cues that WhisperJAV
+keeps and this project drops through final hygiene, plus overlap resolution: WhisperJAV keeps
+some overlapping cue times, while this project de-overlaps final output. The largest remaining
+text differences are concentrated in low-clarity breathy/moan regions, not in the previous
+large-scale anime framing or sentence-splitting mismatch.
+
+Current verdict: the default anime line is good enough to treat as the stable main line for
+JAV/anime-style material. Further work should be incremental and evidence-driven; the next
+main optimization effort moves back to Qwen.
 
 ### Timing modes
 
@@ -604,7 +632,7 @@ Validation for the split:
   `hard_max` despite a mergeable gap = mid-speech truncation) and `soft_breaks` counter are
   now printed on the merge log line.
 
-  Framing sweep on DLDSS-492 (the densest primary clip; measured directly from
+  Framing sweep on the densest primary long-form clip (measured directly from
   `build_whisperseg_jobs`, no model needed):
 
   | change | jobs | hard_cuts | note |
@@ -623,7 +651,8 @@ Validation for the split:
   identical to 35 here. Selected default: `merge_gap=2.0 / target=18 / after_target_gap=0.2 /
   hard_max=35 / fixed pre/post=2.0`.
 
-  Full-pipeline re-run on DLDSS-492 with the selected default (`--asr qwen`, galtransl):
+  Full-pipeline re-run on the same primary long-form clip with the selected default
+  (`--asr qwen`, galtransl):
   887 cues, 9 short (<0.5s), **0 overlaps, 0 same-start piles, 0 cues >8s**, `hard_cuts=0` —
   the framing change lands clean on the timeline.
 
@@ -678,7 +707,7 @@ timing than WJ-qwen itself, at ~2pt lower raw recall (see Stage 6.4).
 
 ### Known limitation: name/word disambiguation at the ASR→translation boundary
 
-Example (DLDSS-492 @ 3:22): audio「まこと？」→ qwen ASR faithfully emits kana「まこと？」→
+Example from the primary long-form clip: audio「まこと？」→ qwen ASR faithfully emits kana「まこと？」→
 galtransl renders it「真的吗?」. This is **not an ASR error** — qwen heard the sound
 correctly; 「まこと」is genuinely ambiguous (the name 誠 / Makoto vs 真 "really/truly"), and
 the name 誠 never appears as kanji anywhere in the film, so neither stage can anchor it.
@@ -702,30 +731,46 @@ limitation rather than a translation-architecture change.
 
 ## Stage 7: Anime line follow-up
 
-Now that the Qwen line has long-context recognition with short-anchor timing, return to
-the default anime line and optimize it without changing the project default prematurely.
-The goal is to improve anime's remaining weak spots while preserving why it became the
-default: weak-speech recall and low drift/collapse risk.
+Status: completed enough to keep anime as the default line.
+
+The Stage 7 pass found that the main remaining gap to WhisperJAV anime was not the
+anime-whisper model itself. It came from two project-side mismatches:
+
+1. Semantic scenes were cut at the same boundaries, but WhisperJAV feeds ASR/VAD with a
+   padded `asr_processing` scene window. This project now mirrors that with
+   `scene_asr_pad_seconds=0.35`.
+2. Anime `vad_only` output was still entering the aligned-stream `chunk_entries()` splitter,
+   so one WhisperJAV frame could be split again at sentence punctuation or character limits.
+   The default anime `vad_only` path now uses frame-native reconstruction: one content frame
+   becomes one subtitle cue, followed only by final hygiene.
+
+Outcome: the default anime ASS now matches WhisperJAV anime closely on the primary long-form
+clip while retaining project output hygiene (no final overlaps). Keep forced-aligner modes
+diagnostic only unless new evidence shows a net gain over `vad_only`.
+
+## Stage 8: Qwen line follow-up
+
+Qwen is now the next optimization target. Its current default keeps the Stage 6.5
+long-context recognition window and turns semantic scene on by default because scene
+boundaries reduced some cross-scene recognition errors. The remaining issue is content
+quality: Qwen's drift/collapse behavior is much better than the old line, but recognition
+can still degrade when context is too short or scene/VAD boundaries cut semantically
+connected speech.
 
 Planned checks:
 
-1. Re-run anime against the current Qwen default on the same anonymized long-form
-   evaluation clips and a few short clips. Compare manual ASS review with automatic
-   metrics; do not rely on entry count alone because our subtitle shaping is intentionally
-   finer than WhisperJAV's long-cue output.
-2. Audit anime WhisperSeg/semantic defaults against the current WJ anime path:
-   scene on/off, scene 12-48 boundaries, `max_group=5.0`, `chunk_threshold=0.5`,
-   `max_speech=5.0`, `threshold=0.35`, and `min_frame=0.1`.
-3. Investigate remaining anime errors by category:
-   weak-speech misses, local phrase/name mishears, overlong cues, occasional frame
-   overlaps, and filler/interjection over-cleaning.
-4. Keep forced-aligner modes diagnostic only unless evidence shows a net gain over
-   `vad_only`; prior evidence shows aligner timing fragments anime text.
-5. Prefer WJ-derived changes first. Only add new project-specific mechanisms after the WJ
-   parity checks fail to explain the issue.
+1. Re-run the current Qwen default against the same anonymized evaluation set used for anime
+   parity. Compare against both the old Qwen baseline and the stable anime default.
+2. Separate failures by cause: scene boundary, WhisperSeg frame boundary, context merge
+   length, forced-aligner recovery, and translation-only ambiguity.
+3. Keep semantic scene on while testing whether Qwen needs different merge/pad defaults
+   under scene segmentation.
+4. Revisit optional recapture only after the main Qwen recognition window is stable.
+5. Prefer WJ-derived Qwen mechanisms first; add new project-specific logic only when WJ-like
+   changes cannot explain the miss.
 
-Success criteria: improve anime text accuracy or cue readability without regressing the
-current default's low-overlap, low-drift behavior.
+Success criteria: improve Qwen text accuracy without regressing the current low-overlap,
+low-collapse timing behavior.
 
 ### Files (Stage 6.1)
 
@@ -754,19 +799,18 @@ current default's low-overlap, low-drift behavior.
 
 ## Validation
 
-Current repository validation after the anime/WhisperSeg/semantic/config-split and
-Stage 6.5 qwen context-default changes:
+Current repository validation after the anime frame-native parity update and Qwen semantic
+default change:
 
 ```bash
-python -m pytest tests -q
-python -m compileall -q scripts tests
+pytest -q tests/test_transcribe_qwen.py tests/test_cli_config.py tests/test_pipeline.py
 git diff --check
 ```
 
 Latest observed result:
 
 ```text
-280 passed
+131 passed
 ```
 
 ## Key Files
