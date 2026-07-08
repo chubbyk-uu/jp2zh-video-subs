@@ -1,8 +1,14 @@
 import threading
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from video_to_zh_srt import output_path_for, run_pipeline, srt_cue_count, translation_is_complete
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_run_pipeline_processes_all_jobs_in_order():
@@ -171,6 +177,12 @@ def test_build_qwen_command_survives_unexposed_config_fields(tmp_path):
     assert cmd[cmd.index("--repetition-penalty") + 1] == "1.1"
     assert cmd[cmd.index("--max-tokens-per-second") + 1] == "20.0"
     assert cmd[cmd.index("--min-tokens-floor") + 1] == "256"
+    assert cmd[cmd.index("--whisperseg-context-mode") + 1] == "merge"
+    assert cmd[cmd.index("--whisperseg-context-merge-gap") + 1] == "2.0"
+    assert cmd[cmd.index("--whisperseg-context-target-seconds") + 1] == "18.0"
+    assert cmd[cmd.index("--whisperseg-context-hard-max-seconds") + 1] == "30.0"
+    assert cmd[cmd.index("--whisperseg-context-pre-seconds") + 1] == "2.0"
+    assert cmd[cmd.index("--whisperseg-context-post-seconds") + 1] == "2.0"
 
 
 def test_build_qwen_command_can_override_qwen_framing(tmp_path):
@@ -185,6 +197,14 @@ def test_build_qwen_command_can_override_qwen_framing(tmp_path):
         qwen_vad_backend="current",
         qwen_whisperseg_max_group=7.0,
         qwen_whisperseg_chunk_threshold=0.8,
+        qwen_whisperseg_context_mode="merge",
+        qwen_whisperseg_context_merge_gap=1.25,
+        qwen_whisperseg_context_target_seconds=18.0,
+        qwen_whisperseg_context_hard_max_seconds=36.0,
+        qwen_whisperseg_context_pad_mode="ratio",
+        qwen_whisperseg_context_pad_ratio=0.1,
+        qwen_whisperseg_context_min_pad_seconds=1.0,
+        qwen_whisperseg_context_max_pad_seconds=3.0,
         qwen_scene_backend="semantic",
         qwen_scene_max_seconds=36.0,
     )
@@ -194,6 +214,14 @@ def test_build_qwen_command_can_override_qwen_framing(tmp_path):
     assert cmd[cmd.index("--vad-backend") + 1] == "current"
     assert cmd[cmd.index("--whisperseg-max-group") + 1] == "7.0"
     assert cmd[cmd.index("--whisperseg-chunk-threshold") + 1] == "0.8"
+    assert cmd[cmd.index("--whisperseg-context-mode") + 1] == "merge"
+    assert cmd[cmd.index("--whisperseg-context-merge-gap") + 1] == "1.25"
+    assert cmd[cmd.index("--whisperseg-context-target-seconds") + 1] == "18.0"
+    assert cmd[cmd.index("--whisperseg-context-hard-max-seconds") + 1] == "36.0"
+    assert cmd[cmd.index("--whisperseg-context-pad-mode") + 1] == "ratio"
+    assert cmd[cmd.index("--whisperseg-context-pad-ratio") + 1] == "0.1"
+    assert cmd[cmd.index("--whisperseg-context-min-pad-seconds") + 1] == "1.0"
+    assert cmd[cmd.index("--whisperseg-context-max-pad-seconds") + 1] == "3.0"
     assert cmd[cmd.index("--scene-backend") + 1] == "semantic"
     assert cmd[cmd.index("--scene-max-seconds") + 1] == "36.0"
 
@@ -316,6 +344,30 @@ def test_build_quality_command_can_override_quality_vad_backend(tmp_path):
     )
 
     assert cmd[cmd.index("--vad-backend") + 1] == "metadata"
+
+
+def test_quality_report_is_opt_in_by_default():
+    def printed_config(*extra: str) -> str:
+        result = subprocess.run(
+            [sys.executable, "scripts/video_to_zh_srt.py", "sample.mp4", "--print-config", *extra],
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout
+
+    default = printed_config()
+    assert "quality_report = false" in default
+    assert "skip_quality_report = false" in default
+
+    enabled = printed_config("--quality-report")
+    assert "quality_report = true" in enabled
+    assert "skip_quality_report = false" in enabled
+
+    legacy_skip = printed_config("--skip-quality-report")
+    assert "quality_report = false" in legacy_skip
+    assert "skip_quality_report = true" in legacy_skip
 
 
 def test_build_qwen_command_asr_anime_can_select_aligner_mode(tmp_path):

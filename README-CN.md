@@ -28,7 +28,7 @@
 2. 用所选识别后端（默认 `anime`）识别日语并生成日语 SRT。
 3. 用所选翻译后端（默认 `galtransl`）把日语 SRT 翻译成简体中文字幕 SRT。
 4. 默认生成中日双语 ASS（中文在上、日文在下），并复制到输入视频同目录。
-5. 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
+5. 调参/测试时可加 `--quality-report` 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
 
 默认的 anime 后端采用 WJ-style 路线：semantic scene 先切 12-48 秒场景，WhisperSeg 在场景内生成短语音 frame，`litagin/anime-whisper` 出文本，默认 `vad_only` 把文本分布到语音区间上。这样可以避开 anime 文本走 forced aligner 时出现的碎片化/坍缩，同时继续使用本项目的字幕塑形、翻译、去重叠和 ASS 生成链。Qwen 仍可用 `--asr qwen` 作为更干净的对比线；anime 也可以用 `--anime-timestamp-mode aligner_fallback` 或 `aligner_only` 强制走对齐器做诊断。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
 
@@ -75,11 +75,11 @@
 已验证环境：
 
 - OS：Ubuntu 24.04 / Linux x86_64
-- Python：3.11
+- Python：3.11 或 3.12（当前测试主机使用 Python 3.12）
 - FFmpeg：6.1.1
 - `qwen-asr`：0.0.6（Qwen 识别和可选 forced-aligner 诊断；会带入 `torch`、`transformers`、`librosa`、`soundfile`）
 - `torch`：2.10，CUDA 12.8（`cu128`），在 RTX 50 系（Blackwell）显卡上验证
-- `faster-whisper`：1.2.1（旧版识别后端；质量报告里的音频/VAD 覆盖率分析也会使用它）
+- `faster-whisper`：1.2.1（旧版识别后端；质量报告在 `--quality-vad-backend silero` 或 `auto` 选中它时也会使用）
 - `llama-cpp-python`：0.3.23
 - `huggingface-hub`：0.36.2
 
@@ -96,10 +96,10 @@
 
 ## 安装依赖
 
-创建并激活 Python 3.11 虚拟环境：
+创建并激活 Python 3.11 或 3.12 虚拟环境：
 
 ```bash
-python3.11 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -r requirements.txt
@@ -121,15 +121,18 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 
 ## 下载模型
 
-默认模型：
+一键默认流程需要的模型：
 
 - Anime ASR 文本：[`litagin/anime-whisper`](https://huggingface.co/litagin/anime-whisper)
 - Anime 弱语音 VAD：[`TransWithAI/Whisper-Vad-EncDec-ASMR-onnx`](https://huggingface.co/TransWithAI/Whisper-Vad-EncDec-ASMR-onnx)
-- Qwen 对比线：[`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
-- 可选 Qwen/anime 对齐诊断：[`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
 - 翻译模型：[`SakuraLLM/Sakura-GalTransl-7B-v3.7`](https://huggingface.co/SakuraLLM/Sakura-GalTransl-7B-v3.7)
 
-下载到脚本默认目录：
+可选对比/诊断模型：
+
+- Qwen 对比线：[`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
+- Qwen forced aligner：[`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)，`--asr qwen` 和 anime 的 `aligner_fallback` / `aligner_only` 诊断模式需要；默认 anime `vad_only` 不需要
+
+`hf` 命令由 `requirements.txt` 里的 `huggingface-hub` 提供。下载到脚本默认目录：
 
 ```bash
 mkdir -p models
@@ -228,7 +231,8 @@ python scripts/video_to_zh_srt.py path/to/input.mp4
 ```
 
 这条命令就是默认主线：`anime` 识别（anime-whisper + WhisperSeg + semantic scene +
-`vad_only` 定时）、`galtransl` 翻译、生成中文 SRT、双语 ASS 和质量报告。常用变体：
+`vad_only` 定时）、`galtransl` 翻译、生成中文 SRT 和双语 ASS。调参/测试时加
+`--quality-report` 才生成质量报告。常用变体：
 
 ```bash
 # 默认识别 + 默认翻译（Anime + GalTransl）
@@ -299,7 +303,7 @@ lead_out_seconds = 0.8
 min_display_seconds = 1.5
 ```
 
-TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒绝。`input`/`output` 属于每次运行的 IO 参数，不会出现在 `--print-config` 的输出里，输入路径始终在命令行传入。命令行传入的普通取值参数会覆盖 TOML。`gap_fill = true`、`resume = true` 这类单向开关一旦在 TOML 里设为 `true`，同一条命令无法用 `--no-*` 关掉；需要修改 TOML，或为不同模式准备不同配置文件。
+TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒绝。`input`/`output` 属于每次运行的 IO 参数，不会出现在 `--print-config` 的输出里，输入路径始终在命令行传入。命令行传入的普通取值参数会覆盖 TOML。`gap_fill = true`、`quality_report = true`、`resume = true` 这类单向开关一旦在 TOML 里设为 `true`，同一条命令无法用 `--no-*` 关掉；需要修改 TOML，或为不同模式准备不同配置文件。
 
 ## 识别后端：Anime vs Qwen vs Whisper
 
@@ -323,9 +327,10 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # 旧版 Whi
 ### Qwen 主线的工作方式
 
 1. Qwen 默认用 WhisperSeg 做 frame（`--qwen-vad-backend whisperseg`），使用 WJ qwen 风格参数：`max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`。
-2. 每个语音 frame 变成一个 Qwen 切片，分批送入 `Qwen3-ASR-1.7B`；生成参数默认也是 WJ 风格：`max_new_tokens=4096`、`repetition_penalty=1.1`、动态预算 `20` tokens/音频秒。
-3. 模型带标点的 `result.text` 作为权威文本内容；单独的 `Qwen3-ForcedAligner-0.6B` 给出逐字时间。句子按标点和较大的内部时间间隙切分，再由对齐器定时。
-4. 如果 forced aligner 把一个切片的词压到异常时间段里，Qwen 线会先用 VAD-guided fallback recovery 修复，再进入字幕塑形。semantic scene 和 step-down retry 都已实现但默认关闭；这是 DLDSS-492 ablation 后的当前选择。
+2. 原子 WhisperSeg frame 默认会先合并成更长的 Qwen 识别窗口：`--qwen-whisperseg-context-mode merge`、`merge_gap=2.0`、软 `target=18`、`hard_max=30`、固定前后各 `2.0` 秒 pad。这样让 Qwen 听到更多上下文，但 cue 归属仍锁在原始语音 frame 上。
+3. 合并后的切片分批送入 `Qwen3-ASR-1.7B`；生成参数默认也是 WJ 风格：`max_new_tokens=4096`、`repetition_penalty=1.1`、动态预算 `20` tokens/音频秒。
+4. 模型带标点的 `result.text` 作为权威文本内容；单独的 `Qwen3-ForcedAligner-0.6B` 给出逐字时间。句子按标点和较大的内部时间间隙切分，再由对齐器定时。
+5. 如果 forced aligner 把一个切片的词压到异常时间段里，Qwen 线会先用 VAD-guided fallback recovery 修复，再进入字幕塑形。semantic scene 和 step-down retry 都已实现但默认关闭；这是 Qwen 消融后的当前选择。
 
 Qwen A/B 对比时，如果想关掉 VAD 切片、回退到固定 30 秒均匀平铺，用
 `--asr qwen --no-qwen-vad-chunks`；如果想对比旧的滑窗 VAD 路径，用
@@ -379,7 +384,8 @@ GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，�
 - Anime 定时模式：`vad_only`（`--anime-timestamp-mode vad_only`；aligner 诊断模式需要 `models/Qwen3-ForcedAligner-0.6B`）
 - Anime WhisperSeg frame 默认值：`max_group=5.0`、`chunk_threshold=0.5`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`
 - Anime cleaner：开启，清理省略号-only 片段和短重复伪迹；之后仍走共享字幕塑形，删除重叠和闪字幕
-- Qwen 对比线：用 `--asr qwen` 开启。现在默认使用 WhisperSeg frame（`--qwen-vad-backend whisperseg`），Qwen 参数为 `max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`；用 `--asr qwen --qwen-vad-backend current` 对比旧滑窗 VAD 路径，或用 `--asr qwen --no-qwen-vad-chunks` 做固定 30 秒平铺。
+- Qwen 对比线：用 `--asr qwen` 开启。默认使用 WhisperSeg frame（`--qwen-vad-backend whisperseg`），Qwen 参数为 `max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`；用 `--asr qwen --qwen-vad-backend current` 对比旧滑窗 VAD 路径，或用 `--asr qwen --no-qwen-vad-chunks` 做固定 30 秒平铺。
+- Qwen 长上下文识别：默认开启。原子 WhisperSeg frame 会以 `--qwen-whisperseg-context-mode merge` 合并，默认 `--qwen-whisperseg-context-merge-gap 2.0`、软 `--qwen-whisperseg-context-target-seconds 18`、`--qwen-whisperseg-context-hard-max-seconds 30`，并固定前后各补 `--qwen-whisperseg-context-pre-seconds 2.0` / `--qwen-whisperseg-context-post-seconds 2.0` 秒。
 - Qwen 定时与生成：默认 `--qwen-timestamp-mode aligner_fallback`、`--qwen-max-new-tokens 4096`、`--qwen-repetition-penalty 1.1`、`--qwen-max-tokens-per-second 20.0`。semantic scene 可用 `--qwen-scene-backend semantic` 打开，但默认关闭；step-down retry 已在共享子脚本实现，但不是顶层默认路径。
 - Qwen 空窗补捞：默认关闭（`--qwen-recapture-min-gap 0`），且只适用于 `--asr qwen`。需要高覆盖率的 Qwen 对比时，可设为正数，例如 `--qwen-recapture-min-gap 10`：主识别结束后，对满足长度的字幕空窗用更灵敏的 `--qwen-recapture-vad-threshold 0.05` 再做一遍 VAD；检出语音合计不少于 `--qwen-recapture-min-speech 2` 秒的空窗会趁模型还在显存里二次识别。
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--asr qwen --qwen-filter-hallucinations` 开启）
@@ -392,13 +398,24 @@ GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，�
 - 批量翻译（仅 GalTransl，`--translate-batch-size`，默认 8）：把至多 N 条连续字幕（不跨越 >10 秒间隔）作为一轮一起翻译，让被切成多条 cue 的整句能被完整看到，从而纠正省略主语/人称错误——例如跨多条 cue 的第三人称旁白此前会被误译成第一人称。它依赖 GalTransl「不要擅自增减换行」的契约保证输出与输入逐行 1:1；行数不匹配会先拆成更小的严格批量重试，仍不可靠的输出槽位才逐条回退，不会丢掉同块里已经可靠的译文。设为 `0` 或 `1` 关闭批量。
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
 - Whisper 式二阶段补漏：anime 和 Qwen 后端不使用 `--gap-fill`；Qwen 自己的空窗补捞由 `--asr qwen --qwen-recapture-min-gap > 0` 开启。需要对比时，用 `--asr qwen --no-qwen-vad-chunks` 做固定平铺 Qwen 识别，或用 `--asr whisper --gap-fill` 走旧版补漏。
-- 质量报告：默认开启
+- 质量报告：生产字幕默认关闭；调参/测试时用 `--quality-report` 开启
 - 抽取音频：默认保留 WAV，方便复查和调参
 
 使用 `--asr qwen` 时，Qwen 默认只跑 WhisperSeg-framed 主识别；开启 `--qwen-recapture-min-gap` 后，才会在主识别之后对字幕空窗做一次更灵敏的 VAD+ASR 补捞。用
 `--qwen-whisperseg-threshold`、`--qwen-whisperseg-max-group`、`--qwen-whisperseg-chunk-threshold`
 在召回和切片数之间权衡；只有想对比旧滑窗 VAD 路径时才使用
 `--asr qwen --qwen-vad-backend current` 以及 `--qwen-vad-threshold` 等旧参数。需要不依赖语音簇的兜底对比时，用 `--asr qwen --no-qwen-vad-chunks`。
+
+Qwen 长上下文恢复现在是 Qwen 默认路径，用于让 Qwen 听到更多上下文，同时保留当前时间轴保护。需要回到一帧一切片时，用
+`--qwen-whisperseg-context-mode none`；只想补前后音频但不合并 frame 时，用
+`--qwen-whisperseg-context-mode pad`；需要调相邻 frame 合并时，用
+`--qwen-whisperseg-context-mode merge` 配合
+`--qwen-whisperseg-context-target-seconds` / `--qwen-whisperseg-context-merge-gap`。
+`target-seconds` 是软目标：达到目标后不会在短间隔链中硬切，而是继续等到下一个大于 `merge-gap` 的自然断点；真正的安全上限由
+`--qwen-whisperseg-context-hard-max-seconds` 控制。前后补音频参数在 `merge`
+模式下同样生效；需要动态补音频实验时，使用
+`--qwen-whisperseg-context-pad-mode ratio`，再用
+`--qwen-whisperseg-context-pad-ratio` 和 min/max pad 限制范围。
 
 ### Whisper 后端默认值（`--asr whisper`）
 
@@ -456,8 +473,8 @@ Whisper 窗口内以免被截断。`--main-local-vad-dry-run` 可只打印选区
 - `work/input/input.wav`：抽取出来的 16 kHz 单声道音频。
 - `work/input/input.ja.srt`：主识别日语字幕，默认也是翻译输入。
 - `work/input/pipeline.log`：完整流水线日志，记录每个子进程的时间戳、stdout 和 stderr。追加模式，终端断连或系统重启也不会丢。
-- `work/input/input.quality.txt`：质量报告。
-- `work/metrics.jsonl`：每处理一个视频追加一行 JSON 关键质量指标（条数、VAD 覆盖率、假名残留、相邻重复、补捞统计）。跨视频跨运行共用一个文件，方便对比调参前后的变化。
+- `work/input/input.quality.txt`：质量报告，仅在加 `--quality-report` 时生成。
+- `work/metrics.jsonl`：仅在加 `--quality-report` 时，每处理一个视频追加一行 JSON 关键质量指标（条数、VAD 覆盖率、假名残留、相邻重复、补捞统计）。跨视频跨运行共用一个文件，方便对比调参前后的变化。
 - `outputs/input.zh.srt`：最终中文字幕。
 - `path/to/input.zh.ass`：拷贝到输入视频同目录的双语 ASS。双语输出默认开启，所以放到视频同目录的是 ASS 而**不是** SRT（中文 SRT 仍保留在 `outputs/`）。加 `--no-bilingual` 时，改为把中文 SRT 拷到视频同目录。
 
@@ -541,11 +558,13 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
 
 ### 质量报告、音频和续跑
 
-不生成质量报告：
+为调参/测试生成质量报告：
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --skip-quality-report
+python scripts/video_to_zh_srt.py path/to/input.mp4 --quality-report
 ```
+
+质量报告的音频覆盖率检查可以使用 ASR metadata、WhisperSeg 或 Silero/faster-whisper VAD。一键 anime 路径默认让质量报告使用 WhisperSeg，以匹配 anime 的切分方式；其他路径使用 `auto`。可以用 `--quality-vad-backend metadata`、`whisperseg`、`silero` 或 `auto` 显式指定。生产字幕通常不需要质量报告。`--skip-quality-report` 仅保留兼容性，因为未指定 `--quality-report` 时本来就不会生成报告。
 
 处理完成后删除抽取出来的 WAV：
 
@@ -560,8 +579,8 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --reuse-existing-audio
 ```
 
 从中断处续跑——跳过产物已存在且完整的阶段：转写（日语 SRT 存在且非空）、翻译（中文 SRT
-条数与源日语 SRT 一致）、音频抽取（WAV 存在且非空）。ASS 和质量报告始终重新生成（耗时极短，
-不占 GPU）。`--resume` 隐含 `--reuse-existing-audio`：
+条数与源日语 SRT 一致）、音频抽取（WAV 存在且非空）。ASS 始终重新生成（耗时极短，
+不占 GPU）；如果加了 `--quality-report`，质量报告也会重新生成。`--resume` 隐含 `--reuse-existing-audio`：
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/videos/ --bilingual --resume
@@ -623,11 +642,24 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --main-local-b
 
 ## 单步运行
 
-用共用 Qwen/anime 子脚本识别：
+用共用 Qwen/anime 子脚本跑默认 anime 识别：
 
 ```bash
 python scripts/transcribe_ja_srt_qwen.py work/input/input.wav \
   work/input/input.ja.srt \
+  --text-backend anime \
+  --text-model models/anime-whisper \
+  --timestamp-mode vad_only \
+  --vad-backend whisperseg \
+  --whisperseg-model models/whisperseg/model.onnx
+```
+
+或直接跑 Qwen 对比后端：
+
+```bash
+python scripts/transcribe_ja_srt_qwen.py work/input/input.wav \
+  work/input/input.ja.srt \
+  --text-backend qwen \
   --model models/Qwen3-ASR-1.7B \
   --forced-aligner models/Qwen3-ForcedAligner-0.6B
 ```
@@ -701,8 +733,7 @@ python scripts/quality_report.py \
   --output work/input/input.quality.txt
 ```
 
-无论使用哪个识别后端，质量报告中的音频覆盖率检查都使用 `faster-whisper` 的
-VAD 实现。只想生成识别、翻译和 ASS 时，可以用 `--skip-quality-report` 跳过质量报告。
+质量报告中的音频覆盖率检查可以使用 `--vad-backend metadata`、`whisperseg`、`silero` 或 `auto`。ASR 元数据里已有 speech regions 时用 `metadata`；要匹配 anime 主线时用 `whisperseg`；要使用旧版 faster-whisper VAD helper 时用 `silero`。
 
 如果已经运行过 `fill_ja_srt_gaps.py`，翻译、ASS 和质量报告都改用
 `work/input/input.filled.ja.srt`；质量报告可额外传入
@@ -833,5 +864,5 @@ Qwen 主线想覆盖更多语音，优先开启空窗补捞，例如 `--qwen-rec
 
 ## 后续改进
 
-- 梳理 Qwen `--qwen-context` 的推荐用法，给人名、术语、作品名和场景词提供更稳定的示例配置。
+- Qwen 长上下文工作完成后，回头复盘默认 anime 主线：对比 anime 与当前 Qwen 默认线，核对 WJ anime 参数一致性，在不牺牲时间轴干净度的前提下优化弱语音召回和可读性。
 - 继续改进 ASR 后处理，减少孤立符号、无意义短字幕、乱码和片尾噪声词。

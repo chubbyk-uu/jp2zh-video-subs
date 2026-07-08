@@ -870,6 +870,119 @@ def build_vad_jobs(audio, samplerate: int, duration: float, args: argparse.Names
     return jobs
 
 
+def _validate_whisperseg_context_args(args: argparse.Namespace) -> tuple[str, float, float, float, float, float, str, float, float, float]:
+    mode = getattr(args, "whisperseg_context_mode", "none")
+    if mode not in {"none", "pad", "merge"}:
+        raise SystemExit("--whisperseg-context-mode must be one of: none, pad, merge")
+    pre = float(getattr(args, "whisperseg_context_pre_seconds", 0.0))
+    post = float(getattr(args, "whisperseg_context_post_seconds", 0.0))
+    merge_gap = float(getattr(args, "whisperseg_context_merge_gap", 1.0))
+    target = float(getattr(args, "whisperseg_context_target_seconds", 18.0))
+    hard_max = float(getattr(args, "whisperseg_context_hard_max_seconds", 36.0))
+    pad_mode = getattr(args, "whisperseg_context_pad_mode", "fixed")
+    pad_ratio = float(getattr(args, "whisperseg_context_pad_ratio", 0.10))
+    min_pad = float(getattr(args, "whisperseg_context_min_pad_seconds", 1.0))
+    max_pad = float(getattr(args, "whisperseg_context_max_pad_seconds", 3.0))
+    if pre < 0 or post < 0:
+        raise SystemExit("--whisperseg-context-pre/post-seconds must be non-negative")
+    if merge_gap < 0:
+        raise SystemExit("--whisperseg-context-merge-gap must be non-negative")
+    if target <= 0:
+        raise SystemExit("--whisperseg-context-target-seconds must be positive")
+    if hard_max < target:
+        raise SystemExit("--whisperseg-context-hard-max-seconds must be >= --whisperseg-context-target-seconds")
+    if pad_mode not in {"fixed", "ratio"}:
+        raise SystemExit("--whisperseg-context-pad-mode must be one of: fixed, ratio")
+    if pad_ratio < 0:
+        raise SystemExit("--whisperseg-context-pad-ratio must be non-negative")
+    if min_pad < 0 or max_pad < 0:
+        raise SystemExit("--whisperseg-context-min/max-pad-seconds must be non-negative")
+    if max_pad < min_pad:
+        raise SystemExit("--whisperseg-context-max-pad-seconds must be >= --whisperseg-context-min-pad-seconds")
+    return mode, pre, post, merge_gap, target, hard_max, pad_mode, pad_ratio, min_pad, max_pad
+
+
+def _whisperseg_group_bounds(group) -> tuple[float, float]:
+    return float(group[0].start), float(group[-1].end)
+
+
+def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Namespace) -> list[ChunkJob]:
+    """Convert atomic WhisperSeg groups to Qwen recognition jobs.
+
+    Mode "none" preserves the Stage 6.4 behavior exactly: one short speech-pure
+    frame per job. The qwen-only context modes make Qwen hear more audio while keeping
+    cue ownership and fallback speech regions tied to the owned WhisperSeg speech rather
+    than to the extra context.
+    """
+    mode, pre, post, merge_gap, target, hard_max, pad_mode, pad_ratio, min_pad, max_pad = _validate_whisperseg_context_args(args)
+    atomic = [g for g in groups if g and (_whisperseg_group_bounds(g)[1] - _whisperseg_group_bounds(g)[0]) >= args.whisperseg_min_frame_seconds]
+    if not atomic:
+        return []
+
+    def context_padding(span: float) -> tuple[float, float]:
+        if mode == "none":
+            return 0.0, 0.0
+        if pad_mode == "fixed":
+            return pre, post
+        dynamic = min(max(span * pad_ratio, min_pad), max_pad)
+        return dynamic, dynamic
+
+    def make_job(component_groups: list, *, is_last: bool) -> ChunkJob:
+        owned_start = _whisperseg_group_bounds(component_groups[0])[0]
+        owned_end = _whisperseg_group_bounds(component_groups[-1])[1]
+        job_pre, job_post = context_padding(owned_end - owned_start)
+        audio_start = max(0.0, owned_start - job_pre)
+        audio_end = min(duration, owned_end + job_post)
+        keep_hi = float("inf") if is_last else owned_end
+        job = ChunkJob(audio_start, audio_end, owned_start, keep_hi)
+        job.speech = [
+            Interval(float(seg.start) - audio_start, float(seg.end) - audio_start)
+            for group in component_groups
+            for seg in group
+        ]
+        return job
+
+    if mode in {"none", "pad"}:
+        jobs = [make_job([g], is_last=(i == len(atomic) - 1)) for i, g in enumerate(atomic)]
+        if mode == "pad":
+            print(
+                f"WhisperSeg qwen context: mode=pad frames={len(atomic)} jobs={len(jobs)} "
+                f"pad_mode={pad_mode} pre={pre}s post={post}s pad_ratio={pad_ratio} "
+                f"min_pad={min_pad}s max_pad={max_pad}s",
+                flush=True,
+            )
+        return jobs
+
+    merged: list[list] = []
+    cur: list | None = None
+    cur_start = cur_end = 0.0
+    for group in atomic:
+        start, end = _whisperseg_group_bounds(group)
+        if cur is None:
+            cur = [group]
+            cur_start, cur_end = start, end
+            continue
+        if start - cur_end <= merge_gap and end - cur_start <= hard_max:
+            cur.append(group)
+            cur_end = end
+        else:
+            merged.append(cur)
+            cur = [group]
+            cur_start, cur_end = start, end
+    if cur is not None:
+        merged.append(cur)
+
+    jobs = [make_job(group_list, is_last=(i == len(merged) - 1)) for i, group_list in enumerate(merged)]
+    print(
+        f"WhisperSeg qwen context: mode=merge frames={len(atomic)} jobs={len(jobs)} "
+        f"gap={merge_gap}s target={target}s hard_max={hard_max}s "
+        f"pad_mode={pad_mode} pre={pre}s post={post}s pad_ratio={pad_ratio} "
+        f"min_pad={min_pad}s max_pad={max_pad}s",
+        flush=True,
+    )
+    return jobs
+
+
 def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argparse.Namespace) -> list[ChunkJob]:
     """Short, speech-pure frames from WhisperSeg (Stage 3). Each grouped frame becomes
     one ChunkJob spanning its speech; the frame's speech segments are stored
@@ -912,19 +1025,7 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
     else:
         groups = vad.segment(audio, samplerate)
     vad.cleanup()
-
-    jobs: list[ChunkJob] = []
-    n = len(groups)
-    for gi, g in enumerate(groups):
-        frame_start = g[0].start
-        frame_end = g[-1].end
-        if frame_end - frame_start < args.whisperseg_min_frame_seconds:
-            continue
-        keep_hi = float("inf") if gi == n - 1 else frame_end
-        job = ChunkJob(frame_start, frame_end, frame_start, keep_hi)
-        job.speech = [Interval(s.start - frame_start, s.end - frame_start) for s in g]
-        jobs.append(job)
-    return jobs
+    return _whisperseg_context_jobs(groups, duration, args)
 
 
 def reframe_collapsed_jobs(audio, samplerate: int, collapsed_jobs: list[ChunkJob], args: argparse.Namespace) -> list[ChunkJob]:
@@ -975,11 +1076,11 @@ def reframe_collapsed_jobs(audio, samplerate: int, collapsed_jobs: list[ChunkJob
 
 
 def build_qwen_jobs(audio, samplerate: int, duration: float, args: argparse.Namespace) -> tuple[list[ChunkJob], str]:
-    """Build qwen clips without changing its default framing.
+    """Build qwen clips from the selected framing backend.
 
-    Qwen's measured baseline stays on the current Silero/VAD path. WhisperSeg and
-    semantic scenes are opt-in qwen experiments via --vad-backend whisperseg and
-    --scene-backend semantic.
+    The Qwen default is WhisperSeg framing plus long-context merge/pad. The older
+    Silero/VAD path and semantic scenes remain selectable via --vad-backend current
+    and --scene-backend semantic for comparison.
     """
     if args.vad_chunks:
         if getattr(args, "vad_backend", "current") == "whisperseg":
@@ -1694,6 +1795,18 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             "min_tokens_floor": int(getattr(args, "min_tokens_floor", 256)),
             "budget_strategy": "per_batch_max",
         },
+        "whisperseg_context": {
+            "mode": getattr(args, "whisperseg_context_mode", "none"),
+            "pre_seconds": float(getattr(args, "whisperseg_context_pre_seconds", 0.0)),
+            "post_seconds": float(getattr(args, "whisperseg_context_post_seconds", 0.0)),
+            "merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 1.0)),
+            "target_seconds": float(getattr(args, "whisperseg_context_target_seconds", 18.0)),
+            "hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 36.0)),
+            "pad_mode": getattr(args, "whisperseg_context_pad_mode", "fixed"),
+            "pad_ratio": float(getattr(args, "whisperseg_context_pad_ratio", 0.10)),
+            "min_pad_seconds": float(getattr(args, "whisperseg_context_min_pad_seconds", 1.0)),
+            "max_pad_seconds": float(getattr(args, "whisperseg_context_max_pad_seconds", 3.0)),
+        },
         "recapture": recapture_stats,
         "stepdown": stepdown_stats,
         "chunks": raw_chunks,
@@ -1790,6 +1903,16 @@ def main() -> None:
                 "vad_post_context_seconds": args.vad_post_context_seconds,
                 "vad_max_leading_silence": args.vad_max_leading_silence,
                 "vad_context_merge_gap": args.vad_context_merge_gap,
+                "whisperseg_context_mode": getattr(args, "whisperseg_context_mode", "none"),
+                "whisperseg_context_pre_seconds": float(getattr(args, "whisperseg_context_pre_seconds", 0.0)),
+                "whisperseg_context_post_seconds": float(getattr(args, "whisperseg_context_post_seconds", 0.0)),
+                "whisperseg_context_merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 1.0)),
+                "whisperseg_context_target_seconds": float(getattr(args, "whisperseg_context_target_seconds", 18.0)),
+                "whisperseg_context_hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 36.0)),
+                "whisperseg_context_pad_mode": getattr(args, "whisperseg_context_pad_mode", "fixed"),
+                "whisperseg_context_pad_ratio": float(getattr(args, "whisperseg_context_pad_ratio", 0.10)),
+                "whisperseg_context_min_pad_seconds": float(getattr(args, "whisperseg_context_min_pad_seconds", 1.0)),
+                "whisperseg_context_max_pad_seconds": float(getattr(args, "whisperseg_context_max_pad_seconds", 3.0)),
                 "recapture": raw.get("recapture", {}),
                 "entries": len(entries),
                 "elapsed_seconds": time.time() - started,

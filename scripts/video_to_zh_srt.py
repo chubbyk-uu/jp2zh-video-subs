@@ -598,7 +598,7 @@ def process_video_stages(
         bilingual_command = build_bilingual_command(args, output, translate_input_srt, bilingual_output, audio)
         run(bilingual_command, log)
 
-    if not args.skip_quality_report:
+    if args.quality_report and not args.skip_quality_report:
         report_path = job_dir / f"{video.stem}.quality.txt"
         fills_metadata = (job_dir / f"{video.stem}.fills.tsv") if args.gap_fill else None
         qwen_metadata = ja_srt.with_suffix(ja_srt.suffix + ".meta.json") if args.asr in ("qwen", "anime") else None
@@ -661,7 +661,7 @@ def main() -> None:
         type=Path,
         help="Flat TOML file of defaults for any option below (keys are flag names). A "
         "value flag given on the command line overrides the file; plain on/off switches "
-        "(e.g. --gap-fill, --resume) can only be turned on, so once set true in the file "
+        "(e.g. --gap-fill, --quality-report, --resume) can only be turned on, so once set true in the file "
         "the command line cannot turn them back off. See --print-config.",
     )
     parser.add_argument(
@@ -682,9 +682,10 @@ def main() -> None:
         "--resume",
         action="store_true",
         help="Skip finished stages: reuse existing audio, transcription, and complete translations. "
-        "The ASS/quality-report stages always rerun (cheap, no model).",
+        "The ASS stage always reruns (cheap, no model); quality report reruns only when --quality-report is set.",
     )
-    parser.add_argument("--skip-quality-report", action="store_true", help="Do not write a quality report")
+    parser.add_argument("--quality-report", action="store_true", help="Write a quality report and append metrics (off by default)")
+    parser.add_argument("--skip-quality-report", action="store_true", help="Deprecated compatibility flag; quality reports are off unless --quality-report is set")
     parser.add_argument(
         "--quality-vad-backend",
         choices=("auto", "metadata", "silero", "whisperseg"),
@@ -805,6 +806,34 @@ def main() -> None:
     parser.add_argument("--qwen-whisperseg-chunk-threshold", type=float, default=None)
     parser.add_argument("--qwen-whisperseg-threshold", type=float, default=None)
     parser.add_argument("--qwen-whisperseg-min-frame-seconds", type=float, default=None)
+    parser.add_argument(
+        "--qwen-whisperseg-context-mode",
+        choices=("none", "pad", "merge"),
+        default=None,
+        help="Qwen WhisperSeg context experiment: none, pad each frame, or merge adjacent frames; pre/post padding also applies to merge.",
+    )
+    parser.add_argument("--qwen-whisperseg-context-pre-seconds", type=float, default=None,
+                        help="Extra audio prepended in Qwen WhisperSeg pad/merge context modes.")
+    parser.add_argument("--qwen-whisperseg-context-post-seconds", type=float, default=None,
+                        help="Extra audio appended in Qwen WhisperSeg pad/merge context modes.")
+    parser.add_argument("--qwen-whisperseg-context-merge-gap", type=float, default=None,
+                        help="Max gap between frames to merge when --qwen-whisperseg-context-mode merge.")
+    parser.add_argument("--qwen-whisperseg-context-target-seconds", type=float, default=None,
+                        help="Soft target recognition span when --qwen-whisperseg-context-mode merge.")
+    parser.add_argument("--qwen-whisperseg-context-hard-max-seconds", type=float, default=None,
+                        help="Hard max recognition span when --qwen-whisperseg-context-mode merge.")
+    parser.add_argument(
+        "--qwen-whisperseg-context-pad-mode",
+        choices=("fixed", "ratio"),
+        default=None,
+        help="Qwen WhisperSeg context padding: fixed pre/post seconds or ratio of merged span.",
+    )
+    parser.add_argument("--qwen-whisperseg-context-pad-ratio", type=float, default=None,
+                        help="Dynamic pad ratio of the owned WhisperSeg span.")
+    parser.add_argument("--qwen-whisperseg-context-min-pad-seconds", type=float, default=None,
+                        help="Minimum dynamic Qwen WhisperSeg context padding.")
+    parser.add_argument("--qwen-whisperseg-context-max-pad-seconds", type=float, default=None,
+                        help="Maximum dynamic Qwen WhisperSeg context padding.")
     parser.add_argument("--qwen-isolated-interjection-silence", type=float, default=3.0)
     parser.add_argument("--qwen-isolated-interjection-run", type=int, default=3)
     parser.add_argument("--qwen-isolated-interjection-run-gap", type=float, default=5.0)

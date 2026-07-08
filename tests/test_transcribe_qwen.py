@@ -605,6 +605,234 @@ def test_whisperseg_jobs_use_min_frame_not_legacy_vad_min_clip(monkeypatch, tmp_
     assert jobs[0].end == pytest.approx(1.2)
 
 
+def test_whisperseg_context_pad_widens_audio_but_keeps_owned_frame(monkeypatch, tmp_path):
+    class FakeWhisperSegVAD:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, _audio, _sample_rate):
+            return [[SpeechSegment(5.0, 6.0)]]
+
+        def cleanup(self):
+            pass
+
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"onnx")
+    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", FakeWhisperSegVAD)
+
+    args = argparse.Namespace(
+        whisperseg_model=str(model),
+        whisperseg_threshold=0.35,
+        whisperseg_max_speech=5.0,
+        whisperseg_max_group=6.0,
+        whisperseg_chunk_threshold=1.0,
+        whisperseg_min_frame_seconds=0.1,
+        whisperseg_context_mode="pad",
+        whisperseg_context_pre_seconds=0.5,
+        whisperseg_context_post_seconds=1.0,
+        whisperseg_context_merge_gap=1.0,
+        whisperseg_context_target_seconds=18.0,
+        scene_backend="none",
+    )
+
+    jobs = build_whisperseg_jobs(np.zeros(16000 * 10, dtype=np.float32), 16000, 10.0, args)
+
+    assert len(jobs) == 1
+    assert jobs[0].start == pytest.approx(4.5)
+    assert jobs[0].end == pytest.approx(7.0)
+    assert jobs[0].keep_lo == pytest.approx(5.0)
+    assert jobs[0].keep_hi == float("inf")
+    assert [(r.start, r.end) for r in jobs[0].speech] == pytest.approx([(0.5, 1.5)])
+
+
+def test_whisperseg_context_none_ignores_padding_options(monkeypatch, tmp_path):
+    class FakeWhisperSegVAD:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, _audio, _sample_rate):
+            return [[SpeechSegment(5.0, 6.0)]]
+
+        def cleanup(self):
+            pass
+
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"onnx")
+    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", FakeWhisperSegVAD)
+
+    args = argparse.Namespace(
+        whisperseg_model=str(model),
+        whisperseg_threshold=0.35,
+        whisperseg_max_speech=5.0,
+        whisperseg_max_group=6.0,
+        whisperseg_chunk_threshold=1.0,
+        whisperseg_min_frame_seconds=0.1,
+        whisperseg_context_mode="none",
+        whisperseg_context_pre_seconds=9.0,
+        whisperseg_context_post_seconds=9.0,
+        whisperseg_context_merge_gap=1.0,
+        whisperseg_context_target_seconds=18.0,
+        whisperseg_context_hard_max_seconds=36.0,
+        whisperseg_context_pad_mode="ratio",
+        whisperseg_context_pad_ratio=0.10,
+        whisperseg_context_min_pad_seconds=1.0,
+        whisperseg_context_max_pad_seconds=3.0,
+        scene_backend="none",
+    )
+
+    jobs = build_whisperseg_jobs(np.zeros(16000 * 10, dtype=np.float32), 16000, 10.0, args)
+
+    assert len(jobs) == 1
+    assert (jobs[0].start, jobs[0].end) == pytest.approx((5.0, 6.0))
+    assert [(r.start, r.end) for r in jobs[0].speech] == pytest.approx([(0.0, 1.0)])
+
+
+def test_whisperseg_context_merge_combines_adjacent_frames_with_owned_speech(monkeypatch, tmp_path):
+    class FakeWhisperSegVAD:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, _audio, _sample_rate):
+            return [
+                [SpeechSegment(1.0, 2.0)],
+                [SpeechSegment(2.4, 3.0)],
+                [SpeechSegment(8.0, 9.0)],
+            ]
+
+        def cleanup(self):
+            pass
+
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"onnx")
+    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", FakeWhisperSegVAD)
+
+    args = argparse.Namespace(
+        whisperseg_model=str(model),
+        whisperseg_threshold=0.35,
+        whisperseg_max_speech=5.0,
+        whisperseg_max_group=6.0,
+        whisperseg_chunk_threshold=1.0,
+        whisperseg_min_frame_seconds=0.1,
+        whisperseg_context_mode="merge",
+        whisperseg_context_pre_seconds=0.25,
+        whisperseg_context_post_seconds=0.5,
+        whisperseg_context_merge_gap=1.0,
+        whisperseg_context_target_seconds=6.0,
+        scene_backend="none",
+    )
+
+    jobs = build_whisperseg_jobs(np.zeros(16000 * 12, dtype=np.float32), 16000, 12.0, args)
+
+    assert len(jobs) == 2
+    first = jobs[0]
+    assert first.start == pytest.approx(0.75)
+    assert first.end == pytest.approx(3.5)
+    assert first.keep_lo == pytest.approx(1.0)
+    assert first.keep_hi == pytest.approx(3.0)
+    assert [(r.start, r.end) for r in first.speech] == pytest.approx([(0.25, 1.25), (1.65, 2.25)])
+
+    second = jobs[1]
+    assert second.start == pytest.approx(7.75)
+    assert second.end == pytest.approx(9.5)
+    assert second.keep_lo == pytest.approx(8.0)
+    assert second.keep_hi == float("inf")
+    assert [(r.start, r.end) for r in second.speech] == pytest.approx([(0.25, 1.25)])
+
+
+def test_whisperseg_context_merge_target_is_soft_and_hard_max_splits(monkeypatch, tmp_path):
+    class FakeWhisperSegVAD:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, _audio, _sample_rate):
+            return [
+                [SpeechSegment(0.0, 4.0)],
+                [SpeechSegment(5.0, 9.0)],
+                [SpeechSegment(10.0, 14.0)],
+                [SpeechSegment(15.0, 19.0)],
+                [SpeechSegment(20.0, 24.0)],
+            ]
+
+        def cleanup(self):
+            pass
+
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"onnx")
+    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", FakeWhisperSegVAD)
+
+    args = argparse.Namespace(
+        whisperseg_model=str(model),
+        whisperseg_threshold=0.35,
+        whisperseg_max_speech=5.0,
+        whisperseg_max_group=6.0,
+        whisperseg_chunk_threshold=1.0,
+        whisperseg_min_frame_seconds=0.1,
+        whisperseg_context_mode="merge",
+        whisperseg_context_pre_seconds=0.0,
+        whisperseg_context_post_seconds=0.0,
+        whisperseg_context_merge_gap=1.0,
+        whisperseg_context_target_seconds=12.0,
+        whisperseg_context_hard_max_seconds=20.0,
+        scene_backend="none",
+    )
+
+    jobs = build_whisperseg_jobs(np.zeros(16000 * 30, dtype=np.float32), 16000, 30.0, args)
+
+    assert len(jobs) == 2
+    assert (jobs[0].start, jobs[0].end) == pytest.approx((0.0, 19.0))
+    assert (jobs[0].keep_lo, jobs[0].keep_hi) == pytest.approx((0.0, 19.0))
+    assert (jobs[1].start, jobs[1].end) == pytest.approx((20.0, 24.0))
+    assert jobs[1].keep_hi == float("inf")
+
+
+def test_whisperseg_context_ratio_padding_uses_merged_span_with_clamp(monkeypatch, tmp_path):
+    class FakeWhisperSegVAD:
+        def __init__(self, **_kwargs):
+            pass
+
+        def segment(self, _audio, _sample_rate):
+            return [
+                [SpeechSegment(10.0, 14.0)],
+                [SpeechSegment(15.0, 30.0)],
+                [SpeechSegment(40.0, 41.0)],
+            ]
+
+        def cleanup(self):
+            pass
+
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"onnx")
+    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", FakeWhisperSegVAD)
+
+    args = argparse.Namespace(
+        whisperseg_model=str(model),
+        whisperseg_threshold=0.35,
+        whisperseg_max_speech=5.0,
+        whisperseg_max_group=20.0,
+        whisperseg_chunk_threshold=1.0,
+        whisperseg_min_frame_seconds=0.1,
+        whisperseg_context_mode="merge",
+        whisperseg_context_pre_seconds=9.0,
+        whisperseg_context_post_seconds=9.0,
+        whisperseg_context_merge_gap=1.0,
+        whisperseg_context_target_seconds=18.0,
+        whisperseg_context_hard_max_seconds=36.0,
+        whisperseg_context_pad_mode="ratio",
+        whisperseg_context_pad_ratio=0.10,
+        whisperseg_context_min_pad_seconds=1.0,
+        whisperseg_context_max_pad_seconds=3.0,
+        scene_backend="none",
+    )
+
+    jobs = build_whisperseg_jobs(np.zeros(16000 * 50, dtype=np.float32), 16000, 50.0, args)
+
+    assert len(jobs) == 2
+    assert (jobs[0].start, jobs[0].end) == pytest.approx((8.0, 32.0))
+    assert [(r.start, r.end) for r in jobs[0].speech] == pytest.approx([(2.0, 6.0), (7.0, 22.0)])
+    assert (jobs[1].start, jobs[1].end) == pytest.approx((39.0, 42.0))
+    assert [(r.start, r.end) for r in jobs[1].speech] == pytest.approx([(1.0, 2.0)])
+
+
 def test_build_qwen_jobs_default_uses_current_vad(monkeypatch):
     calls = []
     expected = [ChunkJob(1.0, 2.0, 1.0, 2.0)]

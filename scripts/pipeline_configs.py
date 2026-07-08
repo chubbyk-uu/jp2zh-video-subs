@@ -106,11 +106,11 @@ class QwenAsrConfig(BaseAsrConfig):
     max_tokens_per_second: float = arg_field(20.0, help="Dynamic Qwen token budget per audio second (0 disables)")
     min_tokens_floor: int = arg_field(256, help="Minimum dynamic Qwen token budget per batch")
 
-    # qwen default = the Stage 6.4 ablation winner (neutral WJ-anime∩ours-anime GT):
-    # WhisperSeg 6.0/1.0 + aligner-fallback recovery + generation knobs, with semantic scene
-    # OFF and step-down OFF. Ablation showed semantic ON costs ~6pt weak-speech recall and
-    # step-down (even tightened to 3.0) does not help; both stay selectable but off by default.
-    # Fair vs WJ-qwen: we match its recall within ~2pt with far cleaner timing (3 vs 175 short cues).
+    # qwen default = Stage 6.5 long-context recognition with short-anchor timing:
+    # WhisperSeg 6.0/1.0 atomic frames are merged into fixed-pad context windows
+    # (gap=2.0, soft target=18s, hard cap=30s, pre/post=2s), while cue ownership
+    # and VAD fallback timing stay tied to the original owned speech regions.
+    # Semantic scene and step-down remain selectable but off by default.
     vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="qwen speech segmentation backend")
     whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
     whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
@@ -118,6 +118,21 @@ class QwenAsrConfig(BaseAsrConfig):
     whisperseg_chunk_threshold: float = arg_field(1.0, help="WhisperSeg frame grouping silence threshold (s)")
     whisperseg_threshold: float = arg_field(0.35, help="WhisperSeg onset probability threshold")
     whisperseg_min_frame_seconds: float = arg_field(0.1, help="Drop WhisperSeg frames shorter than this")
+    whisperseg_context_mode: str = arg_field(
+        "merge", choices=("none", "pad", "merge"),
+        help="qwen WhisperSeg context mode: none, pad each frame, or merge adjacent frames; pre/post padding also applies to merge",
+    )
+    whisperseg_context_pre_seconds: float = arg_field(2.0, help="Qwen WhisperSeg context audio prepended in pad/merge modes")
+    whisperseg_context_post_seconds: float = arg_field(2.0, help="Qwen WhisperSeg context audio appended in pad/merge modes")
+    whisperseg_context_merge_gap: float = arg_field(2.0, help="Max gap between WhisperSeg frames to merge for qwen context mode")
+    whisperseg_context_target_seconds: float = arg_field(18.0, help="Soft target span for qwen merged WhisperSeg context")
+    whisperseg_context_hard_max_seconds: float = arg_field(30.0, help="Hard max span for qwen merged WhisperSeg context")
+    whisperseg_context_pad_mode: str = arg_field(
+        "fixed", choices=("fixed", "ratio"), help="Qwen WhisperSeg context padding mode: fixed pre/post or ratio of merged span",
+    )
+    whisperseg_context_pad_ratio: float = arg_field(0.10, help="Dynamic pad ratio of the owned WhisperSeg span")
+    whisperseg_context_min_pad_seconds: float = arg_field(1.0, help="Minimum dynamic Qwen WhisperSeg context padding")
+    whisperseg_context_max_pad_seconds: float = arg_field(3.0, help="Maximum dynamic Qwen WhisperSeg context padding")
 
     scene_backend: str = arg_field("none", choices=("none", "semantic"), help="qwen scene pre-segmentation")
     scene_min_seconds: float = arg_field(12.0, help="semantic scene min duration (s)")

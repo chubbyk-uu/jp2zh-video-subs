@@ -113,11 +113,21 @@ def test_qwen_and_anime_backend_defaults_are_separate():
     assert qwen.text_backend == "qwen"
     assert qwen.timestamp_mode == "aligner_fallback"
     assert qwen.vad_backend == "whisperseg"
-    # Stage 6.4 ablation winner: semantic scene OFF + step-down OFF (both selectable but
-    # off by default; semantic cost ~6pt weak-speech, step-down gave no gain).
+    # Stage 6.5 qwen default: long-context recognition with short-anchor timing;
+    # semantic scene and step-down remain selectable but off by default.
     assert qwen.scene_backend == "none"
     assert qwen.stepdown is False
     assert qwen.stepdown_fallback_group == 6.0
+    assert qwen.whisperseg_context_mode == "merge"
+    assert qwen.whisperseg_context_pre_seconds == 2.0
+    assert qwen.whisperseg_context_post_seconds == 2.0
+    assert qwen.whisperseg_context_merge_gap == 2.0
+    assert qwen.whisperseg_context_target_seconds == 18.0
+    assert qwen.whisperseg_context_hard_max_seconds == 30.0
+    assert qwen.whisperseg_context_pad_mode == "fixed"
+    assert qwen.whisperseg_context_pad_ratio == 0.10
+    assert qwen.whisperseg_context_min_pad_seconds == 1.0
+    assert qwen.whisperseg_context_max_pad_seconds == 3.0
 
     assert anime.text_backend == "anime"
     assert anime.timestamp_mode == "vad_only"
