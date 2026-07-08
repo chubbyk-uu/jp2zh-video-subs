@@ -383,10 +383,12 @@ GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，�
 - Anime semantic scene 预切分：开启（`--anime-scene-backend semantic`；用 `--anime-scene-backend none` 关闭）
 - Anime 定时模式：`vad_only`（`--anime-timestamp-mode vad_only`；aligner 诊断模式需要 `models/Qwen3-ForcedAligner-0.6B`）
 - Anime WhisperSeg frame 默认值：`max_group=5.0`、`chunk_threshold=0.5`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`
+- Anime 不使用 Qwen 的 WhisperSeg context `pad` / `merge` 路径。`vad_only` 定时没有 aligner ownership pass 来过滤邻近上下文，而且目前 anime 评估也没有显示需要这层额外上下文。
 - Anime cleaner：开启，清理省略号-only 片段和短重复伪迹；之后仍走共享字幕塑形，删除重叠和闪字幕
 - Qwen 对比线：用 `--asr qwen` 开启。默认使用 WhisperSeg frame（`--qwen-vad-backend whisperseg`），Qwen 参数为 `max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`；用 `--asr qwen --qwen-vad-backend current` 对比旧滑窗 VAD 路径，或用 `--asr qwen --no-qwen-vad-chunks` 做固定 30 秒平铺。
 - Qwen 长上下文识别：默认开启。原子 WhisperSeg frame 会以 `--qwen-whisperseg-context-mode merge` 合并，默认 `--qwen-whisperseg-context-merge-gap 2.0`、软 `--qwen-whisperseg-context-target-seconds 18`、`--qwen-whisperseg-context-hard-max-seconds 30`，并固定前后各补 `--qwen-whisperseg-context-pre-seconds 2.0` / `--qwen-whisperseg-context-post-seconds 2.0` 秒。
 - Qwen 定时与生成：默认 `--qwen-timestamp-mode aligner_fallback`、`--qwen-max-new-tokens 4096`、`--qwen-repetition-penalty 1.1`、`--qwen-max-tokens-per-second 20.0`。semantic scene 可用 `--qwen-scene-backend semantic` 打开，但默认关闭；step-down retry 已在共享子脚本实现，但不是顶层默认路径。
+- Qwen `vad_only` 定时只作为诊断模式使用。显式设置 `--qwen-timestamp-mode vad_only` 时，必须同时设置 `--qwen-whisperseg-context-mode none`；纯 VAD 定时无法过滤从前后 pad/merge 上下文里听到的邻近文本，所以管线会拒绝这种组合。
 - Qwen 空窗补捞：默认关闭（`--qwen-recapture-min-gap 0`），且只适用于 `--asr qwen`。需要高覆盖率的 Qwen 对比时，可设为正数，例如 `--qwen-recapture-min-gap 10`：主识别结束后，对满足长度的字幕空窗用更灵敏的 `--qwen-recapture-vad-threshold 0.05` 再做一遍 VAD；检出语音合计不少于 `--qwen-recapture-min-speech 2` 秒的空窗会趁模型还在显存里二次识别。
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--asr qwen --qwen-filter-hallucinations` 开启）
 - 纯语气词过滤：共享 qwen/anime 子脚本默认开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——默认 anime 线是两侧各有 `--anime-isolated-interjection-silence 3.0` 秒静默的孤立单条，或连续 3 条及以上的语气词链。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。anime 用 `--anime-isolated-interjection-silence 0` 关闭，qwen 用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）。
@@ -416,6 +418,12 @@ Qwen 长上下文恢复现在是 Qwen 默认路径，用于让 Qwen 听到更多
 模式下同样生效；需要动态补音频实验时，使用
 `--qwen-whisperseg-context-pad-mode ratio`，再用
 `--qwen-whisperseg-context-pad-ratio` 和 min/max pad 限制范围。
+
+不要把 Qwen `vad_only` 定时和 `pad` / `merge` 上下文一起开。这个诊断模式没有
+aligner ownership filter，Qwen 从邻近上下文里听到的文本可能再次落到当前 VAD
+区域里，形成整句重复。只在需要隔离“文本识别质量”和“forced aligner 行为”时使用
+`--asr qwen --qwen-timestamp-mode vad_only --qwen-whisperseg-context-mode none`；正式跑
+Qwen 字幕时保持默认的 `aligner_fallback + merge` 路径。
 
 ### Whisper 后端默认值（`--asr whisper`）
 

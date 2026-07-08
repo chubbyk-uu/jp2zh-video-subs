@@ -30,6 +30,7 @@ from transcribe_ja_srt_qwen import (
     transcribe_qwen,
     uncovered_gap_spans,
     vad_only_items_for_text,
+    validate_runtime_args,
 )
 import whisperseg_vad
 from whisperseg_vad import SpeechSegment
@@ -685,6 +686,41 @@ def test_whisperseg_context_none_ignores_padding_options(monkeypatch, tmp_path):
     assert len(jobs) == 1
     assert (jobs[0].start, jobs[0].end) == pytest.approx((5.0, 6.0))
     assert [(r.start, r.end) for r in jobs[0].speech] == pytest.approx([(0.0, 1.0)])
+
+
+def test_qwen_vad_only_rejects_whisperseg_context_merge():
+    args = argparse.Namespace(
+        text_backend="qwen",
+        timestamp_mode="vad_only",
+        vad_backend="whisperseg",
+        whisperseg_context_mode="merge",
+    )
+
+    with pytest.raises(SystemExit, match="qwen vad_only cannot be combined"):
+        validate_runtime_args(args)
+
+
+def test_qwen_vad_only_allows_whisperseg_context_none():
+    args = argparse.Namespace(
+        text_backend="qwen",
+        timestamp_mode="vad_only",
+        vad_backend="whisperseg",
+        whisperseg_context_mode="none",
+    )
+
+    validate_runtime_args(args)
+
+
+def test_anime_vad_only_rejects_whisperseg_context_merge():
+    args = argparse.Namespace(
+        text_backend="anime",
+        timestamp_mode="vad_only",
+        vad_backend="whisperseg",
+        whisperseg_context_mode="merge",
+    )
+
+    with pytest.raises(SystemExit, match="anime vad_only cannot be combined"):
+        validate_runtime_args(args)
 
 
 def test_whisperseg_context_merge_combines_adjacent_frames_with_owned_speech(monkeypatch, tmp_path):

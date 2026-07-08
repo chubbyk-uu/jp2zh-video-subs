@@ -339,7 +339,11 @@ Implementation plan:
    - merge + pad: selected default is `merge_gap=2.0`, soft `target=18`,
      `hard_max=30`, fixed `pre/post=2.0`; ratio padding stayed experimental.
    - optional diagnostic only: `vad_only` timing to separate text-window effects from
-     forced-aligner effects.
+     forced-aligner effects. Follow-up A/B showed that `vad_only + merge/pad` can repeat
+     whole neighboring lines because there is no aligner ownership filter to reject text
+     heard from context. `vad_only + context-mode none` removes that context-leak repeat,
+     but produces shorter, more fragmented cues. Therefore qwen `vad_only` is kept as a
+     diagnostic-only mode and is rejected unless `whisperseg_context_mode=none`.
 6. Evaluate with both automatic and manual checks:
    - Re-run the primary long-form qwen benchmark.
    - Inspect the known weak/misheard windows manually.

@@ -902,6 +902,22 @@ def _validate_whisperseg_context_args(args: argparse.Namespace) -> tuple[str, fl
     return mode, pre, post, merge_gap, target, hard_max, pad_mode, pad_ratio, min_pad, max_pad
 
 
+def validate_runtime_args(args: argparse.Namespace) -> None:
+    """Validate cross-field combinations that argparse choices cannot express."""
+    if (
+        getattr(args, "timestamp_mode", "aligner_fallback") == "vad_only"
+        and getattr(args, "vad_backend", "current") == "whisperseg"
+        and getattr(args, "whisperseg_context_mode", "none") != "none"
+    ):
+        backend = getattr(args, "text_backend", "qwen")
+        raise SystemExit(
+            f"{backend} vad_only cannot be combined with WhisperSeg context pad/merge. "
+            "Use --whisperseg-context-mode none (top-level: --qwen-whisperseg-context-mode none), "
+            "or use --timestamp-mode aligner_fallback (top-level: --qwen-timestamp-mode aligner_fallback) "
+            "for long-context recognition."
+        )
+
+
 def _whisperseg_group_bounds(group) -> tuple[float, float]:
     return float(group[0].start), float(group[-1].end)
 
@@ -1839,6 +1855,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    validate_runtime_args(args)
 
     if args.from_raw is None:
         if args.text_backend == "anime":

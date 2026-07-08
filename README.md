@@ -455,10 +455,12 @@ The one-command pipeline uses:
 - Anime semantic scene pre-segmentation: on (`--anime-scene-backend semantic`; disable with `--anime-scene-backend none`)
 - Anime timing mode: `vad_only` (`--anime-timestamp-mode vad_only`; aligner modes are diagnostic and require `models/Qwen3-ForcedAligner-0.6B`)
 - Anime WhisperSeg frame defaults: `max_group=5.0`, `chunk_threshold=0.5`, `max_speech=5.0`, `min_frame=0.1`, `threshold=0.35`
+- Anime does not use Qwen's WhisperSeg context `pad` / `merge` path. With `vad_only` timing, extra neighboring context cannot be filtered by an aligner ownership pass, and current anime evaluations do not show a need for it.
 - Anime cleaner: on for ellipsis-only fragments and short repetition artifacts; shared subtitle shaping then removes overlaps and flash cues
 - Qwen comparison line: available with `--asr qwen`. It defaults to WhisperSeg framing (`--qwen-vad-backend whisperseg`) with Qwen values `max_group=6.0`, `chunk_threshold=1.0`, `max_speech=5.0`, `min_frame=0.1`, `threshold=0.35`; use `--asr qwen --qwen-vad-backend current` for the older VAD path, or `--asr qwen --no-qwen-vad-chunks` for fixed 30 s tiling.
 - Qwen long-context recognition: on by default. Atomic WhisperSeg frames are merged with `--qwen-whisperseg-context-mode merge`, `--qwen-whisperseg-context-merge-gap 2.0`, soft `--qwen-whisperseg-context-target-seconds 18`, `--qwen-whisperseg-context-hard-max-seconds 30`, and fixed `--qwen-whisperseg-context-pre-seconds 2.0` / `--qwen-whisperseg-context-post-seconds 2.0`.
 - Qwen timing and generation: default `--qwen-timestamp-mode aligner_fallback`, `--qwen-max-new-tokens 4096`, `--qwen-repetition-penalty 1.1`, and `--qwen-max-tokens-per-second 20.0`. Semantic scene splitting is available with `--qwen-scene-backend semantic` but is off by default; step-down retry is implemented in the shared sub-script but not exposed as a top-level default path.
+- Qwen `vad_only` timing is diagnostic only. If you explicitly set `--qwen-timestamp-mode vad_only`, also set `--qwen-whisperseg-context-mode none`; pure VAD timing cannot filter text recognized from padded/merged neighboring context, so the pipeline rejects that combination.
 - Qwen gap recapture: off by default (`--qwen-recapture-min-gap 0`) and only applies to `--asr qwen`. For high-coverage Qwen runs, set a positive gap threshold such as `--qwen-recapture-min-gap 10`: after the main pass, matching subtitle gaps get a second VAD look at the more sensitive `--qwen-recapture-vad-threshold 0.05`; gaps with at least `--qwen-recapture-min-speech 2` seconds of detected speech are re-transcribed while the model is still loaded.
 - Whisper-style hallucination filtering on Qwen output: off (opt in with `--asr qwen --qwen-filter-hallucinations`)
 - Bare filler-interjection dropping: on for the shared qwen/anime sub-script. Cues that reduce entirely to a single filler mora (うん/ん/ねえ/あ …) and carry no dialogue are removed — either an isolated blip walled by `--anime-isolated-interjection-silence 3.0` seconds of silence on both sides in the default anime line, or a chain of 3+ such fillers in a row. Only cues that are *entirely* a filler are eligible, so any line containing real words always survives. Disable with `--anime-isolated-interjection-silence 0` for anime or `--qwen-isolated-interjection-silence 0` for qwen (also turns off the chain rule).
@@ -490,6 +492,13 @@ target: once a merged window reaches it, the merger waits for the next natural g
 is the real safety cap. The pre/post context flags also apply in `merge` mode. For
 dynamic context experiments, set `--qwen-whisperseg-context-pad-mode ratio` and tune
 `--qwen-whisperseg-context-pad-ratio` plus min/max pad clamps.
+
+Do not combine Qwen `vad_only` timing with `pad` or `merge` context. In that diagnostic
+mode there is no aligner ownership filter, so text heard from neighboring context can
+be emitted again in the current VAD region. Use
+`--asr qwen --qwen-timestamp-mode vad_only --qwen-whisperseg-context-mode none` only
+when you want to isolate Qwen text quality from forced-alignment behavior; for production
+Qwen runs, keep the default `aligner_fallback + merge` path.
 
 ### Whisper backend defaults (`--asr whisper`)
 

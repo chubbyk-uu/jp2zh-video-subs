@@ -185,6 +185,41 @@ def test_build_qwen_command_survives_unexposed_config_fields(tmp_path):
     assert cmd[cmd.index("--whisperseg-context-post-seconds") + 1] == "2.0"
 
 
+def test_top_level_rejects_qwen_vad_only_with_context_merge():
+    import argparse
+
+    from video_to_zh_srt import validate_runtime_args
+
+    ns = argparse.Namespace(
+        language="ja",
+        min_cue_seconds=0.3,
+        asr="qwen",
+        qwen_timestamp_mode="vad_only",
+        qwen_vad_backend="whisperseg",
+        qwen_whisperseg_context_mode="merge",
+    )
+
+    with pytest.raises(SystemExit, match="Qwen vad_only cannot be combined"):
+        validate_runtime_args(ns)
+
+
+def test_top_level_allows_qwen_vad_only_with_context_none():
+    import argparse
+
+    from video_to_zh_srt import validate_runtime_args
+
+    ns = argparse.Namespace(
+        language="ja",
+        min_cue_seconds=0.3,
+        asr="qwen",
+        qwen_timestamp_mode="vad_only",
+        qwen_vad_backend="whisperseg",
+        qwen_whisperseg_context_mode="none",
+    )
+
+    validate_runtime_args(ns)
+
+
 def test_build_qwen_command_can_override_qwen_framing(tmp_path):
     import argparse
 

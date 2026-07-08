@@ -322,6 +322,22 @@ def build_qwen_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> l
     ]
 
 
+def validate_runtime_args(args: argparse.Namespace) -> None:
+    """Validate cross-field combinations that argparse choices cannot express."""
+    if args.asr == "qwen":
+        cfg = asr_config_for_command(args)
+        if (
+            cfg.timestamp_mode == "vad_only"
+            and cfg.vad_backend == "whisperseg"
+            and cfg.whisperseg_context_mode != "none"
+        ):
+            raise SystemExit(
+                "Qwen vad_only cannot be combined with WhisperSeg context pad/merge. "
+                "Use --qwen-whisperseg-context-mode none, or use "
+                "--qwen-timestamp-mode aligner_fallback for long-context Qwen recognition."
+            )
+
+
 def translate_backend(args: argparse.Namespace) -> tuple[Path, Path]:
     if args.translator == "sakura":
         return SAKURA_TRANSLATE_SCRIPT, SAKURA_MODEL
@@ -945,6 +961,8 @@ def main() -> None:
             raise SystemExit(f"Missing --config file: {config_path}")
         apply_config_file(parser, config_path)
     args = parser.parse_args()
+
+    validate_runtime_args(args)
 
     if args.print_config:
         # input/output are per-run IO arguments, not reusable configuration; a config
