@@ -290,21 +290,54 @@ collapse/drift failure mode, but it also means most clips are only about 5-6 sec
 The shorter context appears to hurt Qwen text recognition compared with longer segments,
 even though timing is cleaner.
 
-Next qwen work should keep the collapse/drift protection, but test ways to give Qwen more
-context before changing defaults:
+Stage 6.5 should implement **long-context recognition with short-anchor timing**. The key
+constraint is to decouple the audio span Qwen hears from the cue ownership span used for
+timing and dedup:
 
-1. Compare current 6.0/1.0 grouped frames against longer merged groups on the same known
-   weak/misheard windows.
-2. Test controlled pre/post context padding around qwen WhisperSeg jobs, while keeping cue
-   timing anchored to the original speech region.
-3. Test merged-adjacent WhisperSeg groups separately from semantic scene splitting, so any
-   text-quality gain is attributable to longer acoustic context rather than a scene-boundary
-   side effect.
-4. Re-run the DLDSS-492 qwen benchmark and manually inspect the known problem windows before
-   adopting a new qwen default.
+- Recognition span: a longer merged/padded audio window fed to Qwen for better text.
+- Ownership span: the original WhisperSeg frame(s) whose cue centers this job may emit.
+- Timing source: forced aligner when healthy; VAD-guided fallback when the sentinel marks
+  collapse. The fallback must use the owned speech regions, not the entire padded context.
 
-Success criteria: preserve the current near-zero residual collapse / low-overlap timing
-hygiene while recovering text accuracy that is lost by over-short qwen clips.
+Implementation plan:
+
+1. Add a qwen-only WhisperSeg context mode, disabled until benchmarked:
+   - `--qwen-whisperseg-context-mode none|pad|merge` (default `none` initially).
+   - `pad`: widen each WhisperSeg job by bounded pre/post audio context, but keep
+     `keep_lo/keep_hi` and `speech_regions` tied to the original frame.
+   - `merge`: merge adjacent WhisperSeg groups up to a target recognition duration while
+     retaining the original component speech regions inside the merged clip.
+2. Extend `ChunkJob` only as much as needed:
+   - keep `start/end` as the recognition audio slice.
+   - keep `keep_lo/keep_hi` as the cue ownership window.
+   - keep `speech` as clip-relative owned speech regions for sentinel fallback.
+   - if merge needs debugability, add metadata such as component frame ranges to raw dumps,
+     not to cue shaping logic.
+3. Build jobs in two layers:
+   - First run WhisperSeg exactly as today to get atomic frames.
+   - Then apply optional qwen context expansion/merge to create recognition jobs.
+   - Do not mix this with semantic scene changes in the first benchmark; scene splitting
+     stays `none` so the ablation isolates context length.
+4. Preserve collapse/drift protection:
+   - For `aligner_fallback`, assess aligner items against the full recognition clip.
+   - On collapse, redistribute words over the owned `speech` regions only.
+   - Filter emitted cues by `keep_lo/keep_hi` so extra context cannot duplicate neighboring
+     cues or claim text from outside the job's ownership span.
+5. Benchmark candidates before changing defaults:
+   - baseline: current qwen default (`context-mode none`, 6.0/1.0).
+   - pad: e.g. pre 0.5s / post 1.0s, then 1.0s / 1.5s if safe.
+   - merge: e.g. target 12s, 18s, 24s with a small max inter-frame gap.
+   - optional diagnostic only: `vad_only` timing to separate text-window effects from
+     forced-aligner effects.
+6. Evaluate with both automatic and manual checks:
+   - Re-run DLDSS-492 qwen benchmark.
+   - Inspect the known weak/misheard windows manually.
+   - Track cue count, short cues, overlaps, same-start piles, sentinel collapse rate,
+     recovered collapse rate, and raw text quality.
+
+Success criteria: recover the text quality lost by over-short qwen clips while preserving
+the Stage 6.4 timing hygiene: near-zero residual collapse, low overlap/short-cue counts,
+and no return to long-clip chaotic drift.
 
 ### Later work
 
@@ -529,12 +562,14 @@ Validation for the split:
   4 / keep 2): `行く×7 → 行く行く`, genuine 2–3× emphasis untouched. Applied in
   `finalize_qwen_entries` (Base config `collapse_repeats`, both lines). We did NOT port WJ's
   hallucination phrase list (Whisper-era) or sentence dedup (we have near-dup).
-- **Stage 6.5 — qwen context recovery: NEXT.** Stage 6.4 solved the collapse/drift tradeoff
-  by moving qwen to short WhisperSeg-framed clips, but those clips are now often only about
-  5-6 seconds. That likely improves alignment while reducing the acoustic/text context Qwen
-  needs for accurate recognition. Next work: benchmark longer merged WhisperSeg groups and
-  controlled context padding, separately from semantic scene splitting, then keep only changes
-  that preserve the Stage 6.4 timing hygiene.
+- **Stage 6.5 — qwen context recovery: DESIGN READY, IMPLEMENT NEXT.** Stage 6.4 solved
+  the collapse/drift tradeoff by moving qwen to short WhisperSeg-framed clips, but those
+  clips are now often only about 5-6 seconds and appear to reduce Qwen recognition quality.
+  Implement long-context recognition with short-anchor timing: optional qwen-only
+  WhisperSeg context `pad` / `merge` modes, original-frame cue ownership, aligner timing when
+  healthy, and VAD-guided fallback over owned speech regions when collapsed. Do not change
+  the qwen default until DLDSS-492 plus manual problem-window review show text recovery
+  without a timing regression.
 
 ### Collapse & drift resolution — the original qwen pain point (DLDSS-492)
 

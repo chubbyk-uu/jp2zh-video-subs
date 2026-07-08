@@ -1185,15 +1185,16 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
                 items = [_RawItem(it["text"], it["start"], it["end"]) for it in src]
         else:
             text = "" if is_context_echo(ch["text"], context) else ch["text"]
-            if (
-                raw.get("text_backend", "qwen") == "qwen"
-                and getattr(args, "timestamp_mode", raw.get("timestamp_mode", "aligner_fallback")) == "aligner_only"
-                and "raw_items" in ch
-            ):
+            raw_mode = getattr(args, "timestamp_mode", raw.get("timestamp_mode", "aligner_fallback"))
+            if raw.get("text_backend", "qwen") == "qwen" and raw_mode == "vad_only":
+                regions = [Interval(float(s), float(e)) for s, e in ch.get("speech_regions", [])]
+                items = vad_only_items_for_text(text, ch["end"] - ch["start"], regions)
+            elif raw.get("text_backend", "qwen") == "qwen" and raw_mode == "aligner_only" and "raw_items" in ch:
                 src = ch["raw_items"]
+                items = [_RawItem(it["text"], it["start"], it["end"]) for it in src]
             else:
                 src = ch.get("items") or ch.get("raw_items") or []
-            items = [_RawItem(it["text"], it["start"], it["end"]) for it in src]
+                items = [_RawItem(it["text"], it["start"], it["end"]) for it in src]
         if "keep_lo" in ch:
             keep_lo = ch["keep_lo"]
             keep_hi = ch["keep_hi"] if ch.get("keep_hi") is not None else float("inf")
@@ -1499,14 +1500,15 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
     import torch
     from qwen_asr import Qwen3ASRModel
 
+    use_vad_only = getattr(args, "timestamp_mode", "aligner_fallback") == "vad_only"
     model = Qwen3ASRModel.from_pretrained(
         str(args.model),
         dtype=getattr(torch, args.dtype),
         device_map=args.device,
         max_inference_batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
-        forced_aligner=str(args.forced_aligner),
-        forced_aligner_kwargs=dict(
+        forced_aligner=None if use_vad_only else str(args.forced_aligner),
+        forced_aligner_kwargs=None if use_vad_only else dict(
             dtype=getattr(torch, args.dtype),
             device_map=args.device,
         ),
@@ -1559,7 +1561,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                     audio=clips,
                     context=context,
                     language=[args.language] * len(clips),
-                    return_time_stamps=True,
+                    return_time_stamps=not use_vad_only,
                 )
             finally:
                 if original_max_tokens is not None:
@@ -1567,12 +1569,18 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             elapsed = time.time() - t0
             for job, result in zip(group, results):
                 text = str(result.text or "").strip()
-                items = getattr(result.time_stamps, "items", None) if result.time_stamps is not None else None
-                raw_items = list(items or [])
-                sentinel, recovery, out_items = _time_aligned_job(job, raw_items, args)
                 # Drop context echoes (the model regurgitating the biasing prompt on
                 # near-silent clips) before they become spurious cues.
                 display_text = "" if is_context_echo(text, context) else text
+                if use_vad_only:
+                    raw_items = []
+                    out_items = vad_only_items_for_text(display_text, job.end - job.start, job.speech)
+                    sentinel = {"status": "N/A", "reason": "vad_only"}
+                    recovery = {"applied": False, "strategy": "vad_only"}
+                else:
+                    items = getattr(result.time_stamps, "items", None) if result.time_stamps is not None else None
+                    raw_items = list(items or [])
+                    sentinel, recovery, out_items = _time_aligned_job(job, raw_items, args)
                 kept = chunk_entries(
                     display_text, out_items, start=job.start,
                     keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
@@ -1725,7 +1733,7 @@ def main() -> None:
                 raise SystemExit(f"Missing anime-whisper model: {args.text_model}")
         elif not args.model.exists():
             raise SystemExit(f"Missing Qwen ASR model: {args.model}")
-        needs_forced_aligner = args.text_backend != "anime" or args.timestamp_mode != "vad_only"
+        needs_forced_aligner = args.timestamp_mode != "vad_only"
         if needs_forced_aligner and not args.forced_aligner.exists():
             raise SystemExit(f"Missing Qwen forced aligner: {args.forced_aligner}")
         if args.chunk_overlap_seconds >= args.chunk_seconds:

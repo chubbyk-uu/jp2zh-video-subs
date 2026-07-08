@@ -1,4 +1,6 @@
 import argparse
+import sys
+import types
 
 import numpy as np
 import pytest
@@ -25,6 +27,7 @@ from transcribe_ja_srt_qwen import (
     resolve_qwen_generation_config,
     sentences_from_alignment,
     split_into_units,
+    transcribe_qwen,
     uncovered_gap_spans,
     vad_only_items_for_text,
 )
@@ -759,6 +762,97 @@ def test_entries_from_raw_qwen_schema_uses_final_items():
     assert entries
     assert entries[0].start == pytest.approx(12.0)
     assert "おはよう" in "".join(e.text for e in entries)
+
+
+def test_entries_from_raw_qwen_vad_only_rebuilds_from_speech_regions():
+    raw = {
+        "text_backend": "qwen", "timestamp_mode": "aligner_fallback",
+        "chunk_seconds": 30.0, "chunk_overlap_seconds": 3.0, "duration": 20.0,
+        "context": "",
+        "chunks": [{
+            "start": 10.0, "end": 20.0, "keep_lo": 10.0, "keep_hi": 20.0,
+            "language": "Japanese", "text": "おはようございます。",
+            "speech_regions": [[1.0, 4.0]],
+            "raw_items": [{"text": c, "start": 0.0, "end": 0.0} for c in "おはようございます"],
+            "items": [{"text": c, "start": 6.0 + i * 0.2, "end": 6.1 + i * 0.2}
+                      for i, c in enumerate("おはようございます")],
+        }],
+    }
+
+    entries = entries_from_raw(raw, _shaping_args(timestamp_mode="vad_only"))
+
+    assert entries
+    assert entries[0].start == pytest.approx(11.0)
+    assert entries[-1].end <= 14.0 + 1e-6
+    assert "おはよう" in "".join(e.text for e in entries)
+
+
+def test_transcribe_qwen_vad_only_skips_forced_aligner_and_uses_speech_regions(monkeypatch, tmp_path):
+    calls = {}
+
+    class FakeQwenModel:
+        def __init__(self):
+            self.max_new_tokens = 256
+            self.generation_config = types.SimpleNamespace()
+
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            calls["from_pretrained"] = kwargs
+            return cls()
+
+        def transcribe(self, *, audio, context, language, return_time_stamps):
+            calls["return_time_stamps"] = return_time_stamps
+            assert return_time_stamps is False
+            return [types.SimpleNamespace(text="おはようございます。", language="Japanese", time_stamps=None)]
+
+    monkeypatch.setitem(sys.modules, "qwen_asr", types.SimpleNamespace(Qwen3ASRModel=FakeQwenModel))
+    monkeypatch.setattr(
+        "transcribe_ja_srt_qwen.load_full_audio",
+        lambda _path: (np.zeros(16000 * 20, dtype=np.float32), 16000),
+    )
+    job = ChunkJob(10.0, 14.0, 10.0, 14.0)
+    job.speech = [Interval(1.0, 3.0)]
+    monkeypatch.setattr("transcribe_ja_srt_qwen.build_qwen_jobs", lambda *_args: ([job], "whisperseg"))
+
+    args = _shaping_args(
+        audio=tmp_path / "audio.wav",
+        model=tmp_path / "qwen",
+        forced_aligner=tmp_path / "aligner",
+        dtype="float32",
+        device="cpu",
+        batch_size=1,
+        max_new_tokens=256,
+        max_tokens_per_second=0.0,
+        min_tokens_floor=64,
+        repetition_penalty=1.0,
+        chunk_seconds=30.0,
+        chunk_overlap_seconds=3.0,
+        vad_backend="whisperseg",
+        scene_backend="none",
+        vad_pad_seconds=0.2,
+        vad_pre_context_seconds=0.0,
+        vad_post_context_seconds=0.5,
+        vad_max_leading_silence=0.5,
+        context="",
+        no_default_context=True,
+        language="Japanese",
+        timestamp_mode="vad_only",
+        stepdown=False,
+        recapture_min_gap=0.0,
+    )
+
+    entries, _chunks, raw = transcribe_qwen(args)
+
+    assert calls["from_pretrained"]["forced_aligner"] is None
+    assert calls["from_pretrained"]["forced_aligner_kwargs"] is None
+    assert calls["return_time_stamps"] is False
+    assert entries
+    assert entries[0].start == pytest.approx(11.0)
+    assert entries[-1].end <= 13.0 + 1e-6
+    assert raw["chunks"][0]["sentinel"] == {"status": "N/A", "reason": "vad_only"}
+    assert raw["chunks"][0]["recovery"] == {"applied": False, "strategy": "vad_only"}
+    assert raw["chunks"][0]["raw_items"] == []
+    assert raw["chunks"][0]["items"]
 
 
 def test_collapse_repeated_phrases_tames_runaway_only():
