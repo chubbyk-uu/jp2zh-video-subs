@@ -177,7 +177,7 @@ def test_build_qwen_command_survives_unexposed_config_fields(tmp_path):
     assert cmd[cmd.index("--repetition-penalty") + 1] == "1.1"
     assert cmd[cmd.index("--max-tokens-per-second") + 1] == "20.0"
     assert cmd[cmd.index("--min-tokens-floor") + 1] == "256"
-    assert cmd[cmd.index("--whisperseg-context-mode") + 1] == "merge"
+    assert cmd[cmd.index("--whisperseg-context-mode") + 1] == "none"
     assert cmd[cmd.index("--whisperseg-context-merge-gap") + 1] == "2.0"
     assert cmd[cmd.index("--whisperseg-context-target-seconds") + 1] == "18.0"
     assert cmd[cmd.index("--whisperseg-context-after-target-gap") + 1] == "0.2"

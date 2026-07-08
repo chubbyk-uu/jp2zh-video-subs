@@ -786,9 +786,9 @@ def main() -> None:
     parser.add_argument("--qwen-min-tokens-floor", type=int, default=256)
     parser.add_argument("--qwen-chunk-seconds", type=float, default=30.0)
     parser.add_argument("--qwen-chunk-overlap-seconds", type=float, default=3.0)
-    parser.add_argument("--qwen-phrase-max-chars", type=int, default=26)
+    parser.add_argument("--qwen-phrase-max-chars", type=int, default=None)
     parser.add_argument("--qwen-phrase-max-duration", type=float, default=8.0)
-    parser.add_argument("--qwen-phrase-max-internal-gap", type=float, default=2.0)
+    parser.add_argument("--qwen-phrase-max-internal-gap", type=float, default=None)
     parser.add_argument("--qwen-phrase-max-char-seconds", type=float, default=0.5)
     parser.add_argument("--qwen-min-duration", type=float, default=0.8)
     parser.add_argument("--qwen-context", default="",

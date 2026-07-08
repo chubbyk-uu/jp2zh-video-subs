@@ -22,6 +22,7 @@ from transcribe_ja_srt_qwen import (
     collapse_repeated_phrases,
     drop_isolated_interjections,
     entries_from_raw,
+    merge_close_cues,
     normalize_runtime_args,
     qwen_batch_token_budget,
     qwen_aligner_language,
@@ -63,6 +64,47 @@ def aligned_entries(text: str, chars: list[tuple[str, float, float]], **override
     )
     kwargs.update(overrides)
     return sentences_from_alignment(text, items, **kwargs)
+
+
+def test_merge_close_cues_packs_contiguous_sentences():
+    # Two short sentences 0.4s apart pack into one cue (WJ mg=1.5); the third is
+    # separated by a 2.0s pause (>= max_gap) so it stays its own cue.
+    entries = [
+        SubtitleEntry(0.0, 1.0, "うん。"),
+        SubtitleEntry(1.4, 2.4, "分かった。"),
+        SubtitleEntry(4.4, 5.4, "確認しておくね。"),
+    ]
+    out = merge_close_cues(entries, max_gap=1.5, max_chars=80, max_duration=8.0)
+    assert [e.text for e in out] == ["うん。分かった。", "確認しておくね。"]
+    assert (out[0].start, out[0].end) == (0.0, 2.4)
+
+
+def test_merge_close_cues_respects_char_and_duration_caps():
+    long_a = "あ" * 60
+    long_b = "い" * 30
+    # combined 90 > 80 chars: must not merge even though the gap is small.
+    out = merge_close_cues(
+        [SubtitleEntry(0.0, 1.0, long_a), SubtitleEntry(1.2, 2.0, long_b)],
+        max_gap=1.5, max_chars=80, max_duration=8.0,
+    )
+    assert len(out) == 2
+    # combined wall-clock 8.5s > 8s: must not merge.
+    out = merge_close_cues(
+        [SubtitleEntry(0.0, 5.0, "あ"), SubtitleEntry(5.2, 8.5, "い")],
+        max_gap=1.5, max_chars=80, max_duration=8.0,
+    )
+    assert len(out) == 2
+
+
+def test_merge_close_cues_skips_near_duplicates():
+    out = merge_close_cues(
+        [
+            SubtitleEntry(0.0, 2.0, "いやいや今選んでください"),
+            SubtitleEntry(2.1, 2.4, "いやいや、今選んでください"),
+        ],
+        max_gap=1.5, max_chars=80, max_duration=8.0,
+    )
+    assert len(out) == 2
 
 
 def test_interjection_core_strips_punctuation_elongation_small_kana():
@@ -713,7 +755,7 @@ def test_qwen_vad_only_allows_whisperseg_context_none():
     validate_runtime_args(args)
 
 
-def test_qwen_default_context_mode_normalizes_to_merge():
+def test_qwen_default_context_mode_normalizes_to_none():
     args = argparse.Namespace(
         text_backend="qwen",
         timestamp_mode="aligner_fallback",
@@ -723,7 +765,7 @@ def test_qwen_default_context_mode_normalizes_to_merge():
 
     normalize_runtime_args(args)
 
-    assert args.whisperseg_context_mode == "merge"
+    assert args.whisperseg_context_mode == "none"
 
 
 def test_anime_default_context_mode_normalizes_to_none():

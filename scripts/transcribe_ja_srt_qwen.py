@@ -696,6 +696,47 @@ def collapse_repeated_phrases(text: str, threshold: int = 4, keep: int = 2, max_
     return "".join(out)
 
 
+def merge_close_cues(
+    entries: list[SubtitleEntry], max_gap: float, max_chars: int, max_duration: float
+) -> list[SubtitleEntry]:
+    """WhisperJAV REGROUP_JAV `mg=1.5++80+1` port (aligner branch only).
+
+    Rejoin adjacent cues that were split at sentence punctuation when the pause
+    between them is under max_gap, as long as the merged cue stays within
+    max_chars (WJ sl=80) and max_duration (WJ sd=8). Contiguous short sentences
+    thus form one cue instead of one cue per sentence; a pause >= max_gap keeps
+    them separate. Input must be time-sorted and de-overlapped.
+    """
+    if not entries:
+        return entries
+    merged: list[SubtitleEntry] = [entries[0]]
+    for e in entries[1:]:
+        prev = merged[-1]
+        gap = e.start - prev.end
+        prev_chars = content_chars(prev.text)
+        cur_chars = content_chars(e.text)
+        combined_chars = len(prev_chars) + len(cur_chars)
+        # Don't concatenate near-duplicate neighbours (would produce a repetitive
+        # cue like 「AA'」); leave them for the near-dup squeeze / manual review.
+        # Require similar length so a short reply that happens to be a substring of a
+        # longer line (「おはよ」 in 「おはようございます」) is NOT treated as a dup.
+        a, b = "".join(prev_chars), "".join(cur_chars)
+        lo, hi = sorted((len(a), len(b)))
+        near_dup = bool(b) and hi > 0 and lo / hi >= 0.6 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.8
+        if (
+            0.0 <= gap < max_gap
+            and combined_chars <= max_chars
+            and (e.end - prev.start) <= max_duration
+            and not near_dup
+        ):
+            prev.text = prev.text.rstrip() + e.text.lstrip()
+            prev.end = e.end
+            prev.collapsed = prev.collapsed and e.collapsed
+        else:
+            merged.append(e)
+    return merged
+
+
 def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace) -> list[SubtitleEntry]:
     """Minimal time/format hygiene for Qwen output.
 
@@ -738,6 +779,8 @@ def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace
     if dropped:
         samples = "、".join(e.text.strip() for e in dropped[:6])
         print(f"Dropped isolated interjections: {len(dropped)} ({samples})", flush=True)
+    # (WJ-style cue merge now runs per-clip inside chunk_entries, so it never
+    # crosses a clip/frame boundary; nothing to merge globally here.)
     if args.min_cue_seconds > 0:
         entries = [e for e in entries if e.end - e.start >= args.min_cue_seconds]
     return entries
@@ -924,7 +967,9 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
 def normalize_runtime_args(args: argparse.Namespace) -> None:
     """Apply backend-dependent defaults after parsing shared qwen/anime flags."""
     if getattr(args, "whisperseg_context_mode", None) is None:
-        args.whisperseg_context_mode = "none" if getattr(args, "text_backend", "qwen") == "anime" else "merge"
+        # Both backends default to no context merge (Stage 6.7): the 0.35s scene ASR pad
+        # already gives short frames enough context; merge only added drift/drops for qwen.
+        args.whisperseg_context_mode = "none"
     validate_runtime_args(args)
 
 
@@ -1231,7 +1276,20 @@ def chunk_entries(
         collapse_fillers=getattr(args, "collapse_filler_repetition", True),
         ellipsis_hard_split=getattr(args, "text_backend", "qwen") != "anime",
     )
-    return [e for e in sentence_entries if keep_lo <= (e.start + e.end) / 2.0 < keep_hi]
+    kept = [e for e in sentence_entries if keep_lo <= (e.start + e.end) / 2.0 < keep_hi]
+    # WJ REGROUP_JAV cue merge is applied *within this clip's own cues* only (WJ
+    # regroups per stable-ts clip result, never across clip boundaries). This packs
+    # a clip's back-to-back sentences into one cue while a real clip/frame boundary
+    # (silence, scene edge) still separates speaker turns. qwen only; anime is
+    # frame-native (WJ Branch B: no gap merge).
+    if getattr(args, "text_backend", "qwen") != "anime":
+        kept = merge_close_cues(
+            kept,
+            max_gap=getattr(args, "phrase_max_internal_gap", 1.5),
+            max_chars=getattr(args, "phrase_max_chars", 80),
+            max_duration=getattr(args, "phrase_max_duration", 8.0),
+        )
+    return kept
 
 
 def _speech_regions_for_vad_only(clip_duration: float, speech_regions: list[Interval]) -> list[Interval]:

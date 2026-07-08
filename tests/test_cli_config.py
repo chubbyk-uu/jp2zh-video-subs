@@ -119,7 +119,7 @@ def test_qwen_and_anime_backend_defaults_are_separate():
     assert qwen.scene_backend == "semantic"
     assert qwen.stepdown is False
     assert qwen.stepdown_fallback_group == 6.0
-    assert qwen.whisperseg_context_mode == "merge"
+    assert qwen.whisperseg_context_mode == "none"
     assert qwen.whisperseg_context_pre_seconds == 2.0
     assert qwen.whisperseg_context_post_seconds == 2.0
     assert qwen.whisperseg_context_merge_gap == 2.0
