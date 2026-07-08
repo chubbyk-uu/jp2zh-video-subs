@@ -43,11 +43,9 @@ DEFAULT_ALIGNER = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 DEFAULT_ASR_CONTEXT = ""
 
 # Characters that end a sentence-level cue.
-# Sentence-ending punctuation, matched to WhisperJAV's regroup set
-# (`sp=.* /。/?/？` → 。 ? ？ and ". "). Deliberately excludes ！/! and …: qwen
-# rarely emits them, and anime-whisper sprays … on soft pauses — treating those as
-# sentence ends would shatter one spoken line into many tiny cues.
-SENTENCE_END_CHARS = "。？?"
+# Sentence-ending punctuation. Keep … out because anime-whisper sprays it on soft
+# pauses, but split on question/exclamation endings for both qwen and anime.
+SENTENCE_END_CHARS = "。？！?!"
 # anime-whisper punctuates soft pauses with … liberally, so treating every … as a
 # hard sentence end shatters one spoken line into many tiny cues. In ellipsis-soft
 # mode (anime backend) … is NOT a hard ender — only 。！？ etc. are — and … instead
@@ -703,13 +701,12 @@ def collapse_repeated_phrases(text: str, threshold: int = 4, keep: int = 2, max_
 def merge_close_cues(
     entries: list[SubtitleEntry], max_gap: float, max_chars: int, max_duration: float
 ) -> list[SubtitleEntry]:
-    """WhisperJAV REGROUP_JAV `mg=1.5++80+1` port (aligner branch only).
+    """WJ-derived REGROUP_JAV cue merge (aligner branch only).
 
     Rejoin adjacent cues that were split at sentence punctuation when the pause
     between them is under max_gap, as long as the merged cue stays within
-    max_chars (WJ sl=80) and max_duration (WJ sd=8). Contiguous short sentences
-    thus form one cue instead of one cue per sentence; a pause >= max_gap keeps
-    them separate. Input must be time-sorted and de-overlapped.
+    max_chars (WJ sl=80), max_duration (WJ sd=8), and max_gap (WJ mg=1.5).
+    Input must be time-sorted and de-overlapped.
     """
     if not entries:
         return entries
@@ -1176,9 +1173,9 @@ def reframe_collapsed_jobs(audio, samplerate: int, collapsed_jobs: list[ChunkJob
 def build_qwen_jobs(audio, samplerate: int, duration: float, args: argparse.Namespace) -> tuple[list[ChunkJob], str]:
     """Build qwen clips from the selected framing backend.
 
-    The Qwen default is WhisperSeg framing plus long-context merge/pad. The older
-    Silero/VAD path and semantic scenes remain selectable via --vad-backend current
-    and --scene-backend semantic for comparison.
+    The Qwen default is semantic-scene WhisperSeg framing with short scene-padded
+    frames (context mode none). The older Silero/VAD path and optional context
+    pad/merge experiments remain selectable for comparison.
     """
     if args.vad_chunks:
         if getattr(args, "vad_backend", "current") == "whisperseg":
@@ -1365,11 +1362,12 @@ def vad_only_items_for_text(text: str, clip_duration: float, speech_regions: lis
 def wj_regroup_vad_only_split(text: str, comma_min_chars: int = 50, max_chars: int = 80) -> list[str]:
     """WhisperJAV REGROUP_VAD_ONLY text split (anime / no-aligner branch).
 
-    Split at sentence enders (SENTENCE_END_CHARS = 。 ? ？), then split any segment
+    Split at sentence enders (SENTENCE_END_CHARS = 。？！？!), then split any segment
     past comma_min_chars at a Japanese/ASCII comma (、，,), and hard-cut a comma-less
-    run past max_chars. ！ and … never split. (WhisperJAV's vad-only regroup nominally
-    runs this via stable-ts sp/sp2/sl; the wjav_out anime dump was produced with
-    regroup off = pure frame-native, so this is the "regroup on" variant for review.)
+    run past max_chars. … never splits. WhisperJAV's vad-only regroup nominally
+    runs via stable-ts sp/sp2/sl; the project also treats ！/! as sentence ends for
+    readability. The wjav_out anime dump was produced with regroup off = pure
+    frame-native, so this is the project readability variant.
     """
     sents: list[str] = []
     buf = ""
@@ -1403,10 +1401,10 @@ def anime_vad_only_frame_entry(text: str, start: float, end: float) -> list[Subt
     """WJ-style anime vad_only reconstruction (REGROUP_VAD_ONLY).
 
     WhisperJAV's anime preset uses no aligner; timestamps are proportional. Each
-    frame's text is split at sentence punctuation (。 ? ？), long segments split at
+    frame's text is split at sentence punctuation (。？！？!), long segments split at
     commas past 50 chars and hard-capped at 80 (see wj_regroup_vad_only_split), and
     the frame's [start, end] is distributed across the pieces by content-char count.
-    ！ and … never split (anime-whisper sprays … on soft pauses).
+    … never splits (anime-whisper sprays … on soft pauses).
     """
     display = text.strip()
     if not display or not content_chars(display) or end <= start:
@@ -2028,8 +2026,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rebuild the SRT from a --raw-output dump, skipping the model (fast post-processing tuning).",
     )
     add_dataclass_arguments(parser, QwenAsrConfig)
-    # The shared parser cannot express backend-dependent defaults: qwen defaults
-    # to long-context merge, while anime defaults to no context expansion.
+    # The shared parser still normalizes backend-dependent defaults after parsing;
+    # both current top-level backends default to no WhisperSeg context expansion.
     parser.set_defaults(whisperseg_context_mode=None)
     return parser
 

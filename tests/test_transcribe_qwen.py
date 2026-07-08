@@ -68,7 +68,7 @@ def aligned_entries(text: str, chars: list[tuple[str, float, float]], **override
 
 
 def test_merge_close_cues_packs_contiguous_sentences():
-    # Two short sentences 0.4s apart pack into one cue (WJ mg=1.5); the third is
+    # Two short sentences 0.4s apart pack into one cue; the third is
     # separated by a 2.0s pause (>= max_gap) so it stays its own cue.
     entries = [
         SubtitleEntry(0.0, 1.0, "うん。"),
@@ -1101,9 +1101,9 @@ def test_anime_vad_only_frame_entry_drops_punctuation_only_frame():
 
 
 def test_wj_regroup_vad_only_split_sentence_then_length():
-    # Sentence split at 。/？; ！ and … do NOT split.
+    # Sentence split at 。/？/！; … does NOT split.
     assert wj_regroup_vad_only_split("はい。うん？そう。") == ["はい。", "うん？", "そう。"]
-    assert wj_regroup_vad_only_split("だめ！ああ…もう") == ["だめ！ああ…もう"]
+    assert wj_regroup_vad_only_split("だめ！ああ…もう") == ["だめ！", "ああ…もう"]
     # A short sentence keeps its commas (under 50 chars).
     assert wj_regroup_vad_only_split("あ、い、う。") == ["あ、い、う。"]
     # Over 50 chars: split at a comma past the threshold.

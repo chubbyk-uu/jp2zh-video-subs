@@ -92,11 +92,10 @@ class QwenAsrConfig(BaseAsrConfig):
     """Qwen3-ASR backend defaults forwarded to transcribe_ja_srt_qwen.py."""
 
     max_new_tokens: int = arg_field(4096, help="Hard cap for Qwen generated tokens per clip")
-    # Stage 6.8 — qwen cue segmentation ported from WhisperJAV REGROUP_JAV (aligner branch):
-    # split at sentence punctuation + gaps >= internal_gap, then merge adjacent cues whose
-    # pause is under internal_gap while combined stays within phrase_max_chars/duration
-    # (WJ mg=1.5++80+1 / sl=80 / sd=8). So qwen packs contiguous sentences up to 80 chars
-    # instead of one cue per sentence. anime stays on the Base 26/2.0 (frame-native, no merge).
+    # Stage 6.8 — qwen cue segmentation derived from WhisperJAV REGROUP_JAV
+    # (aligner branch): split at sentence punctuation + gaps >= internal_gap, then
+    # merge adjacent cues whose pause is under internal_gap while combined stays
+    # within phrase_max_chars/duration. Keep WJ's mg=1.5 default for parity.
     phrase_max_chars: int = arg_field(80, help="Max content chars per cue (WJ REGROUP_JAV sl=80)")
     phrase_max_internal_gap: float = arg_field(1.5, help="Split/merge cue boundary gap (WJ sg/mg=1.5)")
     text_backend: str = arg_field("qwen", choices=("qwen", "anime"), help="ASR text source")

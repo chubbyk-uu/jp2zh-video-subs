@@ -14,8 +14,8 @@ The goal is not to copy WhisperJAV's final subtitles wholesale. The goal is to b
 The top-level default project pipeline is now `--asr anime`, which selects
 `--text-backend anime` in the shared Qwen/anime sub-script. The sub-script's raw
 `QwenAsrConfig.text_backend` default remains `qwen` so direct script use stays
-explicit. After Stage 6.6, qwen's own default framing is WhisperSeg + semantic scene +
-merged long-context recognition + aligner fallback recovery + WJ-style generation knobs.
+explicit. After Stage 6.8, qwen's own default framing is WhisperSeg + semantic scene +
+short scene-padded recognition windows + aligner fallback recovery + WJ-derived cue regrouping.
 The normal video pipeline now uses the WJ-style anime path:
 
 ```text
@@ -24,7 +24,7 @@ audio
   -> WhisperSeg grouped frames
   -> anime-whisper text
   -> anime text cleaner
-  -> vad_only frame-native timing
+  -> vad_only frame timing + readability split
   -> final overlap/filler hygiene
   -> translate / ASS
 ```
@@ -167,7 +167,7 @@ All measurements below are from the same primary long-form evaluation clip using
 ### Latest anime parity check (2026-07-08)
 
 After matching WhisperJAV's padded semantic scene `asr_processing` windows and changing
-anime `vad_only` reconstruction to frame-native output, the default anime line is now close
+anime `vad_only` reconstruction to frame-native output, the default anime line became close
 to WhisperJAV anime on the primary long-form clip:
 
 ```text
@@ -184,9 +184,11 @@ some overlapping cue times, while this project de-overlaps final output. The lar
 text differences are concentrated in low-clarity breathy/moan regions, not in the previous
 large-scale anime framing or sentence-splitting mismatch.
 
-Current verdict: the default anime line is good enough to treat as the stable main line for
-JAV/anime-style material. Further work should be incremental and evidence-driven; the next
-main optimization effort moves back to Qwen.
+Current follow-up: the default anime line now keeps the same WJ-like ASR framing but applies
+project readability splitting within a frame (`。？！?!`, long comma segments >50 chars, hard
+cap 80 chars; `…` never hard-splits) and strips leading soft ellipses. This intentionally
+trades exact WJ output parity for more readable final subtitles while preserving the ASR
+windowing that fixed the earlier recognition mismatch.
 
 ### Timing modes
 
@@ -311,14 +313,15 @@ Only implement after the audit identifies a cause:
 - Tune WhisperSeg grouping if it improves both weak-speech recall and misrecognition windows.
 - Keep semantic scene easy to disable unless it improves the selected windows consistently.
 
-### Next qwen follow-up: recover longer recognition context
+### Completed qwen context experiment
 
 Current qwen default intentionally uses short WhisperSeg frames. That fixed the original
 collapse/drift failure mode, but it also means most clips are only about 5-6 seconds long.
 The shorter context appears to hurt Qwen text recognition compared with longer segments,
 even though timing is cleaner.
 
-Stage 6.5 should implement **long-context recognition with short-anchor timing**. The key
+Stage 6.5 implemented **long-context recognition with short-anchor timing** as an
+experiment. The key
 constraint is to decouple the audio span Qwen hears from the cue ownership span used for
 timing and dedup:
 
@@ -329,9 +332,10 @@ timing and dedup:
 
 Implementation plan:
 
-1. Add a qwen-only WhisperSeg context mode. **Implemented and enabled as the Qwen
-   default after manual review on the primary long-form evaluation clip.**
-   - `--qwen-whisperseg-context-mode none|pad|merge` (Qwen default: `merge`).
+1. Add a qwen-only WhisperSeg context mode. **Implemented.** It was briefly enabled as
+   the Qwen default during Stage 6.5, then disabled by default after Stage 6.7 testing
+   showed longer merged windows increased Qwen hallucination and tail drift.
+   - `--qwen-whisperseg-context-mode none|pad|merge` (current Qwen default: `none`).
    - `pad`: widen each WhisperSeg job by bounded pre/post audio context, but keep
      `keep_lo/keep_hi` and `speech_regions` tied to the original frame.
    - `merge`: merge adjacent WhisperSeg groups. Below `target_seconds` the merge tolerance
@@ -353,22 +357,23 @@ Implementation plan:
 3. Build jobs in two layers:
    - First run WhisperSeg exactly as today to get atomic frames.
    - Then apply optional qwen context expansion/merge to create recognition jobs.
-   - Do not mix this with semantic scene changes in the first benchmark; scene splitting
-     stays `none` so the ablation isolates context length.
+   - The first benchmark isolated context length; current Qwen defaults use semantic scene
+     with context mode `none`.
 4. Preserve collapse/drift protection:
    - For `aligner_fallback`, assess aligner items against the full recognition clip.
    - On collapse, redistribute words over the owned `speech` regions only.
    - Filter emitted cues by `keep_lo/keep_hi` so extra context cannot duplicate neighboring
      cues or claim text from outside the job's ownership span.
 5. Benchmark candidates before changing defaults: **done on the primary long-form
-   evaluation clip; default selected.**
+   evaluation clip; merge/pad was later rejected as the current default after manual review.**
    - baseline: previous qwen default (`context-mode none`, 6.0/1.0).
    - pad: e.g. pre 0.5s / post 1.0s, then 1.0s / 1.5s if safe.
    - merge: e.g. soft target 12s, 18s, 24s with a small max inter-frame gap and a hard
      cap around 32-36s.
-   - merge + pad: selected default is `merge_gap=2.0`, soft `target=18`,
+   - merge + pad: tested candidate `merge_gap=2.0`, soft `target=18`,
      `after_target_gap=0.2`, `hard_max=35`, fixed `pre/post=2.0`; ratio padding stayed
-     experimental.
+     experimental. It is still selectable, but not the default because later subtitle
+     review showed more hallucination and tail drift than `context-mode none`.
    - optional diagnostic only: `vad_only` timing to separate text-window effects from
      forced-aligner effects. Follow-up A/B showed that `vad_only + merge/pad` can repeat
      whole neighboring lines because there is no aligner ownership filter to reject text
@@ -381,9 +386,9 @@ Implementation plan:
    - Track cue count, short cues, overlaps, same-start piles, sentinel collapse rate,
      recovered collapse rate, and raw text quality.
 
-Success criteria: recover the text quality lost by over-short qwen clips while preserving
-the Stage 6.4 timing hygiene: near-zero residual collapse, low overlap/short-cue counts,
-and no return to long-clip chaotic drift.
+Result: the context machinery remains available for targeted experiments, but the current
+Qwen default is `--qwen-whisperseg-context-mode none` because the longer windows did not
+preserve text quality cleanly enough for production defaults.
 
 ### Later work
 
@@ -398,11 +403,11 @@ After anime stabilizes:
 
 ## Qwen line (Stage 6): WJ feature audit and plan
 
-Status: Stage 5.9 through 6.5 are implemented and benchmarked/manual-reviewed. The
-current project default remains the anime line. The current qwen default is Stage 6.5
-long-context recognition with short-anchor timing: WhisperSeg qwen framing (6.0/1.0),
-merge context `gap=2.0 / target=18 / after_target_gap=0.2 / hard_max=35 / fixed pre/post=2.0`,
-aligner fallback recovery, WJ-style generation knobs, semantic scene OFF, and step-down OFF.
+Status: Stage 5.9 through 6.8 are implemented and benchmarked/manual-reviewed. The
+current project default remains the anime line. The current qwen default is short
+scene-padded WhisperSeg framing: qwen WhisperSeg values (6.0/1.0), semantic scene ON,
+context mode `none`, aligner fallback recovery, WJ-style generation knobs, WJ-style cue
+regrouping (`phrase_max_chars=80`, `phrase_max_internal_gap=1.5`), and step-down OFF.
 WhisperJAV's code is layered (deprecated modes, generic defaults vs generator overrides
 vs v4 YAML vs CLI defaults), so this section keeps the line-cited audit and experiment
 history, but final defaults come from post-alignment ablations and manual subtitle review
@@ -414,7 +419,8 @@ Implemented. This was required before any qwen WJ port.
 
 Problem addressed:
 
-- `scripts/pipeline_configs.py::QwenAsrConfig` currently hosts both qwen and anime knobs.
+- Before Stage 5.9, `scripts/pipeline_configs.py::QwenAsrConfig` hosted both qwen and
+  anime knobs.
 - Top-level `--asr anime` uses the shared qwen sub-script with `text_backend=anime`.
 - Anime defaults now live in the shared config: `timestamp_mode=vad_only`,
   `vad_backend=whisperseg`, `whisperseg_max_group=5.0`,
@@ -433,9 +439,10 @@ Implemented shape:
   `AnimeAsrConfig(BaseAsrConfig)` add/override only backend-selection defaults
   (`text_backend`, text model, timestamp mode, VAD backend, WhisperSeg params,
   scene params, anime generation knobs, and future qwen WJ knobs).
-- `QwenAsrConfig`: qwen-only backend defaults and help text. Current target is the
-  Stage 6.4 ablation winner: WhisperSeg 6.0/1.0 + aligner-fallback recovery +
-  generation knobs, with semantic scene and step-down selectable but OFF by default.
+- `QwenAsrConfig`: qwen-only backend defaults and help text. Current default is
+  WhisperSeg 6.0/1.0 + semantic scene + scene ASR pad 0.35 + context mode `none` +
+  aligner-fallback recovery + WJ-style generation/cue-regrouping knobs; step-down
+  remains selectable but OFF by default.
 - `AnimeAsrConfig`: anime-only backend defaults and help text. Keep the current anime
   default: anime-whisper text, WhisperSeg 5.0/0.5, semantic scene, `vad_only` timing.
 - Top-level CLI:
@@ -488,7 +495,7 @@ Validation for the split:
 |---|---|---|---|
 | Config split | n/a | **ADD FIRST** | Prevents anime defaults from leaking into qwen. Add `AnimeAsrConfig`, qwen-only defaults, `--anime-*` top-level flags, and compatibility aliases. |
 | WhisperSeg vad-grouped framing | max_group **6.0**, chunk_threshold **1.0** | **DEFAULT after Stage 6.3** | The primary long-form benchmark moved qwen consensus recall 77.4% -> 90.5% and weak-speech recall 8.8% -> 13.7%. Use qwen values 6.0/1.0 (not anime 5.0/0.5). |
-| Semantic scene 12–48 | semantic 12–48 | **IMPLEMENTED, DEFAULT OFF after Stage 6.4** | WJ qwen default is semantic ON, so Stage 6.3.5 aligned to it first. Stage 6.4 then showed semantic ON costs weak-speech recall on the primary long-form clip without a consensus gain, so it stays selectable but OFF by default. |
+| Semantic scene 12–48 | semantic 12–48 | **IMPLEMENTED, DEFAULT ON after later manual review** | WJ qwen default is semantic ON. Stage 6.4 briefly turned it off after one benchmark, but later subtitle review found semantic scene reduced some Qwen recognition errors, so the current Qwen default is semantic ON while it remains selectable. |
 | aligner_vad_fallback timing | aligner + VAD fallback on collapse | **DEFAULT after Stage 6.3** | We already have this mechanism (sentinel + `redistribute_collapsed_words` w/ `job.speech`). It reduces short-sub/collapse symptoms and preserves aligner timing where healthy. |
 | repetition_penalty 1.1 | generate() sampling | **DEFAULT after Stage 6.3** | Feasible on our transformers backend; the implementation sets the verified thinker's HF `generation_config` path and warns if unavailable. |
 | dynamic token budget (20 tok/s) | `_compute_dynamic_token_limit` | **DEFAULT after Stage 6.3** | Implemented as batch-safe `per_batch_max`; the primary long-form benchmark showed a small qwen recall gain when combined with WhisperSeg. |
@@ -504,7 +511,7 @@ Validation for the split:
 - **Stage 6.0 — probe:** done. `scripts/probe_qwen_stage6.py` builds qwen-style
   WhisperSeg jobs, runs `Qwen3ASRModel.transcribe(return_time_stamps=True)`, reports
   clip-relative timestamp checks, sentinel metrics, generation-config path, and dynamic
-  token-budget decisions. Host probe on `work/01/01.wav` confirmed:
+  token-budget decisions. Host probe on a local WAV sample confirmed:
   - WhisperSeg uses CUDA provider.
   - qwen bundled aligner `time_stamps.items` are clip-relative.
   - `repetition_penalty` can be applied at `model.model.thinker.generation_config`.
@@ -530,9 +537,10 @@ Validation for the split:
   references. The runner names the fully enabled ported subset `qwen_wj_core`: WhisperSeg,
   semantic scenes, collapse recovery, and generation knobs only; it deliberately does not
   imply WJ step-down retry, AssemblyTextCleaner, or full stable-ts regroup parity.
-  `qwen_whisperseg_gen` is the current qwen default candidate because it improves both
-  consensus and weak-speech recall over the old qwen baseline without the semantic-scene
-  weak-speech regression seen in this sample.
+  `qwen_whisperseg_gen` was the best candidate in this Stage 6.3 slice because it improved
+  both consensus and weak-speech recall over the old qwen baseline without the
+  semantic-scene weak-speech regression seen in this sample. Later stages changed the
+  default again after full WJ alignment, semantic-scene review, and context-window review.
 
   | candidate | consensus recall | weak-speech recall | timing |
   | --- | ---: | ---: | --- |
@@ -560,20 +568,21 @@ Validation for the split:
   temporarily aligned qwen to WJ qwen for ablation: `vad_backend=whisperseg` 6.0/1.0,
   `timestamp_mode=aligner_fallback` (≈ WJ `aligner_vad_fallback`),
   `repetition_penalty=1.1`, dynamic token 20 tok/s, and `scene_backend` flipped
-  `none → semantic` (12–48). Stage 6.4 later reverted semantic/step-down defaults, and
-  Stage 6.5 added default merge+pad context. **Step-down implemented**
+  `none → semantic` (12–48). Stage 6.4 later reverted semantic/step-down defaults
+  historically; later manual review restored semantic ON, while Stage 6.5 context
+  merge/pad remained selectable but not default. **Step-down implemented**
   (`reframe_collapsed_jobs` + a step-down pass in `transcribe_qwen`): after the main pass, each
   job whose sentinel is `COLLAPSED` is re-framed via WhisperSeg at `stepdown_fallback_group`
   and re-transcribed, its cues replaced (and its raw chunk marked `superseded_by_stepdown` so
-  `--from-raw` stays consistent). Config: `stepdown` (default True), `stepdown_fallback_group`
+  `--from-raw` stays consistent). Config: `stepdown` (default False), `stepdown_fallback_group`
   (default **6.0**). **Important WJ finding:** WJ ships `fallback == main max_group` (6.0), so
   `reframe` re-creates the same frames and re-decodes identically on our deterministic path —
   i.e. WJ's default step-down is effectively **inert** (proof: `qwen_pipeline.py` L412 main
   framer = `segmenter_max_group_duration` 6.0; `StepDownConfig.fallback_max_group_s` 6.0;
   `vad_grouped.py::reframe` just re-runs the segmenter with that value; `stepdown_initial_group`
-  is stored but unused). We kept the default WJ-faithful (inert); the ablation (6.4) tests
-  tighter `stepdown_fallback_group` (e.g. 3.0) where it actually reduces collapse.
-  AssemblyTextCleaner stays **PENDING (待定)**.
+  is stored but unused). We kept step-down selectable but OFF by default; the ablation (6.4)
+  tested tighter `stepdown_fallback_group` values (e.g. 3.0) and still did not improve the
+  default tradeoff. The AssemblyTextCleaner narrow port is covered in Stage 6.4b.
 
   **Faithful WJ-qwen baseline (primary long-form clip, vs WJ-anime + WJ-qwen refs):** `qwen_wj_core` =
   consensus **91.8%** (435/474), weak-speech **9.3%** (19/205), cues=1093 short=4 long=0 ov=0.
@@ -602,8 +611,8 @@ Validation for the split:
   ON costs ~6pt weak-speech** (22.7→16.8) with no consensus gain. (3) **Step-down 3.0 (which
   actually tightens: reframe 97 vs 55) still doesn't help** — weak-speech −1pt, more cues.
   **Historical Stage 6.4 decision:** qwen default became `semoff_sd6` (semantic OFF,
-  step-down OFF). Stage 6.5 later added default merge+pad context on top of this base; both
-  semantic scene and step-down stay selectable.
+  step-down OFF). Later review changed the current default back to semantic ON and kept
+  step-down OFF; both semantic scene and step-down stay selectable.
 - **Stage 6.4b — AssemblyTextCleaner (narrow port): DONE.** Analysis: WJ's cleaner and our
   `finalize_qwen_entries` are complementary — ours already does interjection removal + timing
   hygiene + filler-core collapse; the one real gap is **general runaway phrase repetition**
@@ -614,10 +623,11 @@ Validation for the split:
   4 / keep 2): `行く×7 → 行く行く`, genuine 2–3× emphasis untouched. Applied in
   `finalize_qwen_entries` (Base config `collapse_repeats`, both lines). We did NOT port WJ's
   hallucination phrase list (Whisper-era) or sentence dedup (we have near-dup).
-- **Stage 6.5 — qwen context recovery: DONE, DEFAULT ENABLED FOR QWEN.** Stage 6.4 solved
+- **Stage 6.5 — qwen context recovery: DONE, SELECTABLE BUT NOT DEFAULT.** Stage 6.4 solved
   the collapse/drift tradeoff by moving qwen to short WhisperSeg-framed clips, but those
-  clips are now often only about 5-6 seconds and appear to reduce Qwen recognition quality.
-  Code now supports long-context recognition with short-anchor timing: qwen-only
+  clips are now often only about 5-6 seconds and can reduce Qwen recognition quality in
+  some regions. Code supports long-context recognition with short-anchor timing for
+  experiments: qwen-only
   WhisperSeg context `pad` / `merge` modes, original-frame cue ownership, aligner timing when
   healthy, and VAD-guided fallback over owned speech regions when collapsed. Pre/post context
   also applies in `merge` mode, and ratio padding can scale context from the final merged span.
@@ -648,10 +658,10 @@ Validation for the split:
   17.2s→15.2s); (3) `after_target_gap` is what controls the longest run (0.2→33.7s, 0.5→41.9s,
   1.0→46.8s). The film's true longest gap-free run is 33.7s, so `hard_max=35` gives
   `hard_cuts=0` while windows stay bounded by the speech itself (≤37.7s incl pad); 40/48 are
-  identical to 35 here. Selected default: `merge_gap=2.0 / target=18 / after_target_gap=0.2 /
+  identical to 35 here. Selected experiment: `merge_gap=2.0 / target=18 / after_target_gap=0.2 /
   hard_max=35 / fixed pre/post=2.0`.
 
-  Full-pipeline re-run on the same primary long-form clip with the selected default
+  Full-pipeline re-run on the same primary long-form clip with the selected experiment
   (`--asr qwen`, galtransl):
   887 cues, 9 short (<0.5s), **0 overlaps, 0 same-start piles, 0 cues >8s**, `hard_cuts=0` —
   the framing change lands clean on the timeline.
@@ -664,6 +674,9 @@ Validation for the split:
   All `whisperseg_context_*` getattr fallbacks in `transcribe_ja_srt_qwen.py` were aligned to
   the dataclass defaults (previously `pre/post` fell back to 0.0 vs config 2.0, `merge_gap`
   to 1.0 vs 2.0, `hard_max` to 36.0 vs config) to avoid phantom defaults on from-raw/test paths.
+  Later manual subtitle review rejected merge/pad as the Qwen default because the longer
+  recognition windows increased hallucination and tail drift; current production Qwen uses
+  `--qwen-whisperseg-context-mode none`.
 
 ### Collapse & drift resolution — the original qwen pain point
 
@@ -740,9 +753,10 @@ anime-whisper model itself. It came from two project-side mismatches:
    padded `asr_processing` scene window. This project now mirrors that with
    `scene_asr_pad_seconds=0.35`.
 2. Anime `vad_only` output was still entering the aligned-stream `chunk_entries()` splitter,
-   so one WhisperJAV frame could be split again at sentence punctuation or character limits.
-   The default anime `vad_only` path now uses frame-native reconstruction: one content frame
-   becomes one subtitle cue, followed only by final hygiene.
+   so one WhisperJAV frame could be over-fragmented by aligner-oriented splitting.
+   The default anime `vad_only` path now keeps VAD frame timing first, then applies only an
+   anime-specific readability split inside a frame (`。？！?!`, long comma segments, hard
+   80-character cap; `…` never hard-splits) before final hygiene.
 
 Outcome: the default anime ASS now matches WhisperJAV anime closely on the primary long-form
 clip while retaining project output hygiene (no final overlaps). Keep forced-aligner modes
@@ -750,12 +764,12 @@ diagnostic only unless new evidence shows a net gain over `vad_only`.
 
 ## Stage 8: Qwen line follow-up
 
-Qwen is now the next optimization target. Its current default keeps the Stage 6.5
-long-context recognition window and turns semantic scene on by default because scene
-boundaries reduced some cross-scene recognition errors. The remaining issue is content
-quality: Qwen's drift/collapse behavior is much better than the old line, but recognition
-can still degrade when context is too short or scene/VAD boundaries cut semantically
-connected speech.
+Qwen is now the next optimization target. Its current default keeps semantic scene on but
+uses short scene-padded WhisperSeg frames directly (`--qwen-whisperseg-context-mode none`),
+because longer merged context windows increased Qwen hallucination and tail drift in current
+tests. Cue regrouping is WJ-derived: adjacent cues inside one clip merge
+only when the pause is under WJ's 1.5 seconds and the combined cue stays within 80 content
+characters / 8 seconds.
 
 Planned checks:
 
@@ -763,8 +777,9 @@ Planned checks:
    parity. Compare against both the old Qwen baseline and the stable anime default.
 2. Separate failures by cause: scene boundary, WhisperSeg frame boundary, context merge
    length, forced-aligner recovery, and translation-only ambiguity.
-3. Keep semantic scene on while testing whether Qwen needs different merge/pad defaults
-   under scene segmentation.
+3. Keep semantic scene on while testing whether Qwen needs selective `pad` / `merge`
+   experiments for specific failure classes; do not re-enable merge by default without
+   evidence that hallucination does not regress.
 4. Revisit optional recapture only after the main Qwen recognition window is stable.
 5. Prefer WJ-derived Qwen mechanisms first; add new project-specific logic only when WJ-like
    changes cannot explain the miss.
