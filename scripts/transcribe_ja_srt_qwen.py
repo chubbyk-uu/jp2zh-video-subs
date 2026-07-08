@@ -918,6 +918,13 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
         )
 
 
+def normalize_runtime_args(args: argparse.Namespace) -> None:
+    """Apply backend-dependent defaults after parsing shared qwen/anime flags."""
+    if getattr(args, "whisperseg_context_mode", None) is None:
+        args.whisperseg_context_mode = "none" if getattr(args, "text_backend", "qwen") == "anime" else "merge"
+    validate_runtime_args(args)
+
+
 def _whisperseg_group_bounds(group) -> tuple[float, float]:
     return float(group[0].start), float(group[-1].end)
 
@@ -1850,12 +1857,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rebuild the SRT from a --raw-output dump, skipping the model (fast post-processing tuning).",
     )
     add_dataclass_arguments(parser, QwenAsrConfig)
+    # The shared parser cannot express backend-dependent defaults: qwen defaults
+    # to long-context merge, while anime defaults to no context expansion.
+    parser.set_defaults(whisperseg_context_mode=None)
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    validate_runtime_args(args)
+    normalize_runtime_args(args)
 
     if args.from_raw is None:
         if args.text_backend == "anime":

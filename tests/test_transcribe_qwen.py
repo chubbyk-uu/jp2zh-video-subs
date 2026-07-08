@@ -21,6 +21,7 @@ from transcribe_ja_srt_qwen import (
     collapse_repeated_phrases,
     drop_isolated_interjections,
     entries_from_raw,
+    normalize_runtime_args,
     qwen_batch_token_budget,
     qwen_aligner_language,
     reframe_collapsed_jobs,
@@ -709,6 +710,32 @@ def test_qwen_vad_only_allows_whisperseg_context_none():
     )
 
     validate_runtime_args(args)
+
+
+def test_qwen_default_context_mode_normalizes_to_merge():
+    args = argparse.Namespace(
+        text_backend="qwen",
+        timestamp_mode="aligner_fallback",
+        vad_backend="whisperseg",
+        whisperseg_context_mode=None,
+    )
+
+    normalize_runtime_args(args)
+
+    assert args.whisperseg_context_mode == "merge"
+
+
+def test_anime_default_context_mode_normalizes_to_none():
+    args = argparse.Namespace(
+        text_backend="anime",
+        timestamp_mode="vad_only",
+        vad_backend="whisperseg",
+        whisperseg_context_mode=None,
+    )
+
+    normalize_runtime_args(args)
+
+    assert args.whisperseg_context_mode == "none"
 
 
 def test_anime_vad_only_rejects_whisperseg_context_merge():
