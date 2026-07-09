@@ -1,10 +1,8 @@
-from translate_srt_hymt import (
+from translation_common import (
     Entry,
     GlossaryTerm,
-    build_messages,
     clean_translation,
     glossary_issues,
-    glossary_instruction,
     is_context_sensitive_short_text,
     matched_glossary_terms,
     normalize_source,
@@ -46,13 +44,6 @@ def test_normalize_source_leaves_text_unchanged_without_replacements():
     assert normalize_source("今日はいい天気ですね") == "今日はいい天気ですね"
 
 
-def test_glossary_instruction_is_in_prompt():
-    instruction = glossary_instruction(TEST_GLOSSARY)
-
-    assert "参考下面的翻译" in instruction
-    assert "中央公園 翻译成 中央公园" in instruction
-
-
 def test_matched_glossary_terms_uses_current_source_only():
     terms = (
         GlossaryTerm("ご主人様", "主人", ""),
@@ -62,14 +53,6 @@ def test_matched_glossary_terms_uses_current_source_only():
 
     assert [term.source for term in matched_glossary_terms("ご主人様です", terms)] == ["ご主人様"]
     assert matched_glossary_terms("書類にサインをもらいたいのですが。", terms) == ()
-
-
-def test_build_messages_includes_default_glossary():
-    msgs = build_messages("中央公園", [], glossary=TEST_GLOSSARY)
-
-    assert [msg["role"] for msg in msgs] == ["user"]
-    assert "中央公園 翻译成 中央公园" in msgs[0]["content"]
-    assert msgs[0]["content"].endswith("中央公園")
 
 
 def test_glossary_issues_reports_forbidden_translation_without_fixing():
@@ -90,44 +73,6 @@ def test_write_terms_report(tmp_path):
     assert "Terminology review report" in report
     assert "source: 中央公園" in report
     assert "translation: 中央公园站。" in report
-
-
-def test_build_messages_without_history_is_single_instructed_turn():
-    msgs = build_messages("こんにちは", [])
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "user"
-    assert "只需要输出翻译后的结果" in msgs[0]["content"]
-    assert msgs[0]["content"].endswith("こんにちは")
-
-
-def test_build_messages_with_history_uses_chinese_background_only():
-    msgs = build_messages("今のセリフ", [("前のセリフ", "上一句译文")])
-    assert [m["role"] for m in msgs] == ["user"]
-    content = msgs[0]["content"]
-    assert "前文译文" in content
-    assert "上一句译文" in content
-    assert "前のセリフ" not in content
-    assert content.endswith("今のセリフ")
-
-
-def test_build_messages_background_mode_keeps_history_as_reference():
-    msgs = build_messages("今のセリフ", [("前のセリフ", "上一句译文")], prompt_mode="background")
-
-    assert [m["role"] for m in msgs] == ["user"]
-    content = msgs[0]["content"]
-    assert "历史翻译仅用于理解语境" in content
-    assert "日文：前のセリフ" in content
-    assert "中文：上一句译文" in content
-    assert "待翻译日文：\n今のセリフ" in content
-
-
-def test_build_messages_chat_mode_keeps_legacy_chat_turns():
-    msgs = build_messages("今のセリフ", [("前のセリフ", "上一句译文")], prompt_mode="chat")
-
-    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "user"]
-    assert msgs[1] == {"role": "user", "content": "前のセリフ"}
-    assert msgs[2] == {"role": "assistant", "content": "上一句译文"}
-    assert msgs[3] == {"role": "user", "content": "今のセリフ"}
 
 
 def test_padded_time_keeps_default_timing():

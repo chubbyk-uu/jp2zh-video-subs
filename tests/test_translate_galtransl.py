@@ -11,7 +11,7 @@ from translate_srt_galtransl import (
     translate_block_checked,
     union_terms,
 )
-from translate_srt_hymt import DEFAULT_GLOSSARY, GlossaryTerm, glossary_issues
+from translation_common import DEFAULT_GLOSSARY, GlossaryTerm, glossary_issues
 
 
 TEST_GLOSSARY = (

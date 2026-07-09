@@ -10,13 +10,12 @@
 - **`qwen`**——用 `Qwen3-ASR-1.7B` 出文本内容，配 `Qwen3-ForcedAligner-0.6B` 出时间轴，默认在 WhisperSeg 语音 frame 上识别，并带 aligner fallback recovery。适合作为更干净的文本/时间轴对比线。
 - **`whisper`**——旧的 `faster-whisper-large-v3` 滑窗主识别，可选 `--gap-fill` 音频补漏阶段。
 
-以及三套翻译后端，用 `--translator` 选择：
+以及两套翻译后端，用 `--translator` 选择：
 
 - **`galtransl`（默认）**——`Sakura-GalTransl-7B-v3.7`，针对视觉小说台词做了 GRPO 强化训练的日译中模型。比 Sakura-14B 更小更快、译文更口语，原生支持 `src->dst #备注` 格式的术语表。
 - **`sakura`**——`Sakura-14B-Qwen2.5-v1.0`，更大的轻小说/galgame 模型，更重，但在长难句上可作第二意见。
-- **`hymt`**——`Hy-MT2-7B`，通用翻译模型。
 
-逐项对比见 [识别后端：Anime vs Qwen vs Whisper](#识别后端anime-vs-qwen-vs-whisper) 和 [翻译后端：GalTransl vs Sakura vs HY-MT](#翻译后端galtransl-vs-sakura-vs-hy-mt)。
+逐项对比见 [识别后端：Anime vs Qwen vs Whisper](#识别后端anime-vs-qwen-vs-whisper) 和 [翻译后端：GalTransl vs Sakura](#翻译后端galtransl-vs-sakura)。
 
 阅读顺序建议：先看项目功能、安装依赖和下载模型，再看一条命令、默认行为和常用参数。后端对比、单步运行和排障章节用于调参、复查质量或定位失败。
 
@@ -50,7 +49,6 @@
 │   ├── Sakura-GalTransl-7B-v3.7-GGUF/ # 默认翻译模型
 │   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # 备选（更大）翻译模型
 │   ├── faster-whisper-large-v3/     # 旧版 CTranslate2 Whisper ASR 模型
-│   ├── Hy-MT2-7B-GGUF/              # 可选 HY-MT 翻译模型
 │   └── voice-gender-classifier/     # 可选 ECAPA 性别模型（双语上色用）
 ├── outputs/                         # 最终中文字幕输出
 ├── scripts/
@@ -61,7 +59,6 @@
 │   ├── quality_report.py            # 字幕质量报告
 │   ├── translate_srt_galtransl.py   # 日语 SRT 到中文字幕（默认 Sakura-GalTransl）
 │   ├── translate_srt_sakura.py      # 日语 SRT 到中文字幕（Sakura-14B）
-│   ├── translate_srt_hymt.py        # 日语 SRT 到中文字幕（HY-MT）
 │   ├── retime_existing_subtitles.py # 基于已有产物批量重定时并刷新 ASS
 │   ├── make_bilingual_ass.py        # 双语 ASS（中文在上，日文在下）+ 说话人性别上色
 │   ├── ecapa_gender.py              # vendoring 的 ECAPA-TDNN 声纹性别分类器
@@ -183,16 +180,6 @@ hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
   --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
-可选 `hymt` 翻译（`--translator hymt`）改用
-[`tencent/Hy-MT2-7B-GGUF`](https://huggingface.co/tencent/Hy-MT2-7B-GGUF)。
-默认建议下载 `HY-MT2-7B-Q6_K.gguf`，效果优先；显存/内存紧张时可换
-`Q4_K_M`，想试更大的量化文件可换 `Q8_0`：
-
-```bash
-hf download tencent/Hy-MT2-7B-GGUF HY-MT2-7B-Q6_K.gguf \
-  --local-dir models/Hy-MT2-7B-GGUF
-```
-
 旧版 Whisper 后端（`--asr whisper`）还需要
 [`Systran/faster-whisper-large-v3`](https://huggingface.co/Systran/faster-whisper-large-v3)：
 
@@ -249,7 +236,6 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
 
 # 保持默认 anime 识别，只切换翻译模型
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
-python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
 ```
 
 批量处理目录下的常见视频文件：
@@ -347,30 +333,29 @@ Qwen A/B 对比时，如果想关掉 VAD 切片、回退到固定 30 秒均匀�
 
 **推荐：** 当前 JAV/anime 风格素材默认使用 Anime 主线。局部误听明显时，用 `--asr qwen` 做对比；需要和旧流程比较，或没有 CUDA 显卡时，再用 Whisper（`--asr whisper`，需要二阶段补漏时加 `--gap-fill`）。
 
-## 翻译后端：GalTransl vs Sakura vs HY-MT
+## 翻译后端：GalTransl vs Sakura
 
 用 `--translator` 选择翻译后端（默认 `galtransl`）：
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4                       # GalTransl（默认）
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura   # Sakura-14B
-python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt     # HY-MT
 ```
 
-三者都是 GGUF 模型，通过 `llama-cpp-python` 在和 ASR 独立的进程里运行，共用同一套 SRT 解析、上下文处理、术语表和显示时序逻辑——只有模型和 prompt 模板不同。GalTransl 和 Sakura 还共用翻译缓存与假名/空译文/相邻重复三类重试；GalTransl 用 `历史翻译` 块承载上文译文（它原生的 v3 格式），Sakura 用 source/译文 对话配对，HY-MT2 按官方单 user prompt 组织，当前句命中的术语才注入，前文中文译文作为背景信息。
+两者都是 GGUF 模型，通过 `llama-cpp-python` 在和 ASR 独立的进程里运行，共用同一套 SRT 解析、上下文处理、术语表和显示时序逻辑——只有模型和 prompt 模板不同。GalTransl 和 Sakura 还共用翻译缓存与假名/空译文/相邻重复三类重试；GalTransl 用 `历史翻译` 块承载上文译文（它原生的 v3 格式），Sakura 用 source/译文 对话配对。
 
-| | **GalTransl（默认）** | **Sakura（`--translator sakura`）** | **HY-MT（`--translator hymt`）** |
-|---|---|---|---|
-| 模型 | `Sakura-GalTransl-7B-v3.7`（视觉小说日译中，GRPO 强化） | `Sakura-14B-Qwen2.5-v1.0`（轻小说/galgame 日译中） | `Hy-MT2-7B`（通用翻译） |
-| 风格 | 最自然、口语化的台词 | 自然，略偏书面 | 偏直译，偶尔生硬 |
-| 术语表 | 原生 `src->dst #备注` 格式，按句注入 | 原生 GPT 字典格式，按句注入 | 只注入当前句命中的术语，使用 Hy-MT2 官方参考翻译格式 |
-| 体量 | 7B（约 6.25 GB Q6） | 14B（约 8–9 GB iq4xs） | 7B（约 6.16 GB Q6） |
+| | **GalTransl（默认）** | **Sakura（`--translator sakura`）** |
+|---|---|---|
+| 模型 | `Sakura-GalTransl-7B-v3.7`（视觉小说日译中，GRPO 强化） | `Sakura-14B-Qwen2.5-v1.0`（轻小说/galgame 日译中） |
+| 风格 | 最自然、口语化的台词 | 自然，略偏书面 |
+| 术语表 | 原生 `src->dst #备注` 格式，按句注入 | 原生 GPT 字典格式，按句注入 |
+| 体量 | 7B（约 6.25 GB Q6） | 14B（约 8-9 GB iq4xs） |
 
-GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，当前项目样例里台词风格也更贴近日常口语。Sakura-14B 更重，适合作为长难句或可疑译文的第二意见；HY-MT 更通用，但对这类台词内容通常更直译。实际速度和显存取决于 GGUF 量化、上下文长度、批大小、`llama-cpp-python` 是否启用 GPU，以及具体显卡。
+GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，当前项目样例里台词风格也更贴近日常口语。Sakura-14B 更重，适合作为长难句或可疑译文的第二意见。实际速度和显存取决于 GGUF 量化、上下文长度、批大小、`llama-cpp-python` 是否启用 GPU，以及具体显卡。
 
-三者都修不了 ASR 阶段听错的专名（识别错了翻译救不回来），都依赖识别出的日文本身正确。
+两者都修不了 ASR 阶段听错的专名（识别错了翻译救不回来），都依赖识别出的日文本身正确。
 
-**推荐：** 这类视觉小说/台词内容保持默认 GalTransl。长难句想要第二意见时试 `--translator sakura`，更正式/通用的内容用 `--translator hymt`。
+**推荐：** 这类视觉小说/台词内容保持默认 GalTransl。长难句想要第二意见时试 `--translator sakura`。
 
 ## 默认行为
 
@@ -391,9 +376,9 @@ GalTransl 是默认翻译后端，主要原因是模型更小、推理更轻，�
 - 纯语气词过滤：共享 qwen/anime 子脚本默认开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——默认 anime 线是两侧各有 `--anime-isolated-interjection-silence 3.0` 秒静默的孤立单条，或连续 3 条及以上的语气词链。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。anime 用 `--anime-isolated-interjection-silence 0` 关闭，qwen 用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）。
 - 语气词重复拼接折叠：共享 qwen/anime 子脚本默认开启。同一条 cue 里同一语气词的连续重复（「うんうんうん。」，或「うん、うん、うん、一人。」这种包着真实台词的）会被折成一个。重复 run 两端必须落在标点或 cue 边界才折叠，所以真词内部的重复（ああいう）绝不会被碰。anime 可用 `--no-anime-collapse-filler-repetition` 做 A/B，qwen 用 `--no-qwen-collapse-filler-repetition`。
 - 通用失控重复折叠：共享 qwen/anime 子脚本默认开启。类似「行く」连续重复很多次的短语 flood 会在最终字幕前折成两个，普通 2-3 次强调会保留。
-- 翻译后端：`galtransl`（`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`）；用 `--translator sakura` 切 Sakura-14B、`--translator hymt` 切 HY-MT
+- 翻译后端：`galtransl`（`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`）；用 `--translator sakura` 切 Sakura-14B
 - 识别语言：日语 `ja`
-- 翻译上下文：按后端使用不同默认值（galtransl/sakura 默认前 6 轮；hymt 默认前 2 条中文译文作为 Hy-MT2 背景信息）；设为 0 则逐句独立翻译
+- 翻译上下文：GalTransl/Sakura 默认前 6 轮；设为 0 则逐句独立翻译
 - 批量翻译（仅 GalTransl，`--translate-batch-size`，默认 8）：把至多 N 条连续字幕（不跨越 >10 秒间隔）作为一轮一起翻译，让被切成多条 cue 的整句能被完整看到，从而纠正省略主语/人称错误——例如跨多条 cue 的第三人称旁白此前会被误译成第一人称。它依赖 GalTransl「不要擅自增减换行」的契约保证输出与输入逐行 1:1；行数不匹配会先拆成更小的严格批量重试，仍不可靠的输出槽位才逐条回退，不会丢掉同块里已经可靠的译文。设为 `0` 或 `1` 关闭批量。
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
 - Whisper 式二阶段补漏：anime 和 Qwen 后端不使用 `--gap-fill`。需要对比时，用 `--asr qwen --no-qwen-vad-chunks` 做固定平铺 Qwen 识别，或用 `--asr whisper --gap-fill` 走旧版补漏。
@@ -532,11 +517,10 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper
 ```
 
-选择翻译后端（默认 `galtransl`），改用 Sakura-14B 或 HY-MT：
+选择翻译后端（默认 `galtransl`），改用 Sakura-14B：
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
-python scripts/video_to_zh_srt.py path/to/input.mp4 --translator hymt
 ```
 
 ### 召回与补捞
@@ -697,19 +681,12 @@ python scripts/translate_srt_galtransl.py work/input/input.ja.srt \
   --min-display-seconds 1.5
 ```
 
-或用 Sakura-14B / HY-MT 翻译（CLI 相同，只换模型）：
+或用 Sakura-14B 翻译：
 
 ```bash
 python scripts/translate_srt_sakura.py work/input/input.ja.srt \
   --output outputs/input.zh.srt \
   --context-size 6 \
-  --lead-out-seconds 0.5 \
-  --min-display-seconds 1.5
-
-python scripts/translate_srt_hymt.py work/input/input.ja.srt \
-  --output outputs/input.zh.srt \
-  --model-path models/Hy-MT2-7B-GGUF/HY-MT2-7B-Q6_K.gguf \
-  --context-size 2 \
   --lead-out-seconds 0.5 \
   --min-display-seconds 1.5
 ```
@@ -742,7 +719,7 @@ python scripts/quality_report.py \
 只翻译前 N 条，方便调试：
 
 ```bash
-python scripts/translate_srt_hymt.py work/input/input.ja.srt \
+python scripts/translate_srt_galtransl.py work/input/input.ja.srt \
   --output outputs/input.sample.zh.srt \
   --limit 20
 ```
@@ -781,13 +758,11 @@ Missing Qwen ASR model: .../models/Qwen3-ASR-1.7B
 Missing Qwen forced aligner: .../models/Qwen3-ForcedAligner-0.6B
 Missing GalTransl model: .../models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 Missing Whisper model: .../models/faster-whisper-large-v3/model.bin
-Missing HY-MT model: .../models/Hy-MT2-7B-GGUF/HY-MT2-7B-Q6_K.gguf
 ```
 
 按"下载模型"一节重新下载，并确认目录名和文件名没有改动。默认主线需要 anime-whisper、
 WhisperSeg 和 GalTransl；Qwen 模型只在 `--asr qwen` 或 anime forced-aligner 诊断模式下需要；
-Sakura 模型只在 `--translator sakura` 时需要，Whisper 模型只在 `--asr whisper` 时需要，HY-MT
-模型只在 `--translator hymt` 时需要。
+Sakura 模型只在 `--translator sakura` 时需要，Whisper 模型只在 `--asr whisper` 时需要。
 
 ### 翻译速度很慢
 
@@ -866,5 +841,5 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 - 继续对比默认 anime 主线和当前 Qwen 对比线，重点看弱语音召回、局部误听和可读性切分。
 - 继续优化 Qwen 文本准确率；除非人工复核证明幻觉和尾部漂移不会回退，否则不把长 merge 上下文重新设为默认。
 - Qwen 空窗补捞 / recapture 已移除；后续继续通过 WhisperSeg/scene framing 和文本识别质量来提升 Qwen 召回，而不是再跑二次 ASR。
-- 规划仓库瘦身：确认没有活跃工作流依赖后，考虑移除旧版 Whisper ASR 后端和可选 HY-MT 翻译后端。
+- HY-MT 翻译后端已移除；后续继续评估旧版 Whisper ASR 后端是否仍有活跃对比工作流依赖。
 - 继续改进 ASR 后处理，减少孤立符号、无意义短字幕、乱码和片尾噪声词。

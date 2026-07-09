@@ -24,7 +24,6 @@ from pipeline_configs import (
     BilingualAssConfig,
     FillConfig,
     GalTranslTranslateConfig,
-    HymtTranslateConfig,
     QualityReportConfig,
     QwenAsrConfig,
     SakuraTranslateConfig,
@@ -36,7 +35,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().p
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt.py"
 QWEN_TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt_qwen.py"
-TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_hymt.py"
 SAKURA_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_sakura.py"
 GALTRANSL_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_galtransl.py"
 QUALITY_REPORT_SCRIPT = SCRIPTS_DIR / "quality_report.py"
@@ -48,7 +46,6 @@ QWEN_ALIGNER_MODEL = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 # anime backend reuses the Qwen sub-script (shared VAD/cue-shaping/finalize) with a
 # different text source, so --asr anime runs QWEN_TRANSCRIBE_SCRIPT with text_backend=anime.
 ANIME_ASR_MODEL = PROJECT_ROOT / "models" / "anime-whisper"
-TRANSLATE_MODEL = PROJECT_ROOT / "models" / "Hy-MT2-7B-GGUF" / "HY-MT2-7B-Q6_K.gguf"
 SAKURA_MODEL = PROJECT_ROOT / "models" / "Sakura-14B-Qwen2.5-v1.0-GGUF" / "sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
 GALTRANSL_MODEL = PROJECT_ROOT / "models" / "Sakura-GalTransl-7B-v3.7-GGUF" / "Sakura-Galtransl-7B-v3.7.gguf"
 VIDEO_EXTENSIONS = {
@@ -341,16 +338,14 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
 def translate_backend(args: argparse.Namespace) -> tuple[Path, Path]:
     if args.translator == "sakura":
         return SAKURA_TRANSLATE_SCRIPT, SAKURA_MODEL
-    if args.translator == "galtransl":
-        return GALTRANSL_TRANSLATE_SCRIPT, GALTRANSL_MODEL
-    return TRANSLATE_SCRIPT, TRANSLATE_MODEL
+    return GALTRANSL_TRANSLATE_SCRIPT, GALTRANSL_MODEL
 
 
 def build_translate_command(args: argparse.Namespace, input_srt: Path, output_srt: Path) -> list[str]:
     translate_script, translate_model = translate_backend(args)
     context_size = args.context_size
     if context_size is None:
-        context_size = 2 if args.translator == "hymt" else 6
+        context_size = 6
 
     common = {
         "context_size": context_size,
@@ -359,10 +354,8 @@ def build_translate_command(args: argparse.Namespace, input_srt: Path, output_sr
     }
     if args.translator == "galtransl":
         cfg = GalTranslTranslateConfig(batch_size=args.translate_batch_size, **common)
-    elif args.translator == "sakura":
-        cfg = SakuraTranslateConfig(**common)
     else:
-        cfg = HymtTranslateConfig(**common)
+        cfg = SakuraTranslateConfig(**common)
 
     return [
         sys.executable,
@@ -741,9 +734,7 @@ def main() -> None:
         default=None,
         help="Prior dialogue turns supplied to the translator as context (galtransl: a "
         "历史翻译 block of prior translations; sakura: source/translation chat pairs; "
-        "hymt: previous Chinese translations as Hy-MT2 background information). Defaults: "
-        "6 for galtransl/sakura, 2 for hymt. "
-        "0 translates each line standalone.",
+        "default 6). 0 translates each line standalone.",
     )
     parser.add_argument(
         "--translate-batch-size",
@@ -759,12 +750,11 @@ def main() -> None:
     parser.add_argument("--language", default="ja")
     parser.add_argument(
         "--translator",
-        choices=("sakura", "galtransl", "hymt"),
+        choices=("sakura", "galtransl"),
         default="galtransl",
         help="Translation backend (default galtransl). 'galtransl' uses "
         "Sakura-GalTransl-7B-v3.7 (visual-novel dialogue, smaller/faster, more "
-        "colloquial); 'sakura' uses Sakura-14B-Qwen2.5-v1.0 (light-novel style); "
-        "'hymt' uses Hy-MT2-7B.",
+        "colloquial); 'sakura' uses Sakura-14B-Qwen2.5-v1.0 (light-novel style).",
     )
     parser.add_argument(
         "--asr",
@@ -1014,9 +1004,6 @@ def main() -> None:
     elif args.translator == "galtransl":
         require_file(GALTRANSL_MODEL, "GalTransl model")
         require_file(GALTRANSL_TRANSLATE_SCRIPT, "GalTransl translation script")
-    else:
-        require_file(TRANSLATE_MODEL, "HY-MT model")
-        require_file(TRANSLATE_SCRIPT, "translation script")
     require_file(QUALITY_REPORT_SCRIPT, "quality report script")
     require_file(FILL_GAPS_SCRIPT, "gap fill script")
     if args.bilingual:

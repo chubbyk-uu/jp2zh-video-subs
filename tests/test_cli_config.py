@@ -18,7 +18,6 @@ from pipeline_configs import (
     BilingualAssConfig,
     FillConfig,
     GalTranslTranslateConfig,
-    HymtTranslateConfig,
     QualityReportConfig,
     SakuraTranslateConfig,
     WhisperAsrConfig,
@@ -26,7 +25,6 @@ from pipeline_configs import (
 from make_bilingual_ass import build_parser as bilingual_build_parser
 from quality_report import build_parser as quality_build_parser
 from translate_srt_galtransl import build_parser as galtransl_build_parser
-from translate_srt_hymt import build_parser as hymt_build_parser
 from translate_srt_sakura import build_parser as sakura_build_parser
 from transcribe_ja_srt import build_parser as whisper_build_parser
 from fill_ja_srt_gaps import build_parser as fill_build_parser
@@ -158,10 +156,6 @@ def test_qwen_config_round_trips_with_toggled_bools():
 def test_translate_configs_round_trip_through_subscript_parsers():
     cases = [
         (
-            hymt_build_parser(),
-            HymtTranslateConfig(context_size=2, lead_out_seconds=0.5, min_display_seconds=1.5),
-        ),
-        (
             sakura_build_parser(),
             SakuraTranslateConfig(context_size=6, lead_out_seconds=0.5, min_display_seconds=1.5),
         ),
@@ -176,7 +170,6 @@ def test_translate_configs_round_trip_through_subscript_parsers():
 
 
 def test_galtransl_batch_size_is_not_in_other_translate_configs():
-    assert "--batch-size" not in config_to_cli_args(HymtTranslateConfig())
     assert "--batch-size" not in config_to_cli_args(SakuraTranslateConfig())
     assert "--batch-size" in config_to_cli_args(GalTranslTranslateConfig())
 
@@ -225,7 +218,6 @@ def _pipeline_args(translator: str = "galtransl") -> argparse.Namespace:
 
 def test_pipeline_translate_command_uses_backend_configs():
     cases = [
-        ("hymt", hymt_build_parser(), HymtTranslateConfig, 2),
         ("sakura", sakura_build_parser(), SakuraTranslateConfig, 6),
         ("galtransl", galtransl_build_parser(), GalTranslTranslateConfig, 6),
     ]

@@ -8,17 +8,19 @@ from llama_cpp import Llama
 
 from cli_config import add_dataclass_arguments
 from pipeline_configs import GalTranslTranslateConfig
-from translation_common import KANA_RE, looks_degenerate, relevant_terms
-from translate_srt_hymt import (
+from translation_common import (
     DEFAULT_GLOSSARY,
     Entry,
     GlossaryTerm,
     HISTORY_RESET_SECONDS,
+    KANA_RE,
     clean_translation,
     glossary_issues,
     is_context_sensitive_short_text,
+    looks_degenerate,
     normalize_source,
     parse_srt,
+    relevant_terms,
     write_entry,
     write_terms_report,
 )

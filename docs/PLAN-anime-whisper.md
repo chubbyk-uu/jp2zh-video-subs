@@ -787,11 +787,10 @@ Planned checks:
 4. Qwen recapture has been removed. Recent manual review did not show clear value from the
    second ASR pass; future Qwen recall work should target WhisperSeg / scene framing and
    recognition quality instead.
-5. Plan cleanup of code paths that no longer match the main workflow:
-   - legacy Whisper ASR (`--asr whisper`, `scripts/transcribe_ja_srt.py`, gap-fill-only helpers)
-     after confirming no active comparison workflow still needs it;
-   - optional HY-MT translator (`--translator hymt`, `scripts/translate_srt_hymt.py`) after
-     confirming GalTransl / Sakura cover the intended translation use cases.
+5. HY-MT translation has been removed after manual review found it too literal for the
+   project's dialogue-focused workflow. Continue cleanup planning for the remaining legacy
+   Whisper ASR path (`--asr whisper`, `scripts/transcribe_ja_srt.py`, gap-fill-only helpers)
+   after confirming no active comparison workflow still needs it.
 6. Prefer WJ-derived Qwen mechanisms first; add new project-specific logic only when WJ-like
    changes cannot explain the miss.
 

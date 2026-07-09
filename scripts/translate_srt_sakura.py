@@ -7,17 +7,19 @@ from llama_cpp import Llama
 
 from cli_config import add_dataclass_arguments
 from pipeline_configs import SakuraTranslateConfig
-from translation_common import KANA_RE, looks_degenerate, relevant_terms
-from translate_srt_hymt import (
+from translation_common import (
     DEFAULT_GLOSSARY,
     Entry,
     GlossaryTerm,
     HISTORY_RESET_SECONDS,
+    KANA_RE,
     clean_translation,
     glossary_issues,
     is_context_sensitive_short_text,
+    looks_degenerate,
     normalize_source,
     parse_srt,
+    relevant_terms,
     write_entry,
     write_terms_report,
 )
@@ -26,9 +28,8 @@ from translate_srt_hymt import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
 DEFAULT_MODEL = PROJECT_ROOT / "models" / "Sakura-14B-Qwen2.5-v1.0-GGUF" / "sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
 
-# Sakura v1.0 (Qwen2.5) was trained on this exact template; the HY-MT instruction
-# format must not be reused. System prompt and the dictionary phrasing are fixed by
-# the model card.
+# Sakura v1.0 (Qwen2.5) was trained on this exact template. System prompt and the
+# dictionary phrasing are fixed by the model card.
 SAKURA_SYSTEM = (
     "你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体中文，"
     "并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。"

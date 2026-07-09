@@ -186,15 +186,6 @@ class AnimeAsrConfig(BaseAsrConfig):
 
 
 @dataclass
-class HymtTranslateConfig:
-    """Tunable knobs shared with translate_srt_hymt.py."""
-
-    context_size: int = arg_field(2, help="Prior translated Chinese lines used as background")
-    lead_out_seconds: float = arg_field(0.0, help="Extend each displayed cue by this many seconds")
-    min_display_seconds: float = arg_field(0.0, help="Minimum displayed cue duration")
-
-
-@dataclass
 class SakuraTranslateConfig:
     """Tunable knobs shared with translate_srt_sakura.py."""
 
