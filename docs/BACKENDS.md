@@ -25,7 +25,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen      # Qwen 对�
 ### Qwen 主线的工作方式
 
 1. Qwen 默认用 WhisperSeg 做 frame（`--qwen-vad-backend whisperseg`），使用 WJ qwen 风格参数：`max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`。
-2. Qwen 默认直接使用短 WhisperSeg frame（`--qwen-whisperseg-context-mode none`）。`merge` 仍可用于实验，但当前测试里更长的 merge 窗口会增加 Qwen 幻觉和尾部漂移，所以不是默认。`pad` 模式已移除；semantic scene processing 已有 `--qwen-scene-asr-pad-seconds 0.35`，merge 只给整个 merged job 外层加一次这个 pad，不在内部 frame 边界叠加。
+2. Qwen 默认直接使用短 WhisperSeg frame（`--qwen-whisperseg-context-mode none`）。`merge` 仍可用于实验，但当前测试里更长的 merge 窗口会增加 Qwen 幻觉和尾部漂移，所以不是默认。`pad` 模式已移除；它曾是额外 per-frame context expansion，和 semantic scene processing window 不是一回事。当前 merge 复用 `--qwen-scene-asr-pad-seconds 0.35` 作为整个 merged job 的保守外边界，不会先给每个内部 frame 加 0.35 再合并。
 3. 切片分批送入 `Qwen3-ASR-1.7B`；生成参数默认也是 WJ 风格：`max_new_tokens=4096`、`repetition_penalty=1.1`、动态预算 `20` tokens/音频秒。
 4. 模型带标点的 `result.text` 作为权威文本内容；单独的 `Qwen3-ForcedAligner-0.6B` 给出逐字时间。句子按标点和较大的内部时间间隙切分，再由对齐器定时。同一 clip 内相邻 cue 只有在间隔小于 1.5 秒且合并后不超过 80 个内容字符 / 8 秒时才会合并。
 5. Qwen 默认开启 semantic scene，让 WhisperSeg frame 不跨声学场景边界。如果 forced aligner 把一个切片的词压到异常时间段里，Qwen 线会先用 VAD-guided fallback recovery 修复，再进入字幕塑形。step-down retry 已实现但默认关闭。

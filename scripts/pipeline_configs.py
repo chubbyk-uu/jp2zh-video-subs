@@ -108,13 +108,14 @@ class QwenAsrConfig(BaseAsrConfig):
     min_tokens_floor: int = arg_field(256, help="Minimum dynamic Qwen token budget per batch")
 
     # qwen default (Stage 6.7) = WhisperSeg 6.0/1.0 atomic frames within semantic scenes
-    # processed with scene_asr_pad_seconds (0.35s) — NO context merge.
+    # processed from scene_asr_pad_seconds (0.35s) scene windows — NO context merge.
     # Semantic scene is ON (Stage 6.6): on the primary clip it cut qwen's cross-reference
     # misrecognition ~10% -> 5.5% and fixed tail hallucinations like 頼む->タロウ, because
     # WhisperSeg frames never cross an acoustic-scene boundary.
     # Context merge is OFF (Stage 6.7): the short scene-processed frames already recognize
     # on par with WJ-qwen. Merge remains selectable for experiments, but it must keep
-    # frame-native cue regrouping and use only one outer scene_asr_pad_seconds pad.
+    # frame-native cue regrouping and reuse scene_asr_pad_seconds only as one conservative
+    # outer boundary for the merged job.
     # Step-down stays off too.
     vad_backend: str = arg_field("whisperseg", choices=("whisperseg",), help="qwen speech segmentation backend")
     whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
@@ -125,10 +126,10 @@ class QwenAsrConfig(BaseAsrConfig):
     whisperseg_min_frame_seconds: float = arg_field(0.1, help="Drop WhisperSeg frames shorter than this")
     whisperseg_context_mode: str = arg_field(
         "none", choices=("none", "merge"),
-        help="qwen WhisperSeg context mode: none (default; short scene-processed frames) or merge adjacent frames with one outer scene_asr_pad_seconds pad",
+        help="qwen WhisperSeg context mode: none (default; short scene-processed frames) or merge adjacent frames with one outer boundary using scene_asr_pad_seconds",
     )
-    whisperseg_context_pre_seconds: float = arg_field(2.0, help="Deprecated/ignored: merge uses scene_asr_pad_seconds instead")
-    whisperseg_context_post_seconds: float = arg_field(2.0, help="Deprecated/ignored: merge uses scene_asr_pad_seconds instead")
+    whisperseg_context_pre_seconds: float = arg_field(2.0, help="Deprecated/ignored: merge uses the scene_asr_pad_seconds value instead")
+    whisperseg_context_post_seconds: float = arg_field(2.0, help="Deprecated/ignored: merge uses the scene_asr_pad_seconds value instead")
     whisperseg_context_merge_gap: float = arg_field(2.0, help="Max gap between WhisperSeg frames to merge for qwen context mode")
     whisperseg_context_target_seconds: float = arg_field(18.0, help="Soft target span for qwen merged WhisperSeg context: past this span, only pauses <= --whisperseg-context-after-target-gap keep merging, so groups end at a natural break instead of the hard cap")
     whisperseg_context_after_target_gap: float = arg_field(0.2, help="Tighter merge-gap tolerance once a merged group passes the soft target (s); keeps continuous speech merging while breaking at the next real pause to avoid mid-speech hard cuts")

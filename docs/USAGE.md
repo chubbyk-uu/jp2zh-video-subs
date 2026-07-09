@@ -42,7 +42,7 @@ TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒�
 - Anime 不使用 Qwen 的 WhisperSeg context `merge` 路径。`vad_only` 定时没有 aligner ownership pass 来过滤邻近上下文，而且目前 anime 评估也没有显示需要这层额外上下文。
 - Anime cleaner：开启，清理省略号-only 片段、句首软省略号和短重复伪迹；默认 `vad_only` 保持 frame 时间，只在超长逗号段处切分（不按句末标点切），再由共享最终清理删除重叠和闪字幕
 - Qwen 对比线：用 `--asr qwen` 开启。默认使用 WhisperSeg frame（`--qwen-vad-backend whisperseg`），Qwen 参数为 `max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`；用 `--asr qwen --no-qwen-vad-chunks` 做固定 30 秒平铺。
-- Qwen context 模式：默认 `--qwen-whisperseg-context-mode none`；`merge` 仍可实验，但当前测试里更长的 merge 窗口会增加幻觉，不作为默认。`pad` 模式已移除，因为默认 semantic scene processing 已有 `--qwen-scene-asr-pad-seconds 0.35`。
+- Qwen context 模式：默认 `--qwen-whisperseg-context-mode none`；`merge` 仍可实验，但当前测试里更长的 merge 窗口会增加幻觉，不作为默认。`pad` 模式已移除，因为它是额外 per-frame context expansion，实测容易污染识别；`--qwen-scene-asr-pad-seconds 0.35` 仍只表示 semantic scene processing window 的边界扩张。
 - Qwen 定时、分句与生成：默认 `--qwen-timestamp-mode aligner_fallback`、`--qwen-scene-backend semantic`、`--qwen-scene-asr-pad-seconds 0.35`、`--qwen-phrase-max-chars 80`、`--qwen-phrase-max-internal-gap 1.5`、`--qwen-max-new-tokens 4096`、`--qwen-repetition-penalty 1.1`、`--qwen-max-tokens-per-second 20.0`。step-down retry 已在共享子脚本实现，但不是顶层默认路径。
 - Qwen `vad_only` 定时只作为诊断模式使用。显式设置 `--qwen-timestamp-mode vad_only` 时，必须同时设置 `--qwen-whisperseg-context-mode none`；纯 VAD 定时无法过滤从 merge 上下文里听到的邻近文本，所以管线会拒绝这种组合。
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--asr qwen --qwen-filter-hallucinations` 开启）
@@ -67,7 +67,7 @@ Qwen context `merge` 模式可以让 Qwen 听到多个相邻 WhisperSeg frame，
 `--qwen-whisperseg-context-target-seconds` / `--qwen-whisperseg-context-merge-gap`。
 `target-seconds` 是软目标：未达目标时按 `merge-gap` 桥接间隔，一旦合并窗口超过软目标，容忍度收紧到 `--qwen-whisperseg-context-after-target-gap`（0.2 秒），从而在下一个真实停顿处收尾，而不是等撞到硬上限时被句中硬切；真正的安全上限由
 `--qwen-whisperseg-context-hard-max-seconds`（35 秒）控制，只约束真正无停顿的连续语音。`merge`
-只给整个 merged job 外层使用一次 `--qwen-scene-asr-pad-seconds`，不会在内部 frame 边界叠加额外 pre/post pad；旧的
+会复用 `--qwen-scene-asr-pad-seconds` 这个数值作为整个 merged job 的保守外边界，但它不是先给每个内部 frame 加 0.35 再合并；旧的
 `--qwen-whisperseg-context-pre/post-seconds` 和 pad ratio 参数会被忽略。
 
 不要把 Qwen `vad_only` 定时和 `merge` 上下文一起开。这个诊断模式没有

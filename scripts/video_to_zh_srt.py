@@ -672,12 +672,12 @@ def main() -> None:
         "--qwen-whisperseg-context-mode",
         choices=("none", "merge"),
         default=None,
-        help="Qwen WhisperSeg context experiment: none, or merge adjacent frames with one outer scene ASR pad.",
+        help="Qwen WhisperSeg context experiment: none, or merge adjacent frames with one outer boundary using the scene ASR pad value.",
     )
     parser.add_argument("--qwen-whisperseg-context-pre-seconds", type=float, default=None,
-                        help="Deprecated/ignored: merge uses qwen scene ASR pad instead.")
+                        help="Deprecated/ignored: merge uses the qwen scene ASR pad value instead.")
     parser.add_argument("--qwen-whisperseg-context-post-seconds", type=float, default=None,
-                        help="Deprecated/ignored: merge uses qwen scene ASR pad instead.")
+                        help="Deprecated/ignored: merge uses the qwen scene ASR pad value instead.")
     parser.add_argument("--qwen-whisperseg-context-merge-gap", type=float, default=None,
                         help="Max gap between frames to merge when --qwen-whisperseg-context-mode merge.")
     parser.add_argument("--qwen-whisperseg-context-target-seconds", type=float, default=None,

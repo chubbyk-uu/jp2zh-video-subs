@@ -959,8 +959,9 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
 def normalize_runtime_args(args: argparse.Namespace) -> None:
     """Apply backend-dependent defaults after parsing shared qwen/anime flags."""
     if getattr(args, "whisperseg_context_mode", None) is None:
-        # Both backends default to no context merge (Stage 6.7): the 0.35s scene ASR pad
-        # already gives short frames enough context; merge only added drift/drops for qwen.
+        # Both backends default to no context merge (Stage 6.7): the short
+        # scene-processed frames are the stable production path; longer qwen
+        # recognition windows added drift/drops in manual review.
         args.whisperseg_context_mode = "none"
     validate_runtime_args(args)
 
@@ -982,6 +983,10 @@ def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Names
     if not atomic:
         return []
 
+    # Reuse the semantic-scene processing pad value as a conservative outer boundary
+    # for qwen merge jobs. This is not the scene processing window itself, and it is
+    # intentionally applied once around the merged job rather than as legacy per-frame
+    # pre/post context.
     scene_pad = max(0.0, float(getattr(args, "scene_asr_pad_seconds", 0.0)))
 
     def make_job(component_groups: list, *, is_last: bool) -> ChunkJob:
