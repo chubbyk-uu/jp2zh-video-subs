@@ -152,18 +152,23 @@ hf download SakuraLLM/Sakura-GalTransl-7B-v3.7 \
   --local-dir models/Sakura-GalTransl-7B-v3.7-GGUF
 ```
 
-下载完成后，至少应包含：
+默认流程至少应包含：
 
 ```text
 models/anime-whisper/config.json
 models/anime-whisper/model.safetensors
 models/whisperseg/model.onnx
+models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
+```
+
+Qwen 对比线 / forced-aligner 诊断还需要：
+
+```text
 models/Qwen3-ASR-1.7B/config.json
 models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors
 models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
 models/Qwen3-ForcedAligner-0.6B/config.json
 models/Qwen3-ForcedAligner-0.6B/model.safetensors
-models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 ```
 
 更大的 `sakura` 翻译（`--translator sakura`）改用

@@ -1127,6 +1127,31 @@ def test_entries_from_raw_qwen_schema_uses_final_items():
     assert "おはよう" in "".join(e.text for e in entries)
 
 
+def test_entries_from_raw_qwen_context_merge_regroups_only_within_frame_regions():
+    raw = {
+        "text_backend": "qwen", "timestamp_mode": "aligner_fallback",
+        "chunk_seconds": 30.0, "chunk_overlap_seconds": 3.0, "duration": 10.0,
+        "context": "",
+        "chunks": [{
+            "start": 0.0, "end": 2.0, "keep_lo": 0.0, "keep_hi": 2.0,
+            "language": "Japanese", "text": "あ。い。",
+            "regroup_regions": [[0.0, 0.7], [0.7, 2.0]],
+            "items": [
+                {"text": "あ", "start": 0.0, "end": 0.5},
+                {"text": "い", "start": 0.9, "end": 1.4},
+            ],
+        }],
+    }
+
+    entries = entries_from_raw(raw, _shaping_args(
+        text_backend="qwen",
+        phrase_max_chars=80,
+        phrase_max_internal_gap=1.5,
+    ))
+
+    assert [e.text for e in entries] == ["あ。", "い。"]
+
+
 def test_entries_from_raw_qwen_vad_only_rebuilds_from_speech_regions():
     raw = {
         "text_backend": "qwen", "timestamp_mode": "aligner_fallback",

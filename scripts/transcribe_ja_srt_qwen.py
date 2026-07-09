@@ -737,6 +737,57 @@ def merge_close_cues(
     return merged
 
 
+def merge_close_cues_with_regions(
+    entries: list[SubtitleEntry],
+    regions: list[Interval],
+    *,
+    max_gap: float,
+    max_chars: int,
+    max_duration: float,
+) -> list[SubtitleEntry]:
+    """Apply cue regrouping without crossing original frame regions.
+
+    Qwen context-merge jobs may contain several WhisperSeg frames. Qwen should hear
+    the merged audio, but cue regrouping must remain frame-native so short anchored
+    subtitles do not turn into long multi-turn cues.
+    """
+    if not entries or not regions:
+        return merge_close_cues(entries, max_gap=max_gap, max_chars=max_chars, max_duration=max_duration)
+
+    def region_index(entry: SubtitleEntry) -> int | None:
+        center = (entry.start + entry.end) / 2.0
+        for idx, region in enumerate(regions):
+            # Include the right edge with a tiny tolerance so a cue centered exactly
+            # on a frame end still belongs to that frame instead of becoming orphaned.
+            if region.start <= center < region.end or math.isclose(center, region.end, abs_tol=1e-6):
+                return idx
+        return None
+
+    merged: list[SubtitleEntry] = []
+    current: list[SubtitleEntry] = []
+    current_idx: int | None = None
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            merged.extend(merge_close_cues(current, max_gap=max_gap, max_chars=max_chars, max_duration=max_duration))
+            current = []
+
+    for entry in entries:
+        idx = region_index(entry)
+        if idx is None:
+            flush()
+            merged.append(entry)
+            current_idx = None
+            continue
+        if current and idx != current_idx:
+            flush()
+        current.append(entry)
+        current_idx = idx
+    flush()
+    return merged
+
+
 def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace) -> list[SubtitleEntry]:
     """Minimal time/format hygiene for Qwen output.
 
@@ -813,6 +864,9 @@ class ChunkJob:
     # Clip-relative speech regions inside [start, end] (offset by -start), used by
     # collapse recovery for VAD-guided redistribution. Empty on the fixed-tiling path.
     speech: list[Interval] = field(default_factory=list)
+    # Absolute original frame ownership regions inside this job. Context-merge jobs
+    # can give Qwen longer audio while keeping WJ-style cue regrouping frame-native.
+    regroup_regions: list[Interval] = field(default_factory=list)
 
 
 def _clip_relative_speech(intervals: list[Interval], job_start: float, job_end: float) -> list[Interval]:
@@ -960,6 +1014,11 @@ def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Names
             for group in component_groups
             for seg in group
         ]
+        if len(component_groups) > 1:
+            job.regroup_regions = [
+                Interval(*_whisperseg_group_bounds(group))
+                for group in component_groups
+            ]
         return job
 
     if mode in {"none", "pad"}:
@@ -1137,6 +1196,7 @@ def chunk_entries(
     start: float,
     keep_lo: float,
     keep_hi: float,
+    regroup_regions: list[Interval] | None = None,
     args: argparse.Namespace,
 ) -> list[SubtitleEntry]:
     """Build one chunk's kept cues: sentence timing + claim-window dedup.
@@ -1164,8 +1224,9 @@ def chunk_entries(
     # (silence, scene edge) still separates speaker turns. qwen only; anime is
     # frame-native (WJ Branch B: no gap merge).
     if getattr(args, "text_backend", "qwen") != "anime":
-        kept = merge_close_cues(
+        kept = merge_close_cues_with_regions(
             kept,
+            regroup_regions or [],
             max_gap=getattr(args, "phrase_max_internal_gap", 1.5),
             max_chars=getattr(args, "phrase_max_chars", 80),
             max_duration=getattr(args, "phrase_max_duration", 8.0),
@@ -1363,7 +1424,9 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
             entries.extend(
                 chunk_entries(
                     text, items, start=ch["start"],
-                    keep_lo=keep_lo, keep_hi=keep_hi, args=args,
+                    keep_lo=keep_lo, keep_hi=keep_hi,
+                    regroup_regions=[Interval(float(s), float(e)) for s, e in ch.get("regroup_regions", [])],
+                    args=args,
                 )
             )
     entries.sort(key=lambda e: (e.start, e.end))
@@ -1605,7 +1668,9 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
             kept = anime_vad_only_frame_entry(clean, job.start, job.end)
         else:
             kept = chunk_entries(
-                clean, out_items, start=job.start, keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
+                clean, out_items, start=job.start, keep_lo=job.keep_lo, keep_hi=job.keep_hi,
+                regroup_regions=job.regroup_regions,
+                args=args,
             )
         entries.extend(kept)
         raw_chunks.append({
@@ -1616,6 +1681,7 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
             "raw_text": raw_texts[i],
             "clean_text": clean,
             "speech_regions": [[iv.start, iv.end] for iv in job.speech],
+            "regroup_regions": [[iv.start, iv.end] for iv in job.regroup_regions],
             "raw_items": _serialize_items(raw_items),
             "recovered_items": _serialize_items(out_items) if recovery.get("applied") else [],
             "sentinel": sentinel,
@@ -1738,7 +1804,9 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                     sentinel, recovery, out_items = _time_aligned_job(job, raw_items, args)
                 kept = chunk_entries(
                     display_text, out_items, start=job.start,
-                    keep_lo=job.keep_lo, keep_hi=job.keep_hi, args=args,
+                    keep_lo=job.keep_lo, keep_hi=job.keep_hi,
+                    regroup_regions=job.regroup_regions,
+                    args=args,
                 )
                 entries.extend(kept)
                 added += len(kept)
@@ -1751,6 +1819,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                     "text": text,
                     "pass": label,
                     "speech_regions": [[iv.start, iv.end] for iv in job.speech],
+                    "regroup_regions": [[iv.start, iv.end] for iv in job.regroup_regions],
                     "raw_items": _serialize_items(raw_items),
                     "recovered_items": _serialize_items(out_items) if recovery.get("applied") else [],
                     "sentinel": sentinel,
