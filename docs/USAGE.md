@@ -39,12 +39,12 @@ TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒�
 - Anime 定时模式：`vad_only`（`--anime-timestamp-mode vad_only`；aligner 诊断模式需要 `models/Qwen3-ForcedAligner-0.6B`）
 - Anime WhisperSeg frame 默认值：`max_group=5.0`、`chunk_threshold=0.5`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`
 - Anime semantic scene ASR pad：`--anime-scene-asr-pad-seconds 0.35`，匹配 WhisperJAV 的 padded `asr_processing` scene window，但最终时间轴仍使用 frame 时间
-- Anime 不使用 Qwen 的 WhisperSeg context `pad` / `merge` 路径。`vad_only` 定时没有 aligner ownership pass 来过滤邻近上下文，而且目前 anime 评估也没有显示需要这层额外上下文。
+- Anime 不使用 Qwen 的 WhisperSeg context `merge` 路径。`vad_only` 定时没有 aligner ownership pass 来过滤邻近上下文，而且目前 anime 评估也没有显示需要这层额外上下文。
 - Anime cleaner：开启，清理省略号-only 片段、句首软省略号和短重复伪迹；默认 `vad_only` 保持 frame 时间，只在超长逗号段处切分（不按句末标点切），再由共享最终清理删除重叠和闪字幕
 - Qwen 对比线：用 `--asr qwen` 开启。默认使用 WhisperSeg frame（`--qwen-vad-backend whisperseg`），Qwen 参数为 `max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`；用 `--asr qwen --no-qwen-vad-chunks` 做固定 30 秒平铺。
-- Qwen context 模式：默认 `--qwen-whisperseg-context-mode none`；`pad` / `merge` 仍可实验，但当前测试里更长的 merge 窗口会增加幻觉，不作为默认。
+- Qwen context 模式：默认 `--qwen-whisperseg-context-mode none`；`merge` 仍可实验，但当前测试里更长的 merge 窗口会增加幻觉，不作为默认。`pad` 模式已移除，因为默认 semantic scene processing 已有 `--qwen-scene-asr-pad-seconds 0.35`。
 - Qwen 定时、分句与生成：默认 `--qwen-timestamp-mode aligner_fallback`、`--qwen-scene-backend semantic`、`--qwen-scene-asr-pad-seconds 0.35`、`--qwen-phrase-max-chars 80`、`--qwen-phrase-max-internal-gap 1.5`、`--qwen-max-new-tokens 4096`、`--qwen-repetition-penalty 1.1`、`--qwen-max-tokens-per-second 20.0`。step-down retry 已在共享子脚本实现，但不是顶层默认路径。
-- Qwen `vad_only` 定时只作为诊断模式使用。显式设置 `--qwen-timestamp-mode vad_only` 时，必须同时设置 `--qwen-whisperseg-context-mode none`；纯 VAD 定时无法过滤从前后 pad/merge 上下文里听到的邻近文本，所以管线会拒绝这种组合。
+- Qwen `vad_only` 定时只作为诊断模式使用。显式设置 `--qwen-timestamp-mode vad_only` 时，必须同时设置 `--qwen-whisperseg-context-mode none`；纯 VAD 定时无法过滤从 merge 上下文里听到的邻近文本，所以管线会拒绝这种组合。
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--asr qwen --qwen-filter-hallucinations` 开启）
 - 纯语气词过滤：共享 qwen/anime 子脚本默认开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——默认 anime 线是两侧各有 `--anime-isolated-interjection-silence 3.0` 秒静默的孤立单条，或连续 3 条及以上的语气词链。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。anime 用 `--anime-isolated-interjection-silence 0` 关闭，qwen 用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）。
 - 语气词重复拼接折叠：共享 qwen/anime 子脚本默认开启。同一条 cue 里同一语气词的连续重复（「うんうんうん。」，或「うん、うん、うん、一人。」这种包着真实台词的）会被折成一个。重复 run 两端必须落在标点或 cue 边界才折叠，所以真词内部的重复（ああいう）绝不会被碰。anime 可用 `--no-anime-collapse-filler-repetition` 做 A/B，qwen 用 `--no-qwen-collapse-filler-repetition`。
@@ -61,23 +61,21 @@ TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒�
 `--qwen-whisperseg-threshold`、`--qwen-whisperseg-max-group`、`--qwen-whisperseg-chunk-threshold`
 在召回和切片数之间权衡。需要不依赖语音簇的兜底对比时，用 `--asr qwen --no-qwen-vad-chunks`。
 
-Qwen context `pad` / `merge` 模式可以让 Qwen 听到更多上下文，同时保留当前时间轴保护；但当前默认是
-`--qwen-whisperseg-context-mode none`。只想补前后音频但不合并 frame 时，用
-`--qwen-whisperseg-context-mode pad`；需要调相邻 frame 合并时，用
+Qwen context `merge` 模式可以让 Qwen 听到多个相邻 WhisperSeg frame，同时保留当前时间轴保护；但当前默认是
+`--qwen-whisperseg-context-mode none`。需要调相邻 frame 合并时，用
 `--qwen-whisperseg-context-mode merge` 配合
 `--qwen-whisperseg-context-target-seconds` / `--qwen-whisperseg-context-merge-gap`。
 `target-seconds` 是软目标：未达目标时按 `merge-gap` 桥接间隔，一旦合并窗口超过软目标，容忍度收紧到 `--qwen-whisperseg-context-after-target-gap`（0.2 秒），从而在下一个真实停顿处收尾，而不是等撞到硬上限时被句中硬切；真正的安全上限由
-`--qwen-whisperseg-context-hard-max-seconds`（35 秒）控制，只约束真正无停顿的连续语音。前后补音频参数在 `merge`
-模式下同样生效；需要动态补音频实验时，使用
-`--qwen-whisperseg-context-pad-mode ratio`，再用
-`--qwen-whisperseg-context-pad-ratio` 和 min/max pad 限制范围。
+`--qwen-whisperseg-context-hard-max-seconds`（35 秒）控制，只约束真正无停顿的连续语音。`merge`
+只给整个 merged job 外层使用一次 `--qwen-scene-asr-pad-seconds`，不会在内部 frame 边界叠加额外 pre/post pad；旧的
+`--qwen-whisperseg-context-pre/post-seconds` 和 pad ratio 参数会被忽略。
 
-不要把 Qwen `vad_only` 定时和 `pad` / `merge` 上下文一起开。这个诊断模式没有
+不要把 Qwen `vad_only` 定时和 `merge` 上下文一起开。这个诊断模式没有
 aligner ownership filter，Qwen 从邻近上下文里听到的文本可能再次落到当前 VAD
 区域里，形成整句重复。只在需要隔离“文本识别质量”和“forced aligner 行为”时使用
 `--asr qwen --qwen-timestamp-mode vad_only --qwen-whisperseg-context-mode none`；正式跑
 Qwen 字幕时保持默认的 `aligner_fallback + context none` 路径，除非正在显式测试
-`pad` / `merge`。
+`merge`。
 
 ## 常用参数
 

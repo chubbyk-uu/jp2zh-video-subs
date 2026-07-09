@@ -324,7 +324,7 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
             and cfg.whisperseg_context_mode != "none"
         ):
             raise SystemExit(
-                "Qwen vad_only cannot be combined with WhisperSeg context pad/merge. "
+                "Qwen vad_only cannot be combined with WhisperSeg context merge. "
                 "Use --qwen-whisperseg-context-mode none, or use "
                 "--qwen-timestamp-mode aligner_fallback for long-context Qwen recognition."
             )
@@ -670,14 +670,14 @@ def main() -> None:
     parser.add_argument("--qwen-whisperseg-min-frame-seconds", type=float, default=None)
     parser.add_argument(
         "--qwen-whisperseg-context-mode",
-        choices=("none", "pad", "merge"),
+        choices=("none", "merge"),
         default=None,
-        help="Qwen WhisperSeg context experiment: none, pad each frame, or merge adjacent frames; pre/post padding also applies to merge.",
+        help="Qwen WhisperSeg context experiment: none, or merge adjacent frames with one outer scene ASR pad.",
     )
     parser.add_argument("--qwen-whisperseg-context-pre-seconds", type=float, default=None,
-                        help="Extra audio prepended in Qwen WhisperSeg pad/merge context modes.")
+                        help="Deprecated/ignored: merge uses qwen scene ASR pad instead.")
     parser.add_argument("--qwen-whisperseg-context-post-seconds", type=float, default=None,
-                        help="Extra audio appended in Qwen WhisperSeg pad/merge context modes.")
+                        help="Deprecated/ignored: merge uses qwen scene ASR pad instead.")
     parser.add_argument("--qwen-whisperseg-context-merge-gap", type=float, default=None,
                         help="Max gap between frames to merge when --qwen-whisperseg-context-mode merge.")
     parser.add_argument("--qwen-whisperseg-context-target-seconds", type=float, default=None,
@@ -690,14 +690,14 @@ def main() -> None:
         "--qwen-whisperseg-context-pad-mode",
         choices=("fixed", "ratio"),
         default=None,
-        help="Qwen WhisperSeg context padding: fixed pre/post seconds or ratio of merged span.",
+        help="Deprecated/ignored: qwen context pad mode was removed.",
     )
     parser.add_argument("--qwen-whisperseg-context-pad-ratio", type=float, default=None,
-                        help="Dynamic pad ratio of the owned WhisperSeg span.")
+                        help="Deprecated/ignored: qwen context pad mode was removed.")
     parser.add_argument("--qwen-whisperseg-context-min-pad-seconds", type=float, default=None,
-                        help="Minimum dynamic Qwen WhisperSeg context padding.")
+                        help="Deprecated/ignored: qwen context pad mode was removed.")
     parser.add_argument("--qwen-whisperseg-context-max-pad-seconds", type=float, default=None,
-                        help="Maximum dynamic Qwen WhisperSeg context padding.")
+                        help="Deprecated/ignored: qwen context pad mode was removed.")
     parser.add_argument("--qwen-isolated-interjection-silence", type=float, default=3.0)
     parser.add_argument("--qwen-isolated-interjection-run", type=int, default=3)
     parser.add_argument("--qwen-isolated-interjection-run-gap", type=float, default=5.0)
