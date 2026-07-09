@@ -702,5 +702,5 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --context-size 0
 - 继续对比默认 anime 主线和当前 Qwen 对比线，重点看弱语音召回、局部误听和可读性切分。
 - 继续优化 Qwen 文本准确率；除非人工复核证明幻觉和尾部漂移不会回退，否则不把长 merge 上下文重新设为默认。
 - Qwen 空窗补捞 / recapture 已移除；后续继续通过 WhisperSeg/scene framing 和文本识别质量来提升 Qwen 召回，而不是再跑二次 ASR。
-- HY-MT 翻译后端和旧版 Whisper ASR 后端已移除；后续继续清理残留的过时对比说明。
+- HY-MT 翻译后端和旧版 Whisper ASR 后端已移除；现在流水线提供两套 ASR 后端（`anime`/`qwen`）和两套翻译后端（`galtransl`/`sakura`）。
 - 继续改进 ASR 后处理，减少孤立符号、无意义短字幕、乱码和片尾噪声词。
