@@ -78,6 +78,7 @@ Verified environment:
 - Python: 3.11 or 3.12 (the current test host uses Python 3.12)
 - FFmpeg: 6.1.1
 - `qwen-asr`: 0.0.6 (Qwen ASR and optional forced-aligner diagnostics; pulls in `torch`, `transformers`, `librosa`, `soundfile`)
+- `onnxruntime-gpu`: 1.27.0 (WhisperSeg VAD for the default anime backend; imported directly, not pulled in by `qwen-asr` — on a CPU-only host install `onnxruntime` instead)
 - `torch`: 2.10 with CUDA 12.8 (`cu128`) on an RTX 50-series (Blackwell) GPU
 - `llama-cpp-python`: 0.3.23
 - `huggingface-hub`: 0.36.2

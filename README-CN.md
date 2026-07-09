@@ -70,6 +70,7 @@
 - Python：3.11 或 3.12（当前测试主机使用 Python 3.12）
 - FFmpeg：6.1.1
 - `qwen-asr`：0.0.6（Qwen 识别和可选 forced-aligner 诊断；会带入 `torch`、`transformers`、`librosa`、`soundfile`）
+- `onnxruntime-gpu`：1.27.0（默认 anime 后端的 WhisperSeg VAD；由脚本直接导入，不随 `qwen-asr` 带入——CPU-only 主机改装 `onnxruntime`）
 - `torch`：2.10，CUDA 12.8（`cu128`），在 RTX 50 系（Blackwell）显卡上验证
 - `llama-cpp-python`：0.3.23
 - `huggingface-hub`：0.36.2
