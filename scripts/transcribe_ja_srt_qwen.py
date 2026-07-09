@@ -1360,51 +1360,40 @@ def vad_only_items_for_text(text: str, clip_duration: float, speech_regions: lis
 
 
 def wj_regroup_vad_only_split(text: str, comma_min_chars: int = 50, max_chars: int = 80) -> list[str]:
-    """WhisperJAV REGROUP_VAD_ONLY text split (anime / no-aligner branch).
+    """Length-only frame split for the anime vad_only branch (option B).
 
-    Split at sentence enders (SENTENCE_END_CHARS = 。？！？!), then split any segment
-    past comma_min_chars at a Japanese/ASCII comma (、，,), and hard-cut a comma-less
-    run past max_chars. … never splits. WhisperJAV's vad-only regroup nominally
-    runs via stable-ts sp/sp2/sl; the project also treats ！/! as sentence ends for
-    readability. The wjav_out anime dump was produced with regroup off = pure
-    frame-native, so this is the project readability variant.
+    Sentence punctuation (。？！?!) does NOT force a cue break: anime-whisper
+    sprays sentence enders on every soft pause, so splitting on them over-fragments
+    into sub-0.8s flash cues. We only split a frame for length — at a Japanese/ASCII
+    comma (、，,) once a run passes comma_min_chars, and a hard cut of a comma-less
+    run past max_chars. … never splits. This matches the wjav_out anime dump, which
+    was produced with regroup off = pure frame-native timing.
     """
-    sents: list[str] = []
-    buf = ""
-    for ch in text:
-        buf += ch
-        if ch in SENTENCE_END_CHARS:
-            sents.append(buf)
-            buf = ""
-    if buf.strip():
-        sents.append(buf)
-
+    if len(content_chars(text)) <= comma_min_chars:
+        return [text] if content_chars(text) else []
     commas = "、，,"
     pieces: list[str] = []
-    for s in sents:
-        if len(content_chars(s)) <= comma_min_chars:
-            pieces.append(s)
-            continue
-        sub = ""
-        for ch in s:
-            sub += ch
-            n = len(content_chars(sub))
-            if (ch in commas and n >= comma_min_chars) or n >= max_chars:
-                pieces.append(sub)
-                sub = ""
-        if sub:
+    sub = ""
+    for ch in text:
+        sub += ch
+        n = len(content_chars(sub))
+        if (ch in commas and n >= comma_min_chars) or n >= max_chars:
             pieces.append(sub)
+            sub = ""
+    if sub:
+        pieces.append(sub)
     return [p for p in pieces if content_chars(p)]
 
 
 def anime_vad_only_frame_entry(text: str, start: float, end: float) -> list[SubtitleEntry]:
     """WJ-style anime vad_only reconstruction (REGROUP_VAD_ONLY).
 
-    WhisperJAV's anime preset uses no aligner; timestamps are proportional. Each
-    frame's text is split at sentence punctuation (。？！？!), long segments split at
-    commas past 50 chars and hard-capped at 80 (see wj_regroup_vad_only_split), and
-    the frame's [start, end] is distributed across the pieces by content-char count.
-    … never splits (anime-whisper sprays … on soft pauses).
+    WhisperJAV's anime preset uses no aligner; timestamps are proportional. A frame
+    is kept whole and split only for length — at a comma past 50 chars, hard-capped
+    at 80 (see wj_regroup_vad_only_split); sentence punctuation does NOT force a break
+    (it over-fragments into flash cues). The frame's [start, end] is distributed
+    across any length-pieces by content-char count. … never splits, and a leading …
+    at each cue start is dropped (anime-whisper sprays … on soft pauses).
     """
     display = text.strip()
     if not display or not content_chars(display) or end <= start:

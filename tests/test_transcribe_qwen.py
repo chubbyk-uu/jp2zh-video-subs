@@ -1062,21 +1062,21 @@ def test_vad_only_items_distribute_across_speech_regions():
     assert any(items[i + 1].start_time - items[i].end_time > 2.0 for i in range(len(items) - 1))
 
 
-def test_anime_vad_only_frame_entry_splits_sentences():
-    # Split the frame at 。; proportional timing within [1, 6]; contiguous pieces.
+def test_anime_vad_only_frame_entry_keeps_sentences_whole():
+    # Option B: sentence punctuation does NOT split; a short multi-sentence frame
+    # stays one cue spanning the whole [1, 6] window.
     entries = anime_vad_only_frame_entry("あ。いいですね。", 1.0, 6.0)
-    assert [e.text for e in entries] == ["あ。", "いいですね。"]
+    assert [e.text for e in entries] == ["あ。いいですね。"]
     assert entries[0].start == pytest.approx(1.0)
     assert entries[-1].end == pytest.approx(6.0)
-    assert entries[0].end == pytest.approx(entries[1].start)
 
 
 def test_anime_vad_only_frame_entry_strips_leading_ellipsis():
-    # Leading … at a cue start is dropped (frame onset and after a 。… split);
-    # a mid/trailing … is kept.
+    # Leading … at the frame start is dropped; mid/trailing … is kept. No sentence
+    # split, so the frame stays one cue.
     entries = anime_vad_only_frame_entry("…美濃部長です。…はい…", 0.0, 6.0)
-    assert entries[0].text == "美濃部長です。"
-    assert entries[1].text == "はい…"
+    assert len(entries) == 1
+    assert entries[0].text == "美濃部長です。…はい…"
 
 
 def test_anime_vad_only_frame_entry_keeps_ellipsis_run_whole():
@@ -1100,11 +1100,10 @@ def test_anime_vad_only_frame_entry_drops_punctuation_only_frame():
     assert anime_vad_only_frame_entry("…", 1.0, 2.0) == []
 
 
-def test_wj_regroup_vad_only_split_sentence_then_length():
-    # Sentence split at 。/？/！; … does NOT split.
-    assert wj_regroup_vad_only_split("はい。うん？そう。") == ["はい。", "うん？", "そう。"]
-    assert wj_regroup_vad_only_split("だめ！ああ…もう") == ["だめ！", "ああ…もう"]
-    # A short sentence keeps its commas (under 50 chars).
+def test_wj_regroup_vad_only_split_length_only():
+    # Option B: sentence punctuation (。？！) and … do NOT split — short frames stay whole.
+    assert wj_regroup_vad_only_split("はい。うん？そう。") == ["はい。うん？そう。"]
+    assert wj_regroup_vad_only_split("だめ！ああ…もう") == ["だめ！ああ…もう"]
     assert wj_regroup_vad_only_split("あ、い、う。") == ["あ、い、う。"]
     # Over 50 chars: split at a comma past the threshold.
     long2 = "あ" * 55 + "、" + "い" * 10 + "。"

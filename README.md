@@ -36,9 +36,9 @@ The one-command pipeline performs these steps:
 5. Optionally write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles when `--quality-report` is set.
 
 The default anime backend runs WJ-style ASR framing: semantic scene boundaries, WhisperSeg
-grouped frames, anime-whisper text, and `vad_only` timing. For readability it then splits
-within a frame at sentence-ending punctuation and very long comma-delimited runs, while
-never treating `…` as a hard split point. This avoids forced-aligner fragmentation while
+grouped frames, anime-whisper text, and `vad_only` timing. It keeps each frame whole and
+only splits very long comma-delimited runs for readability, without treating sentence
+punctuation or `…` as split points. This avoids forced-aligner fragmentation while
 keeping this project's translation, overlap cleanup, and ASS generation. Qwen remains available with
 `--asr qwen` for cleaner text/timing comparisons, and anime can still be forced through
 the aligner for diagnostics with `--anime-timestamp-mode aligner_fallback` or
@@ -363,11 +363,12 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper   # legacy Whi
    `min_frame=0.1`.
 3. `litagin/anime-whisper` transcribes each frame. The anime text cleaner removes known
    ellipsis-only and short repetition artifacts.
-4. Default `vad_only` timing stays on the frame timeline, then applies a readability split:
-   sentence endings (`。？！?!`) can split one frame, long segments can split at commas after
-   50 content characters, and comma-less runs hard-cap at 80 content characters. `…` never
-   splits. This avoids Qwen forced-aligner collapse/fragmentation while keeping very long
-   or mixed question/answer frames readable.
+4. Default `vad_only` timing stays on the frame timeline and keeps each frame whole; it only
+   applies a length-based readability split: a long segment can split at commas after 50
+   content characters, and a comma-less run hard-caps at 80 content characters. Sentence
+   punctuation and `…` never split (anime-whisper sprays sentence enders on every soft pause,
+   so splitting on them over-fragments into sub-second flash cues). This avoids Qwen
+   forced-aligner collapse/fragmentation while keeping cues on screen long enough to read.
 
 Use `--anime-scene-backend none` for A/B tests, or run the Qwen comparison line with
 `--asr qwen`.
@@ -463,7 +464,7 @@ The one-command pipeline uses:
 - Anime WhisperSeg frame defaults: `max_group=5.0`, `chunk_threshold=0.5`, `max_speech=5.0`, `min_frame=0.1`, `threshold=0.35`
 - Anime semantic scene ASR pad: `--anime-scene-asr-pad-seconds 0.35`, matching WhisperJAV's padded `asr_processing` scene windows while keeping timeline cues on the frame timestamps
 - Anime does not use Qwen's WhisperSeg context `pad` / `merge` path. With `vad_only` timing, extra neighboring context cannot be filtered by an aligner ownership pass, and current anime evaluations do not show a need for it.
-- Anime cleaner: on for ellipsis-only fragments, leading soft ellipses, and short repetition artifacts; default `vad_only` keeps frame timing but may split a frame at sentence endings or long comma-delimited runs, then shared final hygiene removes overlaps and flash cues
+- Anime cleaner: on for ellipsis-only fragments, leading soft ellipses, and short repetition artifacts; default `vad_only` keeps frame timing and only splits a frame at long comma-delimited runs (not sentence endings), then shared final hygiene removes overlaps and flash cues
 - Qwen comparison line: available with `--asr qwen`. It defaults to WhisperSeg framing (`--qwen-vad-backend whisperseg`) with Qwen values `max_group=6.0`, `chunk_threshold=1.0`, `max_speech=5.0`, `min_frame=0.1`, `threshold=0.35`; use `--asr qwen --qwen-vad-backend current` for the older VAD path, or `--asr qwen --no-qwen-vad-chunks` for fixed 30 s tiling.
 - Qwen context mode: default `--qwen-whisperseg-context-mode none`; `pad` and `merge` remain selectable experiments, but longer merged windows are not the default because they increased hallucination in current tests.
 - Qwen timing, segmentation, and generation: default `--qwen-timestamp-mode aligner_fallback`, `--qwen-scene-backend semantic`, `--qwen-scene-asr-pad-seconds 0.35`, `--qwen-phrase-max-chars 80`, `--qwen-phrase-max-internal-gap 1.5`, `--qwen-max-new-tokens 4096`, `--qwen-repetition-penalty 1.1`, and `--qwen-max-tokens-per-second 20.0`. Step-down retry is implemented in the shared sub-script but not exposed as a top-level default path.
@@ -1022,4 +1023,6 @@ Do not commit:
 
 - Continue A/B review of the default anime line against the current Qwen comparison line, especially weak-speech recall, local mishears, and readability splits.
 - Improve Qwen text accuracy without re-enabling long merged context by default unless manual review shows hallucination and tail drift stay controlled.
+- Audit Qwen gap recapture for removal. Recent manual review has not shown enough value from the extra recapture pass, so keep it only if a repeatable miss case proves it helps.
+- Plan repository simplification: consider removing the legacy Whisper ASR backend and the optional HY-MT translator after confirming no active workflow still depends on them.
 - Continue improving ASR post-processing for isolated symbols, meaningless short subtitles, OCR-like noise, and end-credit noise.

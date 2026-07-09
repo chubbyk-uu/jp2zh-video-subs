@@ -185,10 +185,13 @@ text differences are concentrated in low-clarity breathy/moan regions, not in th
 large-scale anime framing or sentence-splitting mismatch.
 
 Current follow-up: the default anime line now keeps the same WJ-like ASR framing but applies
-project readability splitting within a frame (`。？！?!`, long comma segments >50 chars, hard
-cap 80 chars; `…` never hard-splits) and strips leading soft ellipses. This intentionally
-trades exact WJ output parity for more readable final subtitles while preserving the ASR
-windowing that fixed the earlier recognition mismatch.
+a length-only readability split within a frame (long comma segments >50 chars, hard cap 80
+chars; sentence punctuation and `…` never split) and strips leading soft ellipses. An earlier
+version also split at sentence enders (`。？！?!`), but anime-whisper sprays enders on every
+soft pause, so that over-fragmented frames into sub-second flash cues; sentence-splitting was
+reverted and only the length cap remains. This intentionally trades exact WJ output parity for
+more readable final subtitles while preserving the ASR windowing that fixed the earlier
+recognition mismatch.
 
 ### Timing modes
 
@@ -754,9 +757,11 @@ anime-whisper model itself. It came from two project-side mismatches:
    `scene_asr_pad_seconds=0.35`.
 2. Anime `vad_only` output was still entering the aligned-stream `chunk_entries()` splitter,
    so one WhisperJAV frame could be over-fragmented by aligner-oriented splitting.
-   The default anime `vad_only` path now keeps VAD frame timing first, then applies only an
-   anime-specific readability split inside a frame (`。？！?!`, long comma segments, hard
-   80-character cap; `…` never hard-splits) before final hygiene.
+   The default anime `vad_only` path now keeps VAD frame timing first, then applies only a
+   length-based readability split inside a frame (long comma segments >50 chars, hard
+   80-character cap; sentence punctuation and `…` never split) before final hygiene. Sentence
+   splitting was tried and reverted because anime-whisper's per-pause sentence enders
+   over-fragmented frames into flash cues.
 
 Outcome: the default anime ASS now matches WhisperJAV anime closely on the primary long-form
 clip while retaining project output hygiene (no final overlaps). Keep forced-aligner modes
@@ -780,8 +785,15 @@ Planned checks:
 3. Keep semantic scene on while testing whether Qwen needs selective `pad` / `merge`
    experiments for specific failure classes; do not re-enable merge by default without
    evidence that hallucination does not regress.
-4. Revisit optional recapture only after the main Qwen recognition window is stable.
-5. Prefer WJ-derived Qwen mechanisms first; add new project-specific logic only when WJ-like
+4. Audit Qwen recapture for removal. Recent manual review has not shown clear value from
+   `--qwen-recapture-min-gap`; keep it only if a repeatable miss case demonstrates a recall
+   gain without new hallucinations.
+5. Plan cleanup of code paths that no longer match the main workflow:
+   - legacy Whisper ASR (`--asr whisper`, `scripts/transcribe_ja_srt.py`, gap-fill-only helpers)
+     after confirming no active comparison workflow still needs it;
+   - optional HY-MT translator (`--translator hymt`, `scripts/translate_srt_hymt.py`) after
+     confirming GalTransl / Sakura cover the intended translation use cases.
+6. Prefer WJ-derived Qwen mechanisms first; add new project-specific logic only when WJ-like
    changes cannot explain the miss.
 
 Success criteria: improve Qwen text accuracy without regressing the current low-overlap,
