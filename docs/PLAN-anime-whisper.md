@@ -80,7 +80,6 @@ Implemented:
 - conservative anime cleaner in `scripts/anime_text_clean.py`
 - standalone Qwen forced-aligner path for `aligner_fallback` and `aligner_only`
 - raw dump/replay support for anime schema
-- recapture ignored with a warning on anime backend
 
 The anime backend uses a two-phase structure:
 
@@ -436,7 +435,7 @@ Implemented shape:
 
 - Do not duplicate the full ASR config. Most fields are shared by both lines:
   language/batch/device/dtype, fixed/VAD clip construction, cue shaping, filler and
-  near-duplicate filters, hallucination gates, recapture knobs, and common postprocess
+  near-duplicate filters, hallucination gates, and common postprocess
   thresholds. Duplicating these fields into two 60+ field dataclasses would drift.
 - `BaseAsrConfig` holds shared fields. `QwenAsrConfig(BaseAsrConfig)` and
   `AnimeAsrConfig(BaseAsrConfig)` add/override only backend-selection defaults
@@ -785,9 +784,9 @@ Planned checks:
 3. Keep semantic scene on while testing whether Qwen needs selective `pad` / `merge`
    experiments for specific failure classes; do not re-enable merge by default without
    evidence that hallucination does not regress.
-4. Audit Qwen recapture for removal. Recent manual review has not shown clear value from
-   `--qwen-recapture-min-gap`; keep it only if a repeatable miss case demonstrates a recall
-   gain without new hallucinations.
+4. Qwen recapture has been removed. Recent manual review did not show clear value from the
+   second ASR pass; future Qwen recall work should target WhisperSeg / scene framing and
+   recognition quality instead.
 5. Plan cleanup of code paths that no longer match the main workflow:
    - legacy Whisper ASR (`--asr whisper`, `scripts/transcribe_ja_srt.py`, gap-fill-only helpers)
      after confirming no active comparison workflow still needs it;

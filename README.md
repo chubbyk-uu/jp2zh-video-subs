@@ -271,11 +271,8 @@ python scripts/video_to_zh_srt.py path/to/input.mp4
 # Default anime ASR, but disable semantic scene pre-segmentation for A/B testing
 python scripts/video_to_zh_srt.py path/to/input.mp4 --anime-scene-backend none
 
-# Qwen comparison line, with Qwen gap recapture enabled (not Whisper --gap-fill)
-python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen \
-  --qwen-recapture-min-gap 10 \
-  --qwen-recapture-min-speech 2 \
-  --qwen-recapture-vad-threshold 0.05
+# Qwen comparison line
+python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen
 
 # Legacy Whisper ASR, with Whisper's second-pass gap fill enabled
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr whisper --gap-fill
@@ -406,7 +403,7 @@ with `--asr qwen --no-qwen-vad-chunks`, or explicitly compare the older VAD path
 | Content quality | Best weak-speech recall in current WJ comparisons; can still mishear local phrases | Cleaner text in some normal speech; weaker on breathy/quiet dialogue | More prone to hallucination/looping on quiet audio; needs the built-in filters |
 | Timing drift | VAD-only timing avoids anime forced-aligner collapse | WhisperSeg framing + aligner fallback recovery greatly reduce the old Qwen drift/collapse failures | Higher on long quiet stretches |
 | Speed | Whisper-large style generation per frame; slower than batched Qwen | Fast batched main pass; no recall pass by default | Comparable main pass; `--gap-fill` adds a slower second pass |
-| Recall on quiet speech | Strongest current default; review misheard phrases | Improved by WhisperSeg, still weaker than anime on breathy/quiet dialogue; try recapture for extra coverage | Add `--gap-fill` to push recall further |
+| Recall on quiet speech | Strongest current default; review misheard phrases | Improved by WhisperSeg, still weaker than anime on breathy/quiet dialogue | Add `--gap-fill` to push recall further |
 | Proper nouns / names | Can mishear names and rare terms | Can also mishear names and rare terms | Similar weakness; none is reliable on unseen names |
 | Post-processing | Anime cleaner plus shared overlap/flash-cue hygiene | Shared hygiene plus Qwen runaway-repeat collapse; opt into Whisper-style filters with `--qwen-filter-hallucinations` | Full compression/looping/duplicate/hallucination filtering |
 | VRAM | anime-whisper plus WhisperSeg; aligner only for non-`vad_only` diagnostics | 1.7B + 0.6B, ~11.5 GB at default `--qwen-batch-size 24` | large-v3, ~10 GB |
@@ -469,7 +466,6 @@ The one-command pipeline uses:
 - Qwen context mode: default `--qwen-whisperseg-context-mode none`; `pad` and `merge` remain selectable experiments, but longer merged windows are not the default because they increased hallucination in current tests.
 - Qwen timing, segmentation, and generation: default `--qwen-timestamp-mode aligner_fallback`, `--qwen-scene-backend semantic`, `--qwen-scene-asr-pad-seconds 0.35`, `--qwen-phrase-max-chars 80`, `--qwen-phrase-max-internal-gap 1.5`, `--qwen-max-new-tokens 4096`, `--qwen-repetition-penalty 1.1`, and `--qwen-max-tokens-per-second 20.0`. Step-down retry is implemented in the shared sub-script but not exposed as a top-level default path.
 - Qwen `vad_only` timing is diagnostic only. If you explicitly set `--qwen-timestamp-mode vad_only`, also set `--qwen-whisperseg-context-mode none`; pure VAD timing cannot filter text recognized from padded/merged neighboring context, so the pipeline rejects that combination.
-- Qwen gap recapture: off by default (`--qwen-recapture-min-gap 0`) and only applies to `--asr qwen`. For high-coverage Qwen runs, set a positive gap threshold such as `--qwen-recapture-min-gap 10`: after the main pass, matching subtitle gaps get a second VAD look at the more sensitive `--qwen-recapture-vad-threshold 0.05`; gaps with at least `--qwen-recapture-min-speech 2` seconds of detected speech are re-transcribed while the model is still loaded.
 - Whisper-style hallucination filtering on Qwen output: off (opt in with `--asr qwen --qwen-filter-hallucinations`)
 - Bare filler-interjection dropping: on for the shared qwen/anime sub-script. Cues that reduce entirely to a single filler mora (うん/ん/ねえ/あ …) and carry no dialogue are removed — either an isolated blip walled by `--anime-isolated-interjection-silence 3.0` seconds of silence on both sides in the default anime line, or a chain of 3+ such fillers in a row. Only cues that are *entirely* a filler are eligible, so any line containing real words always survives. Disable with `--anime-isolated-interjection-silence 0` for anime or `--qwen-isolated-interjection-silence 0` for qwen (also turns off the chain rule).
 - Filler-repetition collapse: on for the shared qwen/anime sub-script. A run of the same filler repeated inside one cue (うんうんうん。, or うん、うん、うん、一人。 padding real speech) collapses to a single instance at the token-alignment level. The run only collapses when both edges sit on punctuation or the cue boundary, so repetition inside real words (ああいう) is never touched. Pass `--no-anime-collapse-filler-repetition` for anime or `--no-qwen-collapse-filler-repetition` for qwen A/B comparison.
@@ -479,12 +475,11 @@ The one-command pipeline uses:
 - Translation context: backend-specific default context (galtransl/sakura: previous 6 turns; hymt: previous 2 Chinese translations as Hy-MT2 background information). `--context-size 0` translates each line standalone
 - Batch translation (GalTransl only, `--translate-batch-size`, default 8): up to N consecutive cues (never crossing a >10 s gap) are translated as one turn, so a sentence split across cues is seen whole. This fixes omitted-subject/person errors — e.g. third-person narration spread over several cues was otherwise mistranslated as first-person. It leans on GalTransl's "do not add/remove line breaks" contract to keep output 1:1 with input; line-count mismatches are retried as smaller strict batches, and any remaining unsafe output slots fall back to per-line translation without discarding the rest of the block. `0` or `1` disables batching.
 - Chinese display timing: 0.5 seconds lead-out and 1.5 seconds minimum display duration
-- Whisper-style gap fill: anime and Qwen do not use `--gap-fill`; enable Qwen's own gap recapture with `--asr qwen --qwen-recapture-min-gap > 0`. Use `--asr qwen --no-qwen-vad-chunks` for a fixed-tiling Qwen comparison, or `--asr whisper --gap-fill` for the legacy recall pass.
+- Whisper-style gap fill: anime and Qwen do not use `--gap-fill`. Use `--asr qwen --no-qwen-vad-chunks` for a fixed-tiling Qwen comparison, or `--asr whisper --gap-fill` for the legacy recall pass.
 - Quality report: disabled by default for production subtitle runs; enable with `--quality-report` for tuning/testing
 - Extracted WAV audio: kept by default
 
-With `--asr qwen`, Qwen only runs the WhisperSeg-framed main pass unless
-`--qwen-recapture-min-gap` is positive. Tune recall vs. clip count with
+With `--asr qwen`, Qwen runs the WhisperSeg-framed main pass. Tune recall vs. clip count with
 `--qwen-whisperseg-threshold`, `--qwen-whisperseg-max-group`, and
 `--qwen-whisperseg-chunk-threshold`; use `--asr qwen --qwen-vad-backend current` only
 when you want the older sliding-VAD comparison knobs such as `--qwen-vad-threshold`.
@@ -581,7 +576,7 @@ For `path/to/input.mp4`, the default outputs are:
 - `work/input/input.ja.srt`: main-pass Japanese subtitles used for translation by default.
 - `work/input/pipeline.log`: full pipeline log with per-stage timestamps (stdout + stderr of every subprocess). Appended across runs, survives terminal disconnects and reboots.
 - `work/input/input.quality.txt`: quality report, only when `--quality-report` is set.
-- `work/metrics.jsonl`: one JSON line of key quality metrics per processed video, only when `--quality-report` is set (entries, VAD coverage, kana residue, adjacent duplicates, recapture stats). Shared across videos and runs, for comparing tuning changes over time.
+- `work/metrics.jsonl`: one JSON line of key quality metrics per processed video, only when `--quality-report` is set (entries, VAD coverage, kana residue, adjacent duplicates). Shared across videos and runs, for comparing tuning changes over time.
 - `outputs/input.zh.srt`: final Chinese SRT.
 - `path/to/input.zh.ass`: bilingual ASS copied next to the input video. Bilingual
   output is on by default, so the ASS (not the SRT) is the artifact placed beside the
@@ -654,15 +649,8 @@ Run the Qwen backend with fixed uniform tiling instead of WhisperSeg/VAD-cut cli
 python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen --no-qwen-vad-chunks
 ```
 
-The Qwen backend does not use `--gap-fill`; its optional recall pass is
-called recapture and re-checks only subtitle gaps that meet the configured thresholds:
-
-```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen \
-  --qwen-recapture-min-gap 10 \
-  --qwen-recapture-min-speech 2 \
-  --qwen-recapture-vad-threshold 0.05
-```
+The Qwen backend does not use `--gap-fill`; tune its WhisperSeg framing knobs or use
+`--asr qwen --no-qwen-vad-chunks` for fixed-tiling comparisons.
 
 Whisper's second-pass audio-aware gap fill uses `--gap-fill`; enable it with:
 
@@ -978,9 +966,7 @@ local VAD. If you prefer more recall, lower `--main-local-vad-threshold` (defaul
 or raise `--main-local-vad-max-cluster-gap` (default 2.0); both select more audio at the
 cost of more clips and more hallucinations to filter.
 
-For more recall on the Qwen line, first enable gap recapture, for example
-`--qwen-recapture-min-gap 10`. With `--asr whisper`, use `--gap-fill` for Whisper's
-second-pass gap fill. It does not judge gaps by duration alone; it runs per-gap local
+With `--asr whisper`, use `--gap-fill` for Whisper's second-pass gap fill. It does not judge gaps by duration alone; it runs per-gap local
 VAD on each eligible subtitle gap and only re-transcribes gaps with enough speech,
 then cleans the results with the same filters as the main pass.
 
@@ -1023,6 +1009,6 @@ Do not commit:
 
 - Continue A/B review of the default anime line against the current Qwen comparison line, especially weak-speech recall, local mishears, and readability splits.
 - Improve Qwen text accuracy without re-enabling long merged context by default unless manual review shows hallucination and tail drift stay controlled.
-- Audit Qwen gap recapture for removal. Recent manual review has not shown enough value from the extra recapture pass, so keep it only if a repeatable miss case proves it helps.
+- Qwen gap recapture has been removed; continue improving Qwen recall through WhisperSeg/scene framing and text recognition quality instead of a second ASR pass.
 - Plan repository simplification: consider removing the legacy Whisper ASR backend and the optional HY-MT translator after confirming no active workflow still depends on them.
 - Continue improving ASR post-processing for isolated symbols, meaningless short subtitles, OCR-like noise, and end-credit noise.

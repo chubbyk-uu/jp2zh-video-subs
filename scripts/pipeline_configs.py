@@ -68,11 +68,6 @@ class BaseAsrConfig:
     collapse_repeats_threshold: int = arg_field(4, help="Collapse a repeated unit only when it repeats at least this many times")
     collapse_repeats_keep: int = arg_field(2, help="How many copies of the unit to keep when collapsing runaway repetition")
 
-    # Recapture pass (second, more sensitive look inside gaps).
-    recapture_min_gap: float = arg_field(0.0, help="Min uncovered gap to recapture (0 disables)")
-    recapture_min_speech: float = arg_field(2.0, help="Min detected speech in a gap to re-transcribe")
-    recapture_vad_threshold: float = arg_field(0.05, help="More sensitive VAD threshold for recapture")
-
     # Opt-in Whisper-style hallucination/near-duplicate filtering.
     near_dup_max_gap: float = arg_field(0.25, help="Near-duplicate max gap")
     near_dup_similarity: float = arg_field(0.90, help="Near-duplicate similarity threshold")

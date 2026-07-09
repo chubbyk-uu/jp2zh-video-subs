@@ -346,8 +346,7 @@ def test_build_report_fills_metrics_dict(tmp_path):
     )
     qwen_meta = tmp_path / "x.ja.srt.meta.json"
     qwen_meta.write_text(
-        '{"entries": 2, "elapsed_seconds": 90.0, "chunks": [],'
-        ' "recapture": {"gap_spans": 3, "clips": 5, "entries_added": 4}}',
+        '{"entries": 2, "elapsed_seconds": 90.0, "chunks": []}',
         encoding="utf-8",
     )
     args = _report_args(tmp_path)
@@ -363,10 +362,7 @@ def test_build_report_fills_metrics_dict(tmp_path):
     assert metrics["zh_entries"] == 2
     assert metrics["kana_left"] == 0
     assert metrics["adjacent_duplicates"] == 1
-    assert metrics["recapture_gap_spans"] == 3
-    assert metrics["recapture_entries_added"] == 4
     assert metrics["asr_elapsed_min"] == 1.5
-    assert "recapture: gap_spans=3 clips=5 entries_added=4" in report
 
 
 def test_build_report_respects_relaxed_thresholds(tmp_path):

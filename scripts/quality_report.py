@@ -602,19 +602,6 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
             lines.append(f"clip_audio_total_min: {clip_seconds / 60.0:.1f}")
             if model_seconds > 0:
                 lines.append(f"model_batch_time_total_min_approx: {model_seconds / 60.0:.1f}")
-        recapture = qwen_metadata.get("recapture") or {}
-        if recapture:
-            lines.append(
-                "recapture: "
-                f"gap_spans={recapture.get('gap_spans', 'n/a')} "
-                f"clips={recapture.get('clips', 'n/a')} "
-                f"entries_added={recapture.get('entries_added', 'n/a')}"
-            )
-            metrics.update(
-                recapture_gap_spans=recapture.get("gap_spans"),
-                recapture_clips=recapture.get("clips"),
-                recapture_entries_added=recapture.get("entries_added"),
-            )
         if "elapsed_seconds" in qwen_metadata:
             lines.append(f"elapsed_min: {float(qwen_metadata['elapsed_seconds']) / 60.0:.1f}")
             metrics["asr_elapsed_min"] = round(float(qwen_metadata["elapsed_seconds"]) / 60.0, 1)

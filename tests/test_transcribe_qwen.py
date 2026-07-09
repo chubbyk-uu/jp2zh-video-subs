@@ -31,7 +31,6 @@ from transcribe_ja_srt_qwen import (
     sentences_from_alignment,
     split_into_units,
     transcribe_qwen,
-    uncovered_gap_spans,
     vad_only_items_for_text,
     wj_regroup_vad_only_split,
     validate_runtime_args,
@@ -400,37 +399,6 @@ def test_collapse_small_kana_rides_along():
     entries = aligned_entries("んっ、んっ、んっ。", chars)
     assert len(entries) == 1
     assert _interjection_core(entries[0].text) in ISOLATED_INTERJECTION_CORES
-
-
-def test_uncovered_gap_spans_finds_internal_and_edge_gaps():
-    entries = [
-        SubtitleEntry(15.0, 16.0, "一行目"),
-        SubtitleEntry(18.0, 19.0, "二行目"),
-        SubtitleEntry(40.0, 41.0, "三行目"),
-    ]
-    spans = uncovered_gap_spans(entries, duration=60.0, min_gap=10.0)
-    # Leading silence, the 19->40 gap, and the trailing tail; the 2s gap is ignored.
-    assert [(s.start, s.end) for s in spans] == [(0.0, 15.0), (19.0, 40.0), (41.0, 60.0)]
-
-
-def test_uncovered_gap_spans_handles_overlapping_cues():
-    # prev_end must track the furthest end seen, or an enclosed short cue would
-    # reopen an already-covered region.
-    entries = [
-        SubtitleEntry(0.0, 30.0, "長い行"),
-        SubtitleEntry(5.0, 6.0, "中の行"),
-    ]
-    spans = uncovered_gap_spans(entries, duration=45.0, min_gap=10.0)
-    assert [(s.start, s.end) for s in spans] == [(30.0, 45.0)]
-
-
-def test_uncovered_gap_spans_empty_entries_covers_whole_timeline():
-    spans = uncovered_gap_spans([], duration=20.0, min_gap=10.0)
-    assert [(s.start, s.end) for s in spans] == [(0.0, 20.0)]
-
-
-def test_uncovered_gap_spans_zero_min_gap_short_timeline():
-    assert uncovered_gap_spans([], duration=5.0, min_gap=10.0) == []
 
 
 def test_unanchored_hai_run_is_dropped():
@@ -1251,7 +1219,6 @@ def test_transcribe_qwen_vad_only_skips_forced_aligner_and_uses_speech_regions(m
         language="Japanese",
         timestamp_mode="vad_only",
         stepdown=False,
-        recapture_min_gap=0.0,
     )
 
     entries, _chunks, raw = transcribe_qwen(args)

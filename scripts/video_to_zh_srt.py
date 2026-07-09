@@ -856,11 +856,6 @@ def main() -> None:
     parser.add_argument("--qwen-isolated-interjection-run", type=int, default=3)
     parser.add_argument("--qwen-isolated-interjection-run-gap", type=float, default=5.0)
     parser.add_argument("--qwen-interjection-reply-anchor-lag", type=float, default=3.0)
-    # Recapture: a second, more sensitive VAD+ASR look inside subtitle gaps at least
-    # this long, run while the ASR model is still loaded (0 disables).
-    parser.add_argument("--qwen-recapture-min-gap", type=float, default=0.0)
-    parser.add_argument("--qwen-recapture-min-speech", type=float, default=2.0)
-    parser.add_argument("--qwen-recapture-vad-threshold", type=float, default=0.05)
     parser.add_argument(
         "--qwen-timestamp-mode",
         choices=("aligner_fallback", "aligner_only", "vad_only"),

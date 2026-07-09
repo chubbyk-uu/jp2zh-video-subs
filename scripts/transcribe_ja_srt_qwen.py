@@ -1184,72 +1184,6 @@ def build_qwen_jobs(audio, samplerate: int, duration: float, args: argparse.Name
     return build_fixed_jobs(duration, args), "fixed"
 
 
-def uncovered_gap_spans(entries: list[SubtitleEntry], duration: float, min_gap: float) -> list[Interval]:
-    """Timeline spans not covered by any cue, at least min_gap seconds long.
-
-    List edges count: a silent lead-in or tail longer than min_gap is also a span.
-    Feeds the recapture pass, which gives these regions a second, more sensitive
-    VAD+ASR look while the model is still loaded."""
-    spans: list[Interval] = []
-    prev_end = 0.0
-    for entry in sorted(entries, key=lambda e: (e.start, e.end)):
-        if entry.start - prev_end >= min_gap:
-            spans.append(Interval(prev_end, entry.start))
-        prev_end = max(prev_end, entry.end)
-    if duration - prev_end >= min_gap:
-        spans.append(Interval(prev_end, duration))
-    return spans
-
-
-def build_recapture_jobs(
-    audio,
-    samplerate: int,
-    duration: float,
-    spans: list[Interval],
-    args: argparse.Namespace,
-) -> list[ChunkJob]:
-    """Second-look clips inside uncovered gaps, cut with a more sensitive VAD.
-
-    The main pass misses quiet speech that sits under --vad-threshold; re-running
-    VAD only inside the gaps at --recapture-vad-threshold finds it without making
-    the whole-file VAD noisier. A span whose detected speech totals less than
-    --recapture-min-speech is skipped (background blips are not worth a clip).
-    Clip construction mirrors build_vad_jobs: cluster, split at 30s with
-    overlap-midpoint cue ownership."""
-    max_clip = min(args.chunk_seconds, 30.0)
-    overlap = args.chunk_overlap_seconds
-    half = overlap / 2.0
-    jobs: list[ChunkJob] = []
-    for span in spans:
-        lo = int(span.start * samplerate)
-        hi = int(span.end * samplerate)
-        span_duration = span.end - span.start
-        intervals = speech_intervals_from_sliding_audio(
-            audio[lo:hi],
-            span_duration,
-            args.recapture_vad_threshold,
-            args.vad_min_silence_ms,
-            args.vad_speech_pad_ms,
-            args.vad_window_seconds,
-            args.vad_window_overlap_seconds,
-        )
-        if sum(item.end - item.start for item in intervals) < args.recapture_min_speech:
-            continue
-        clusters = speech_clusters(intervals, args.vad_max_cluster_gap, args.vad_pad_seconds, span_duration)
-        for cluster in clusters:
-            if cluster.end - cluster.start < args.vad_min_clip_seconds:
-                continue
-            group = Interval(span.start + cluster.start, span.start + cluster.end)
-            subs = split_clip_with_overlap(group, max_clip, overlap)
-            last = len(subs) - 1
-            for i, sub in enumerate(subs):
-                keep_lo = group.start if i == 0 else sub.start + half
-                keep_hi = group.end if i == last else sub.end - half
-                audio_end = min(duration, sub.end + args.vad_post_context_seconds)
-                jobs.append(ChunkJob(sub.start, audio_end, keep_lo, keep_hi))
-    return jobs
-
-
 def chunk_entries(
     text: str,
     items,
@@ -1621,8 +1555,6 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
         jobs = build_fixed_jobs(duration, args)
         mode = "fixed"
 
-    if args.recapture_min_gap > 0:
-        print("warning: recapture is not supported on the anime backend; ignoring --recapture-min-gap", flush=True)
     if (args.context or "").strip():
         print("warning: --context is ignored by anime-whisper (model constraint: no initial prompt)", flush=True)
 
@@ -1767,7 +1699,6 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
         "duration": duration,
         "mode": mode,
         "context": "",
-        "recapture": {},
         "chunks": raw_chunks,
     }
     return entries, chunk_results, raw
@@ -1876,7 +1807,6 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                     "language": str(result.language),
                     "text": text,
                     "pass": label,
-                    "recapture": label == "recapture",
                     "speech_regions": [[iv.start, iv.end] for iv in job.speech],
                     "raw_items": _serialize_items(raw_items),
                     "recovered_items": _serialize_items(out_items) if recovery.get("applied") else [],
@@ -1937,26 +1867,6 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                 flush=True,
             )
 
-    recapture_stats: dict = {}
-    if args.recapture_min_gap > 0:
-        # Second look while the model is still loaded: gaps are computed on the
-        # pre-filter entries, so regions about to be dropped as interjections still
-        # look covered and are not pointlessly re-transcribed. Anything the
-        # recapture re-finds that is itself a bare interjection gets removed by the
-        # same finalize filters as the main pass.
-        spans = uncovered_gap_spans(entries, duration, args.recapture_min_gap)
-        recapture_jobs = build_recapture_jobs(audio, samplerate, duration, spans, args)
-        added = run_jobs(recapture_jobs, "recapture") if recapture_jobs else 0
-        recapture_stats = {
-            "gap_spans": len(spans),
-            "clips": len(recapture_jobs),
-            "entries_added": added,
-        }
-        print(
-            f"Recapture: gap_spans={len(spans)} clips={len(recapture_jobs)} entries_added={added}",
-            flush=True,
-        )
-
     entries.sort(key=lambda e: (e.start, e.end))
     raw = {
         "text_backend": "qwen",
@@ -1988,7 +1898,6 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             "min_pad_seconds": float(getattr(args, "whisperseg_context_min_pad_seconds", 1.0)),
             "max_pad_seconds": float(getattr(args, "whisperseg_context_max_pad_seconds", 3.0)),
         },
-        "recapture": recapture_stats,
         "stepdown": stepdown_stats,
         "chunks": raw_chunks,
     }
@@ -2099,7 +2008,6 @@ def main() -> None:
                 "whisperseg_context_pad_ratio": float(getattr(args, "whisperseg_context_pad_ratio", 0.10)),
                 "whisperseg_context_min_pad_seconds": float(getattr(args, "whisperseg_context_min_pad_seconds", 1.0)),
                 "whisperseg_context_max_pad_seconds": float(getattr(args, "whisperseg_context_max_pad_seconds", 3.0)),
-                "recapture": raw.get("recapture", {}),
                 "entries": len(entries),
                 "elapsed_seconds": time.time() - started,
                 "chunks": [asdict(item) for item in chunk_results],
