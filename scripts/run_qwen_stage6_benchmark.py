@@ -27,17 +27,19 @@ class Variant:
 def default_variants() -> list[Variant]:
     """Stage 6.3 comparison matrix.
 
-    qwen_current intentionally disables the Stage 6.1/6.2 additions so it remains a
-    measured baseline. qwen_wj_core enables only the WJ qwen choices already ported
-    into this codebase; it is not a full WhisperJAV qwen pipeline clone.
+    qwen_fixed_tiling intentionally disables VAD chunking and Stage 6.1/6.2 additions
+    so it remains a measured fixed-window baseline. qwen_wj_core enables only the WJ
+    qwen choices already ported into this codebase; it is not a full WhisperJAV qwen
+    pipeline clone.
     """
     return [
         Variant(
-            "qwen_current",
+            "qwen_fixed_tiling",
             QwenAsrConfig(
+                vad_chunks=False,
                 timestamp_mode="aligner_only",
                 collapse_recovery=False,
-                vad_backend="current",
+                vad_backend="whisperseg",
                 scene_backend="none",
                 max_new_tokens=256,
                 repetition_penalty=1.0,
@@ -45,11 +47,12 @@ def default_variants() -> list[Variant]:
             ),
         ),
         Variant(
-            "qwen_recovery",
+            "qwen_fixed_recovery",
             QwenAsrConfig(
+                vad_chunks=False,
                 timestamp_mode="aligner_fallback",
                 collapse_recovery=True,
-                vad_backend="current",
+                vad_backend="whisperseg",
                 scene_backend="none",
                 max_new_tokens=256,
                 repetition_penalty=1.0,

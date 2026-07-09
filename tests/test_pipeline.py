@@ -230,7 +230,7 @@ def test_build_qwen_command_can_override_qwen_framing(tmp_path):
         language="ja",
         min_cue_seconds=0.3,
         asr="qwen",
-        qwen_vad_backend="current",
+        qwen_vad_backend="whisperseg",
         qwen_whisperseg_max_group=7.0,
         qwen_whisperseg_chunk_threshold=0.8,
         qwen_whisperseg_context_mode="merge",
@@ -247,7 +247,7 @@ def test_build_qwen_command_can_override_qwen_framing(tmp_path):
     cmd = build_qwen_command(ns, tmp_path / "audio.wav", tmp_path / "out.ja.srt")
 
     assert cmd[cmd.index("--text-backend") + 1] == "qwen"
-    assert cmd[cmd.index("--vad-backend") + 1] == "current"
+    assert cmd[cmd.index("--vad-backend") + 1] == "whisperseg"
     assert cmd[cmd.index("--whisperseg-max-group") + 1] == "7.0"
     assert cmd[cmd.index("--whisperseg-chunk-threshold") + 1] == "0.8"
     assert cmd[cmd.index("--whisperseg-context-mode") + 1] == "merge"
@@ -348,7 +348,6 @@ def test_build_quality_command_asr_anime_uses_whisperseg_backend(tmp_path):
         tmp_path / "quality.txt",
         tmp_path / "metrics.jsonl",
         "sample",
-        None,
         tmp_path / "in.ja.srt.meta.json",
     )
 
@@ -375,7 +374,6 @@ def test_build_quality_command_can_override_quality_vad_backend(tmp_path):
         tmp_path / "quality.txt",
         tmp_path / "metrics.jsonl",
         "sample",
-        None,
         tmp_path / "in.ja.srt.meta.json",
     )
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 import re
@@ -41,21 +40,6 @@ class Entry:
     index: str
     start: float
     end: float
-    text: str
-
-
-@dataclass
-class FillMetadataRow:
-    status: str
-    reason: str
-    start: float
-    end: float
-    duration: float
-    clip_start: float
-    clip_end: float
-    avg_logprob: float | None
-    no_speech_prob: float | None
-    compression_ratio: float | None
     text: str
 
 
@@ -159,41 +143,6 @@ def parse_srt(path: Path | None) -> list[Entry]:
     return entries
 
 
-def parse_optional_float(value: str | None) -> float | None:
-    if value is None or value == "":
-        return None
-    return float(value)
-
-
-def normalize_fill_phrase(text: str) -> str:
-    return compact_text(text).strip("。、．，！？!?…・ー～~ 　")
-
-
-def parse_fills_metadata(path: Path | None) -> list[FillMetadataRow]:
-    if path is None or not path.exists():
-        return []
-    rows: list[FillMetadataRow] = []
-    with path.open("r", encoding="utf-8", newline="") as file:
-        reader = csv.DictReader(file, delimiter="\t")
-        for row in reader:
-            rows.append(
-                FillMetadataRow(
-                    status=row.get("status", ""),
-                    reason=row.get("reason", ""),
-                    start=float(row.get("start") or 0.0),
-                    end=float(row.get("end") or 0.0),
-                    duration=float(row.get("duration") or 0.0),
-                    clip_start=float(row.get("clip_start") or 0.0),
-                    clip_end=float(row.get("clip_end") or 0.0),
-                    avg_logprob=parse_optional_float(row.get("avg_logprob")),
-                    no_speech_prob=parse_optional_float(row.get("no_speech_prob")),
-                    compression_ratio=parse_optional_float(row.get("compression_ratio")),
-                    text=row.get("text", ""),
-                )
-            )
-    return rows
-
-
 def load_json(path: Path | None) -> dict:
     if path is None or not path.exists():
         return {}
@@ -250,27 +199,6 @@ def speech_intervals_from_metadata(qwen_metadata: dict) -> list[Interval]:
     return merge_intervals(intervals)
 
 
-def speech_intervals_from_silero_audio(
-    audio_path: Path,
-    threshold: float,
-    min_silence_ms: int,
-    speech_pad_ms: int,
-    audio=None,
-) -> list[Interval]:
-    from faster_whisper.audio import decode_audio
-    from faster_whisper.vad import VadOptions, get_speech_timestamps
-
-    if audio is None:
-        audio = decode_audio(str(audio_path), sampling_rate=16000)
-    options = VadOptions(
-        threshold=threshold,
-        min_silence_duration_ms=min_silence_ms,
-        speech_pad_ms=speech_pad_ms,
-    )
-    timestamps = get_speech_timestamps(audio, options, sampling_rate=16000)
-    return [Interval(item["start"] / 16000, item["end"] / 16000) for item in timestamps]
-
-
 def speech_intervals_from_whisperseg_audio(
     audio_path: Path,
     model_path: str,
@@ -281,11 +209,12 @@ def speech_intervals_from_whisperseg_audio(
     min_frame_seconds: float,
     audio=None,
 ) -> list[Interval]:
-    from faster_whisper.audio import decode_audio
     from whisperseg_vad import WhisperSegVAD, resolve_model_path
 
     if audio is None:
-        audio = decode_audio(str(audio_path), sampling_rate=16000)
+        import librosa
+
+        audio, _ = librosa.load(str(audio_path), sr=16000, mono=True)
     vad = WhisperSegVAD(
         model_path=resolve_model_path(model_path),
         threshold=threshold,
@@ -317,7 +246,7 @@ def speech_intervals_for_report(
     args: argparse.Namespace,
     qwen_metadata: dict,
 ) -> tuple[list[Interval], str]:
-    backend = getattr(args, "vad_backend", "silero")
+    backend = getattr(args, "vad_backend", "auto")
     metadata_intervals = speech_intervals_from_metadata(qwen_metadata)
     if backend in ("auto", "metadata") and metadata_intervals:
         return metadata_intervals, "metadata"
@@ -325,7 +254,7 @@ def speech_intervals_for_report(
         return [], "metadata(empty)"
 
     if backend == "auto":
-        backend = "silero"
+        backend = "whisperseg"
     audio_path = getattr(args, "audio", None)
     if audio_path is None or not audio_path.exists():
         return [], f"{backend}(audio_missing)"
@@ -342,15 +271,7 @@ def speech_intervals_for_report(
             ),
             "whisperseg",
         )
-    return (
-        speech_intervals_from_silero_audio(
-            audio_path,
-            getattr(args, "vad_threshold", 0.05),
-            getattr(args, "vad_min_silence_ms", 500),
-            getattr(args, "vad_speech_pad_ms", 400),
-        ),
-        "silero",
-    )
+    return [], f"{backend}(unsupported)"
 
 
 def adjacent_duplicate_candidates(ja_entries: list[Entry], zh_entries: list[Entry]) -> list[str]:
@@ -371,24 +292,6 @@ def adjacent_duplicate_candidates(ja_entries: list[Entry], zh_entries: list[Entr
     return candidates
 
 
-def repeated_fill_phrase_warnings(
-    fills_metadata: list[FillMetadataRow],
-    min_count: int,
-) -> list[tuple[str, list[FillMetadataRow]]]:
-    groups: dict[str, list[FillMetadataRow]] = {}
-    for item in fills_metadata:
-        if item.status != "kept":
-            continue
-        key = normalize_fill_phrase(item.text)
-        if not key:
-            continue
-        groups.setdefault(key, []).append(item)
-    return sorted(
-        ((key, items) for key, items in groups.items() if len(items) >= min_count),
-        key=lambda value: (-len(value[1]), value[0]),
-    )
-
-
 def possible_japanese_text_left(entries: list[Entry]) -> list[tuple[Entry, str]]:
     candidates: list[tuple[Entry, str]] = []
     for item in entries:
@@ -406,13 +309,8 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
         metrics = {}
     ja_entries = parse_srt(args.ja_srt)
     zh_entries = parse_srt(args.zh_srt)
-    fills_metadata = parse_fills_metadata(getattr(args, "fills_metadata", None))
     qwen_metadata = load_json(getattr(args, "qwen_metadata", None))
     reference_args = getattr(args, "reference_srt", None) or []
-    warn_avg_logprob_below = getattr(args, "warn_avg_logprob_below", -0.80)
-    warn_no_speech_prob_above = getattr(args, "warn_no_speech_prob_above", 0.50)
-    warn_compression_ratio_above = getattr(args, "warn_compression_ratio_above", 2.20)
-    warn_repeated_fill_phrase_count = getattr(args, "warn_repeated_fill_phrase_count", 3)
     max_samples = getattr(args, "max_samples", 20)
 
     lines: list[str] = []
@@ -608,86 +506,6 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
         lines.append(f"entries_after_postprocess: {qwen_metadata.get('entries', 'n/a')}")
         lines.append("")
 
-    if fills_metadata:
-        kept = [item for item in fills_metadata if item.status == "kept"]
-        filtered = [item for item in fills_metadata if item.status == "filtered"]
-        logprobs = [item.avg_logprob for item in kept if item.avg_logprob is not None]
-        no_speech_probs = [item.no_speech_prob for item in kept if item.no_speech_prob is not None]
-        compression_ratios = [item.compression_ratio for item in kept if item.compression_ratio is not None]
-        low_confidence = [
-            item for item in kept
-            if (
-                (item.avg_logprob is not None and item.avg_logprob < warn_avg_logprob_below)
-                or (item.no_speech_prob is not None and item.no_speech_prob > warn_no_speech_prob_above)
-                or (item.compression_ratio is not None and item.compression_ratio > warn_compression_ratio_above)
-            )
-        ]
-        reason_counts: dict[str, int] = {}
-        for item in filtered:
-            reason_counts[item.reason] = reason_counts.get(item.reason, 0) + 1
-
-        lines.append("[Gap Fill Metadata]")
-        lines.append(f"metadata_entries: {len(fills_metadata)}")
-        lines.append(f"kept_entries: {len(kept)}")
-        lines.append(f"filtered_entries: {len(filtered)}")
-        if reason_counts:
-            lines.append(
-                "filtered_reasons: "
-                + ", ".join(f"{reason}={count}" for reason, count in sorted(reason_counts.items()))
-            )
-        if logprobs:
-            lines.append(f"kept_avg_logprob_median: {percentile(logprobs, 0.5):.2f}")
-            lines.append(f"kept_avg_logprob_min: {min(logprobs):.2f}")
-        if no_speech_probs:
-            lines.append(f"kept_no_speech_prob_median: {percentile(no_speech_probs, 0.5):.2f}")
-            lines.append(f"kept_no_speech_prob_max: {max(no_speech_probs):.2f}")
-        if compression_ratios:
-            lines.append(f"kept_compression_ratio_median: {percentile(compression_ratios, 0.5):.2f}")
-            lines.append(f"kept_compression_ratio_max: {max(compression_ratios):.2f}")
-        lines.append("kept_fill_samples:")
-        for item in sorted(kept, key=lambda value: value.start)[:max_samples]:
-            lines.append(f"- {format_time(item.start)} -> {format_time(item.end)} {item.text[:80]}")
-        repeated_warnings = repeated_fill_phrase_warnings(
-            fills_metadata,
-            warn_repeated_fill_phrase_count,
-        )
-        lines.append(f"repeated_kept_fill_phrases: {len(repeated_warnings)}")
-        for text, items in repeated_warnings[:max_samples]:
-            item_logprobs = [item.avg_logprob for item in items if item.avg_logprob is not None]
-            item_no_speech_probs = [
-                item.no_speech_prob for item in items if item.no_speech_prob is not None
-            ]
-            logprob_text = (
-                f"{percentile(item_logprobs, 0.5):.2f}" if item_logprobs else "n/a"
-            )
-            no_speech_text = (
-                f"{percentile(item_no_speech_probs, 0.5):.2f}"
-                if item_no_speech_probs
-                else "n/a"
-            )
-            samples = ", ".join(format_time(item.start) for item in sorted(items, key=lambda value: value.start)[:3])
-            lines.append(
-                f"- count={len(items)} avg_logprob_median={logprob_text} "
-                f"no_speech_prob_median={no_speech_text} samples={samples} text={text[:80]}"
-            )
-        lines.append(f"low_confidence_kept_entries: {len(low_confidence)}")
-        for item in sorted(
-            low_confidence,
-            key=lambda value: (
-                value.avg_logprob if value.avg_logprob is not None else 0.0,
-                -(value.no_speech_prob or 0.0),
-                -(value.compression_ratio or 0.0),
-            ),
-        )[:max_samples]:
-            lines.append(
-                f"- {format_time(item.start)} -> {format_time(item.end)} "
-                f"avg_logprob={item.avg_logprob if item.avg_logprob is not None else 'n/a'} "
-                f"no_speech_prob={item.no_speech_prob if item.no_speech_prob is not None else 'n/a'} "
-                f"compression_ratio={item.compression_ratio if item.compression_ratio is not None else 'n/a'} "
-                f"text={item.text[:80]}"
-            )
-        lines.append("")
-
     return "\n".join(lines)
 
 
@@ -698,7 +516,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ja-srt", type=Path, required=True)
     parser.add_argument("--zh-srt", type=Path)
     parser.add_argument("--audio", type=Path)
-    parser.add_argument("--fills-metadata", type=Path)
     parser.add_argument("--qwen-metadata", type=Path)
     parser.add_argument(
         "--reference-srt",
@@ -717,7 +534,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--metrics-label",
         default="",
-        help="Label for the metrics record; defaults to the ja SRT stem without .ja/.filled.ja",
+        help="Label for the metrics record; defaults to the ja SRT stem without .ja",
     )
     add_dataclass_arguments(parser, QualityReportConfig)
     return parser
@@ -733,7 +550,7 @@ def main() -> None:
         args.output.write_text(report + "\n", encoding="utf-8")
     print(report)
     if args.metrics_jsonl:
-        label = args.metrics_label or re.sub(r"\.(filled\.)?ja$", "", args.ja_srt.stem)
+        label = args.metrics_label or re.sub(r"\.ja$", "", args.ja_srt.stem)
         record = {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "label": label,

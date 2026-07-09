@@ -4,8 +4,9 @@ from run_qwen_stage6_benchmark import benchmark_command, default_variants, selec
 def test_default_variants_keep_baseline_separate_from_wj_core():
     variants = {variant.name: variant.config for variant in default_variants()}
 
-    baseline = variants["qwen_current"]
-    assert baseline.vad_backend == "current"
+    baseline = variants["qwen_fixed_tiling"]
+    assert baseline.vad_chunks is False
+    assert baseline.vad_backend == "whisperseg"
     assert baseline.scene_backend == "none"
     assert baseline.timestamp_mode == "aligner_only"
     assert baseline.collapse_recovery is False
@@ -36,9 +37,9 @@ def test_default_variants_keep_baseline_separate_from_wj_core():
 
 
 def test_selected_variants_preserves_requested_order():
-    variants = selected_variants(["anime", "qwen_current"])
+    variants = selected_variants(["anime", "qwen_fixed_tiling"])
 
-    assert [variant.name for variant in variants] == ["anime", "qwen_current"]
+    assert [variant.name for variant in variants] == ["anime", "qwen_fixed_tiling"]
 
 
 def test_benchmark_command_requires_refs(tmp_path):

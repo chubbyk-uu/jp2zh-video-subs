@@ -33,7 +33,7 @@ Optional diagnostic paths remain available:
 
 ```text
 audio
-  -> current VAD or WhisperSeg
+  -> WhisperSeg
   -> anime-whisper text
   -> anime text cleaner
   -> Qwen forced aligner
@@ -549,8 +549,8 @@ Validation for the split:
   | WJ-anime | 100.0% (474/474) | 100.0% (205/205) | cues=737 short=1 long=0 ov=41 |
   | WJ-qwen | 100.0% (474/474) | 0.0% (0/205) | cues=954 short=175 long=19 ov=29 |
   | ours-anime | 93.7% (444/474) | 56.6% (116/205) | cues=804 short=2 long=0 ov=0 |
-  | qwen_current | 77.4% (367/474) | 8.8% (18/205) | cues=923 short=12 long=0 ov=0 |
-  | qwen_recovery | 77.6% (368/474) | 9.3% (19/205) | cues=941 short=9 long=0 ov=0 |
+  | qwen_fixed_tiling | 77.4% (367/474) | 8.8% (18/205) | cues=923 short=12 long=0 ov=0 |
+  | qwen_fixed_recovery | 77.6% (368/474) | 9.3% (19/205) | cues=941 short=9 long=0 ov=0 |
   | qwen_whisperseg | 90.5% (429/474) | 13.7% (28/205) | cues=1023 short=3 long=0 ov=0 |
   | qwen_whisperseg_gen | 91.4% (433/474) | 14.6% (30/205) | cues=1078 short=3 long=0 ov=0 |
   | qwen_wj_framing | 91.1% (432/474) | 10.2% (21/205) | cues=1048 short=2 long=0 ov=0 |
@@ -601,7 +601,7 @@ Validation for the split:
   | candidate | consensus | weak-speech | cues | short | long | ov |
   |---|---:|---:|---|---|---|---|
   | WJ-qwen | 79.3% | 25.2% | 954 | **175** | **19** | **29** |
-  | qwen_current (Silero) | 66.4% | 10.9% | 923 | 12 | 0 | 0 |
+  | qwen_fixed_tiling | 66.4% | 10.9% | 923 | 12 | 0 | 0 |
   | **semoff_sd6** (semantic off, sd inert) | 77.9% | **22.7%** | 1078 | 3 | 0 | 0 |
   | wjcore_sd6 (aligned: semantic on, sd inert) | 77.5% | 16.8% | 1093 | 4 | 0 | 0 |
   | wj_sd3 (semantic on, sd 3.0) | 77.9% | 15.1% | 1120 | 4 | 0 | 0 |
@@ -787,10 +787,9 @@ Planned checks:
 4. Qwen recapture has been removed. Recent manual review did not show clear value from the
    second ASR pass; future Qwen recall work should target WhisperSeg / scene framing and
    recognition quality instead.
-5. HY-MT translation has been removed after manual review found it too literal for the
-   project's dialogue-focused workflow. Continue cleanup planning for the remaining legacy
-   Whisper ASR path (`--asr whisper`, `scripts/transcribe_ja_srt.py`, gap-fill-only helpers)
-   after confirming no active comparison workflow still needs it.
+5. HY-MT translation and the legacy Whisper ASR path have been removed. The remaining
+   supported ASR lines are anime and Qwen, both using the shared Qwen/anime sub-script
+   with WhisperSeg framing.
 6. Prefer WJ-derived Qwen mechanisms first; add new project-specific logic only when WJ-like
    changes cannot explain the miss.
 

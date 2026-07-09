@@ -117,7 +117,7 @@ class QwenAsrConfig(BaseAsrConfig):
     # context=none vs 0.593 with merge on the primary clip). The long merge windows then only
     # added downside — dropped whole lines, garbled names, and repetition drift at window
     # tails — so merge/pad modes stay selectable but off by default. Step-down stays off too.
-    vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="qwen speech segmentation backend")
+    vad_backend: str = arg_field("whisperseg", choices=("whisperseg",), help="qwen speech segmentation backend")
     whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
     whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
     whisperseg_max_group: float = arg_field(6.0, help="WhisperSeg max frame group duration (s)")
@@ -170,7 +170,7 @@ class AnimeAsrConfig(BaseAsrConfig):
     )
     no_repeat_ngram_size: int = arg_field(0, help="anime-whisper n-gram repeat guard (0 = model-card default)")
 
-    vad_backend: str = arg_field("whisperseg", choices=("current", "whisperseg"), help="anime speech segmentation backend")
+    vad_backend: str = arg_field("whisperseg", choices=("whisperseg",), help="anime speech segmentation backend")
     whisperseg_model: str = arg_field("models/whisperseg/model.onnx", help="WhisperSeg ONNX path")
     whisperseg_max_speech: float = arg_field(5.0, help="WhisperSeg force-split speech segment duration (s)")
     whisperseg_max_group: float = arg_field(5.0, help="WhisperSeg max frame group duration (s)")
@@ -225,15 +225,15 @@ class BilingualAssConfig:
 class QualityReportConfig:
     """Tuning knobs shared with quality_report.py.
 
-    IO/per-run args (the SRT/audio paths, --output, --fills-metadata, --qwen-metadata,
+    IO/per-run args (the SRT/audio paths, --output, --qwen-metadata,
     --metrics-jsonl, --metrics-label) stay manual. The audio-aware gap section can use
-    ASR metadata speech regions, Silero/faster-whisper VAD, or WhisperSeg so reports can
-    match the ASR line that produced the subtitles.
+    ASR metadata speech regions or WhisperSeg so reports can match the ASR line that
+    produced the subtitles.
     """
 
     vad_backend: str = arg_field(
         "auto",
-        choices=("auto", "metadata", "silero", "whisperseg"),
+        choices=("auto", "metadata", "whisperseg"),
         help="VAD source for audio-aware gap checks",
     )
     vad_threshold: float = arg_field(0.05, help="VAD speech probability threshold")
@@ -248,82 +248,4 @@ class QualityReportConfig:
     min_gap_seconds: float = arg_field(10.0, help="Min gap to flag as a suspicious uncovered span")
     min_speech_seconds: float = arg_field(2.0, help="Min VAD speech in a gap to flag it")
     subtitle_pad_seconds: float = arg_field(0.5, help="Padding added around cues for coverage")
-    warn_avg_logprob_below: float = arg_field(-0.80, help="Flag kept fills below this avg_logprob")
-    warn_no_speech_prob_above: float = arg_field(0.50, help="Flag kept fills above this no_speech_prob")
-    warn_compression_ratio_above: float = arg_field(2.20, help="Flag kept fills above this compression ratio")
-    warn_repeated_fill_phrase_count: int = arg_field(3, help="Flag fill phrases repeated at least this many times")
     max_samples: int = arg_field(20, help="Max sample rows per report section")
-
-
-@dataclass
-class WhisperAsrConfig:
-    """Tuning knobs shared with the legacy Whisper backend (transcribe_ja_srt.py).
-
-    IO/structural args (audio, --output, --model) and the two opt-out flags
-    (--main-local-vad-dry-run, --no-hallucination-filter) stay manual. The orchestrator's
-    --main-max-compression-ratio is fed from its --max-fill-compression-ratio knob (the one
-    knob whose name differs), everything else maps by identical name.
-    """
-
-    language: str = arg_field("ja", help="ASR language")
-    min_duration: float = arg_field(1.0, help="Min cue duration")
-    max_duration: float = arg_field(10.0, help="Max cue duration")
-    max_chars: int = arg_field(42, help="Max chars per cue")
-    vad_min_silence_ms: int = arg_field(500, help="VAD min silence to split")
-    vad_speech_pad_ms: int = arg_field(400, help="VAD speech padding")
-    main_local_vad_threshold: float = arg_field(0.6, help="Main sliding-VAD threshold")
-    main_local_vad_window_seconds: float = arg_field(8.0, help="Main VAD window length")
-    main_local_vad_window_overlap_seconds: float = arg_field(4.0, help="Main VAD window overlap")
-    main_local_vad_max_cluster_gap: float = arg_field(2.0, help="Main VAD cluster merge gap")
-    main_local_asr_pad_seconds: float = arg_field(0.3, help="Main clip pad")
-    main_local_asr_max_clip_seconds: float = arg_field(30.0, help="Main clip max length")
-    main_local_asr_overlap_seconds: float = arg_field(5.0, help="Main clip overlap")
-    main_local_min_clip_seconds: float = arg_field(0.6, help="Drop main clips shorter than this")
-    main_local_batch_size: int = arg_field(24, help="Main ASR batch size")
-    main_min_chars: int = arg_field(1, help="Min chars to keep a main cue")
-    main_max_compression_ratio: float = arg_field(25.0, help="Main max compression ratio")
-    main_duplicate_window_seconds: float = arg_field(2.0, help="Main duplicate window")
-    hallucination_min_repeats: int = arg_field(10, help="Min repeats to flag a hallucination")
-    hallucination_repeat_no_speech_prob: float = arg_field(0.75, help="no_speech_prob gate for repeats")
-    hallucination_repeat_avg_logprob: float = arg_field(-0.80, help="avg_logprob gate for repeats")
-    hallucination_high_risk_max_repeats: int = arg_field(3, help="Absolute repeat cap for high-risk phrases")
-    min_cue_seconds: float = arg_field(0.3, help="Drop cues shorter than this")
-    near_dup_max_gap: float = arg_field(0.5, help="Near-duplicate max gap")
-    near_dup_similarity: float = arg_field(0.6, help="Near-duplicate similarity threshold")
-    near_dup_squeeze_seconds: float = arg_field(0.8, help="Near-duplicate squeeze window")
-    max_word_gap: float = arg_field(6.0, help="Max gap between words before splitting")
-    max_merge_gap: float = arg_field(1.0, help="Max gap to merge adjacent segments")
-
-
-@dataclass
-class FillConfig(WhisperAsrConfig):
-    """Tuning knobs shared with the gap-fill stage (fill_ja_srt_gaps.py).
-
-    Embeds a Whisper main pass, so it extends WhisperAsrConfig with the gap-fill-only knobs.
-    IO/structural args stay manual.
-    The orchestrator uses its own fill_*-prefixed knobs for the gate family (see the command
-    builder's overrides); other fields map by identical name.
-    """
-
-    gap_local_vad_threshold: float = arg_field(0.60, help="Gap-fill VAD threshold")
-    gap_local_vad_window_min_gap_seconds: float = arg_field(6.0, help="Gap-fill VAD window min gap")
-    gap_local_vad_window_seconds: float = arg_field(5.0, help="Gap-fill VAD window length")
-    gap_local_vad_window_overlap_seconds: float = arg_field(3.0, help="Gap-fill VAD window overlap")
-    gap_local_asr_pad_seconds: float = arg_field(1.0, help="Gap-fill clip pad")
-    gap_local_asr_max_clip_seconds: float = arg_field(30.0, help="Gap-fill clip max length")
-    gap_local_asr_overlap_seconds: float = arg_field(5.0, help="Gap-fill clip overlap")
-    min_gap_seconds: float = arg_field(2.0, help="Min uncovered gap to fill")
-    min_speech_seconds: float = arg_field(1.0, help="Min VAD speech in a gap to fill")
-    min_clip_seconds: float = arg_field(0.6, help="Drop gap clips shorter than this")
-    min_fill_chars: int = arg_field(1, help="Min chars to keep a fill")
-    max_fill_compression_ratio: float = arg_field(25.0, help="Max compression ratio for a fill")
-    max_cluster_gap: float = arg_field(2.0, help="Gap-fill cluster merge gap")
-    existing_pad_seconds: float = arg_field(0.1, help="Pad around existing cues when carving gaps")
-    max_existing_overlap_seconds: float = arg_field(1.0, help="Max overlap with existing cues")
-    duplicate_window_seconds: float = arg_field(8.0, help="Fill duplicate detection window")
-    fill_support_min_chars: int = arg_field(8, help="Support-check min chars")
-    fill_support_avg_logprob: float = arg_field(-0.95, help="Support-check avg_logprob gate")
-    fill_support_no_speech_prob: float = arg_field(0.45, help="Support-check no_speech_prob gate")
-    fill_support_vad_threshold: float = arg_field(0.5, help="Support-check VAD threshold")
-    fill_support_pad_seconds: float = arg_field(0.2, help="Support-check pad")
-    fill_support_max_ratio: float = arg_field(0.45, help="Support-check max ratio")

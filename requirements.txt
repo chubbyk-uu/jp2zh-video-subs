@@ -11,9 +11,6 @@ qwen-asr==0.0.6
 # scikit-learn / scipy (semantic scene clustering) arrive transitively via librosa.
 onnxruntime-gpu==1.27.0
 
-# --- Legacy ASR backend (--asr whisper): faster-whisper sliding pass + gap fill ---
-faster-whisper==1.2.1
-
 huggingface-hub==0.36.2
 pykakasi==2.3.0
 # NOTE: PyPI wheel is CPU-only. For NVIDIA GPU, rebuild after install:

@@ -57,14 +57,8 @@ def iter_videos(path: Path, recursive: bool) -> list[Path]:
 
 
 def find_ja_srt(work_dir: Path, stem: str) -> Path | None:
-    candidates = [
-        work_dir / stem / f"{stem}.filled.ja.srt",
-        work_dir / stem / f"{stem}.ja.srt",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
+    candidate = work_dir / stem / f"{stem}.ja.srt"
+    return candidate if candidate.exists() else None
 
 
 def parse_srt(path: Path) -> list[SrtBlock]:

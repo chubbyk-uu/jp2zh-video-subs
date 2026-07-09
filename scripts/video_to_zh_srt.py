@@ -22,25 +22,20 @@ from cli_config import (
 from pipeline_configs import (
     AnimeAsrConfig,
     BilingualAssConfig,
-    FillConfig,
     GalTranslTranslateConfig,
     QualityReportConfig,
     QwenAsrConfig,
     SakuraTranslateConfig,
-    WhisperAsrConfig,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
-TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt.py"
 QWEN_TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt_qwen.py"
 SAKURA_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_sakura.py"
 GALTRANSL_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_galtransl.py"
 QUALITY_REPORT_SCRIPT = SCRIPTS_DIR / "quality_report.py"
-FILL_GAPS_SCRIPT = SCRIPTS_DIR / "fill_ja_srt_gaps.py"
 BILINGUAL_SCRIPT = SCRIPTS_DIR / "make_bilingual_ass.py"
-WHISPER_MODEL = PROJECT_ROOT / "models" / "faster-whisper-large-v3"
 QWEN_ASR_MODEL = PROJECT_ROOT / "models" / "Qwen3-ASR-1.7B"
 QWEN_ALIGNER_MODEL = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 # anime backend reuses the Qwen sub-script (shared VAD/cue-shaping/finalize) with a
@@ -403,13 +398,9 @@ def build_quality_command(
     output: Path,
     metrics_jsonl: Path,
     metrics_label: str,
-    fills_metadata: Path | None,
     qwen_metadata: Path | None,
 ) -> list[str]:
-    cfg = QualityReportConfig(
-        vad_min_silence_ms=args.vad_min_silence_ms,
-        vad_speech_pad_ms=args.vad_speech_pad_ms,
-    )
+    cfg = QualityReportConfig()
     if getattr(args, "asr", None) == "anime":
         anime_cfg = asr_config_for_command(args)
         cfg.vad_backend = "whisperseg"
@@ -439,118 +430,9 @@ def build_quality_command(
         metrics_label,
         *config_to_cli_args(cfg),
     ]
-    if fills_metadata is not None:
-        command.extend(["--fills-metadata", str(fills_metadata)])
     if qwen_metadata is not None:
         command.extend(["--qwen-metadata", str(qwen_metadata)])
     return command
-
-
-def _whisper_local_kwargs(args: argparse.Namespace) -> dict:
-    """Shared Whisper main-pass knobs, mapped from the orchestrator's args.
-
-    The one name that differs: the orchestrator exposes a single compression knob
-    (--max-fill-compression-ratio) that feeds the sub-scripts' --main-max-compression-ratio.
-    Everything else maps by identical name. Reused by both the whisper and fill builders.
-    """
-    return dict(
-        language=args.language,
-        min_duration=args.min_duration,
-        max_duration=args.max_duration,
-        max_chars=args.max_chars,
-        vad_min_silence_ms=args.vad_min_silence_ms,
-        vad_speech_pad_ms=args.vad_speech_pad_ms,
-        main_local_vad_threshold=args.main_local_vad_threshold,
-        main_local_vad_window_seconds=args.main_local_vad_window_seconds,
-        main_local_vad_window_overlap_seconds=args.main_local_vad_window_overlap_seconds,
-        main_local_vad_max_cluster_gap=args.main_local_vad_max_cluster_gap,
-        main_local_asr_pad_seconds=args.main_local_asr_pad_seconds,
-        main_local_asr_max_clip_seconds=args.main_local_asr_max_clip_seconds,
-        main_local_asr_overlap_seconds=args.main_local_asr_overlap_seconds,
-        main_local_min_clip_seconds=args.main_local_min_clip_seconds,
-        main_local_batch_size=args.main_local_batch_size,
-        main_min_chars=args.main_min_chars,
-        main_max_compression_ratio=args.max_fill_compression_ratio,
-        main_duplicate_window_seconds=args.main_duplicate_window_seconds,
-        hallucination_min_repeats=args.hallucination_min_repeats,
-        hallucination_repeat_no_speech_prob=args.hallucination_repeat_no_speech_prob,
-        hallucination_repeat_avg_logprob=args.hallucination_repeat_avg_logprob,
-        hallucination_high_risk_max_repeats=args.hallucination_high_risk_max_repeats,
-        min_cue_seconds=args.min_cue_seconds,
-        near_dup_max_gap=args.near_dup_max_gap,
-        near_dup_similarity=args.near_dup_similarity,
-        near_dup_squeeze_seconds=args.near_dup_squeeze_seconds,
-        max_word_gap=args.max_word_gap,
-        max_merge_gap=args.max_merge_gap,
-    )
-
-
-def build_whisper_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> list[str]:
-    cfg = WhisperAsrConfig(**_whisper_local_kwargs(args))
-    return [
-        sys.executable,
-        str(TRANSCRIBE_SCRIPT),
-        str(audio),
-        "--output",
-        str(ja_srt),
-        "--model",
-        str(WHISPER_MODEL),
-        *config_to_cli_args(cfg),
-    ]
-
-
-def build_fill_command(
-    args: argparse.Namespace,
-    audio: Path,
-    ja_srt: Path,
-    filled_ja_srt: Path,
-    fills_srt: Path,
-    fills_metadata: Path,
-) -> list[str]:
-    # The orchestrator's fill_*-prefixed gate knobs map onto the sub-script's unprefixed
-    # flags; the rest (incl. gap_local_*/fill_support_*) map by identical name.
-    cfg = FillConfig(
-        **_whisper_local_kwargs(args),
-        gap_local_vad_threshold=args.gap_local_vad_threshold,
-        gap_local_vad_window_min_gap_seconds=args.gap_local_vad_window_min_gap_seconds,
-        gap_local_vad_window_seconds=args.gap_local_vad_window_seconds,
-        gap_local_vad_window_overlap_seconds=args.gap_local_vad_window_overlap_seconds,
-        gap_local_asr_pad_seconds=args.gap_local_asr_pad_seconds,
-        gap_local_asr_max_clip_seconds=args.gap_local_asr_max_clip_seconds,
-        gap_local_asr_overlap_seconds=args.gap_local_asr_overlap_seconds,
-        min_gap_seconds=args.fill_min_gap_seconds,
-        min_speech_seconds=args.fill_min_speech_seconds,
-        min_clip_seconds=args.fill_min_clip_seconds,
-        min_fill_chars=args.fill_min_chars,
-        max_fill_compression_ratio=args.max_fill_compression_ratio,
-        max_cluster_gap=args.fill_max_cluster_gap,
-        existing_pad_seconds=args.fill_existing_pad_seconds,
-        max_existing_overlap_seconds=args.fill_max_existing_overlap_seconds,
-        duplicate_window_seconds=args.fill_duplicate_window_seconds,
-        fill_support_min_chars=args.fill_support_min_chars,
-        fill_support_avg_logprob=args.fill_support_avg_logprob,
-        fill_support_no_speech_prob=args.fill_support_no_speech_prob,
-        fill_support_vad_threshold=args.fill_support_vad_threshold,
-        fill_support_pad_seconds=args.fill_support_pad_seconds,
-        fill_support_max_ratio=args.fill_support_max_ratio,
-    )
-    return [
-        sys.executable,
-        str(FILL_GAPS_SCRIPT),
-        "--audio",
-        str(audio),
-        "--transcribe-output",
-        str(ja_srt),
-        "--output",
-        str(filled_ja_srt),
-        "--fills-output",
-        str(fills_srt),
-        "--fills-metadata-output",
-        str(fills_metadata),
-        "--model",
-        str(WHISPER_MODEL),
-        *config_to_cli_args(cfg),
-    ]
 
 
 def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: Path, audio: Path) -> None:
@@ -575,25 +457,9 @@ def process_video_stages(
     ja_srt = job_dir / f"{video.stem}.ja.srt"
     translate_input_srt = ja_srt
 
-    if args.asr in ("qwen", "anime"):
-        transcribe_command = build_qwen_command(args, audio, ja_srt)
-        if not resume_skip(args, ja_srt, log, "transcription"):
-            run(transcribe_command, log)
-    elif not args.gap_fill:
-        transcribe_command = build_whisper_command(args, audio, ja_srt)
-        if not resume_skip(args, ja_srt, log, "transcription"):
-            run(transcribe_command, log)
-    else:
-        # Transcribe and gap-fill share one loaded Whisper model in a single process.
-        filled_ja_srt = job_dir / f"{video.stem}.filled.ja.srt"
-        fills_srt = job_dir / f"{video.stem}.fills.ja.srt"
-        fills_metadata = job_dir / f"{video.stem}.fills.tsv"
-        fill_command = build_fill_command(args, audio, ja_srt, filled_ja_srt, fills_srt, fills_metadata)
-        # The fill stage writes the filled SRT and the fills metadata together at
-        # the end, so resuming needs both present.
-        if not (fills_metadata.exists() and resume_skip(args, filled_ja_srt, log, "transcription + gap fill")):
-            run(fill_command, log)
-        translate_input_srt = filled_ja_srt
+    transcribe_command = build_qwen_command(args, audio, ja_srt)
+    if not resume_skip(args, ja_srt, log, "transcription"):
+        run(transcribe_command, log)
 
     translate_command = build_translate_command(args, translate_input_srt, output)
     if args.resume and translation_is_complete(output, translate_input_srt):
@@ -609,8 +475,7 @@ def process_video_stages(
 
     if args.quality_report and not args.skip_quality_report:
         report_path = job_dir / f"{video.stem}.quality.txt"
-        fills_metadata = (job_dir / f"{video.stem}.fills.tsv") if args.gap_fill else None
-        qwen_metadata = ja_srt.with_suffix(ja_srt.suffix + ".meta.json") if args.asr in ("qwen", "anime") else None
+        qwen_metadata = ja_srt.with_suffix(ja_srt.suffix + ".meta.json")
         quality_command = build_quality_command(
             args,
             translate_input_srt,
@@ -619,7 +484,6 @@ def process_video_stages(
             report_path,
             args.work_dir / "metrics.jsonl",
             video.stem,
-            fills_metadata,
             qwen_metadata,
         )
         run(quality_command, log)
@@ -644,8 +508,6 @@ def process_video_stages(
         label = "Bilingual ASS" if bilingual_output is not None else "Chinese SRT"
         log.print(f"{label} next to video: {copied_to_video}")
     log.print(f"Intermediate Japanese SRT: {ja_srt}")
-    if translate_input_srt != ja_srt:
-        log.print(f"Gap-filled Japanese SRT: {translate_input_srt}")
 
 
 def _early_config_path(argv: list[str]) -> Path | None:
@@ -670,7 +532,7 @@ def main() -> None:
         type=Path,
         help="Flat TOML file of defaults for any option below (keys are flag names). A "
         "value flag given on the command line overrides the file; plain on/off switches "
-        "(e.g. --gap-fill, --quality-report, --resume) can only be turned on, so once set true in the file "
+        "(e.g. --quality-report, --resume) can only be turned on, so once set true in the file "
         "the command line cannot turn them back off. See --print-config.",
     )
     parser.add_argument(
@@ -697,13 +559,8 @@ def main() -> None:
     parser.add_argument("--skip-quality-report", action="store_true", help="Deprecated compatibility flag; quality reports are off unless --quality-report is set")
     parser.add_argument(
         "--quality-vad-backend",
-        choices=("auto", "metadata", "silero", "whisperseg"),
+        choices=("auto", "metadata", "whisperseg"),
         help="VAD source used only by the quality report (default: anime uses whisperseg, others auto)",
-    )
-    parser.add_argument(
-        "--gap-fill",
-        action="store_true",
-        help="Run the audio-aware gap fill stage after transcription (off by default)",
     )
     parser.add_argument(
         "--bilingual",
@@ -758,14 +615,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--asr",
-        choices=("whisper", "qwen", "anime"),
+        choices=("qwen", "anime"),
         default="anime",
         help="Transcription backend (default anime). 'anime' uses litagin/anime-whisper "
         "text + WhisperSeg framing + semantic scenes + vad_only timing; 'qwen' uses "
         "Qwen3-ASR with WhisperSeg framing, aligner fallback recovery, and WJ-style "
-        "generation knobs; 'whisper' is the legacy "
-        "sliding+gap-fill pipeline. anime shares the qwen sub-script implementation but "
-        "uses its own --anime-* tuning surface. Downstream stages are shared.",
+        "generation knobs. anime shares the qwen sub-script implementation but uses "
+        "its own --anime-* tuning surface. Downstream stages are shared.",
     )
     parser.add_argument("--qwen-batch-size", type=int, default=24)
     parser.add_argument("--qwen-device", default="cuda:0")
@@ -805,7 +661,7 @@ def main() -> None:
     parser.add_argument("--qwen-vad-max-leading-silence", type=float, default=0.5)
     parser.add_argument("--qwen-vad-context-merge-gap", type=float, default=0.0)
     parser.add_argument("--qwen-vad-target-context-seconds", type=float, default=24.0)
-    parser.add_argument("--qwen-vad-backend", choices=("current", "whisperseg"), default=None)
+    parser.add_argument("--qwen-vad-backend", choices=("whisperseg",), default=None)
     parser.add_argument("--qwen-whisperseg-model", default=None)
     parser.add_argument("--qwen-whisperseg-max-speech", type=float, default=None)
     parser.add_argument("--qwen-whisperseg-max-group", type=float, default=None)
@@ -887,54 +743,7 @@ def main() -> None:
         skip=ANIME_PREFIX_SKIP,
         default_none=True,
     )
-    parser.add_argument("--min-duration", type=float, default=1.0)
-    parser.add_argument("--max-duration", type=float, default=10.0)
-    parser.add_argument("--max-chars", type=int, default=42)
-    parser.add_argument("--vad-min-silence-ms", type=int, default=500)
-    parser.add_argument("--vad-speech-pad-ms", type=int, default=400)
-    parser.add_argument("--main-local-vad-threshold", type=float, default=0.6)
-    parser.add_argument("--main-local-vad-window-seconds", type=float, default=8.0)
-    parser.add_argument("--main-local-vad-window-overlap-seconds", type=float, default=4.0)
-    parser.add_argument("--main-local-vad-max-cluster-gap", type=float, default=2.0)
-    parser.add_argument("--main-local-asr-pad-seconds", type=float, default=0.3)
-    parser.add_argument("--main-local-asr-max-clip-seconds", type=float, default=30.0)
-    parser.add_argument("--main-local-asr-overlap-seconds", type=float, default=5.0)
-    parser.add_argument("--main-local-min-clip-seconds", type=float, default=0.6)
-    parser.add_argument("--main-local-batch-size", type=int, default=24)
-    parser.add_argument("--max-word-gap", type=float, default=6.0)
-    parser.add_argument("--max-merge-gap", type=float, default=1.0)
-    parser.add_argument("--fill-min-gap-seconds", type=float, default=2.0)
-    parser.add_argument("--fill-min-speech-seconds", type=float, default=1.0)
-    parser.add_argument("--fill-min-chars", type=int, default=1)
-    parser.add_argument("--fill-min-clip-seconds", type=float, default=0.6)
-    parser.add_argument("--fill-existing-pad-seconds", type=float, default=0.1)
-    parser.add_argument("--fill-max-existing-overlap-seconds", type=float, default=1.0)
-    parser.add_argument("--fill-max-cluster-gap", type=float, default=2.0)
-    parser.add_argument("--fill-duplicate-window-seconds", type=float, default=8.0)
-    parser.add_argument("--gap-local-vad-threshold", type=float, default=0.60)
-    parser.add_argument("--gap-local-vad-window-min-gap-seconds", type=float, default=6.0)
-    parser.add_argument("--gap-local-vad-window-seconds", type=float, default=5.0)
-    parser.add_argument("--gap-local-vad-window-overlap-seconds", type=float, default=3.0)
-    parser.add_argument("--gap-local-asr-pad-seconds", type=float, default=1.0)
-    parser.add_argument("--gap-local-asr-max-clip-seconds", type=float, default=30.0)
-    parser.add_argument("--gap-local-asr-overlap-seconds", type=float, default=5.0)
-    parser.add_argument("--max-fill-compression-ratio", type=float, default=25.0)
-    parser.add_argument("--fill-support-min-chars", type=int, default=8)
-    parser.add_argument("--fill-support-avg-logprob", type=float, default=-0.95)
-    parser.add_argument("--fill-support-no-speech-prob", type=float, default=0.45)
-    parser.add_argument("--fill-support-vad-threshold", type=float, default=0.5)
-    parser.add_argument("--fill-support-pad-seconds", type=float, default=0.2)
-    parser.add_argument("--fill-support-max-ratio", type=float, default=0.45)
-    parser.add_argument("--main-min-chars", type=int, default=1)
-    parser.add_argument("--main-duplicate-window-seconds", type=float, default=2.0)
     parser.add_argument("--min-cue-seconds", type=float, default=0.3)
-    parser.add_argument("--near-dup-max-gap", type=float, default=0.5)
-    parser.add_argument("--near-dup-similarity", type=float, default=0.6)
-    parser.add_argument("--near-dup-squeeze-seconds", type=float, default=0.8)
-    parser.add_argument("--hallucination-min-repeats", type=int, default=10)
-    parser.add_argument("--hallucination-repeat-no-speech-prob", type=float, default=0.75)
-    parser.add_argument("--hallucination-repeat-avg-logprob", type=float, default=-0.80)
-    parser.add_argument("--hallucination-high-risk-max-repeats", type=int, default=3)
     parser.add_argument(
         "--no-copy-to-video-dir",
         action="store_true",
@@ -961,12 +770,6 @@ def main() -> None:
     if args.resume:
         args.reuse_existing_audio = True
 
-    if args.asr in ("qwen", "anime"):
-        # Qwen/anime gap-fill is intentionally disabled; use Whisper when a second recall pass is required.
-        if args.gap_fill:
-            print(f"Note: --gap-fill is ignored with --asr {args.asr}; gap fill belongs to the Whisper backend.", flush=True)
-        args.gap_fill = False
-
     if args.keep_audio:
         print("Warning: --keep-audio is deprecated and has no effect (audio is kept by default).", flush=True)
     if args.lead_out_seconds < 0:
@@ -975,13 +778,6 @@ def main() -> None:
         raise SystemExit("--min-display-seconds must be >= 0")
     if args.context_size is not None and args.context_size < 0:
         raise SystemExit("--context-size must be >= 0")
-    if args.main_local_vad_window_overlap_seconds >= args.main_local_vad_window_seconds:
-        raise SystemExit("--main-local-vad-window-overlap-seconds must be smaller than --main-local-vad-window-seconds")
-    if args.main_local_asr_overlap_seconds >= min(args.main_local_asr_max_clip_seconds, 30.0):
-        raise SystemExit("--main-local-asr-overlap-seconds must be smaller than the effective main ASR clip length")
-    if args.gap_local_asr_overlap_seconds >= min(args.gap_local_asr_max_clip_seconds, 30.0):
-        raise SystemExit("--gap-local-asr-overlap-seconds must be smaller than the effective gap-fill ASR clip length")
-
     if shutil.which("ffmpeg") is None:
         raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")
 
@@ -995,9 +791,6 @@ def main() -> None:
         require_file(QWEN_ASR_MODEL, "Qwen3-ASR model")
         require_file(QWEN_ALIGNER_MODEL, "Qwen3 forced aligner")
         require_file(QWEN_TRANSCRIBE_SCRIPT, "Qwen transcription script")
-    else:
-        require_file(WHISPER_MODEL / "model.bin", "Whisper model")
-        require_file(TRANSCRIBE_SCRIPT, "transcription script")
     if args.translator == "sakura":
         require_file(SAKURA_MODEL, "Sakura model")
         require_file(SAKURA_TRANSLATE_SCRIPT, "Sakura translation script")
@@ -1005,7 +798,6 @@ def main() -> None:
         require_file(GALTRANSL_MODEL, "GalTransl model")
         require_file(GALTRANSL_TRANSLATE_SCRIPT, "GalTransl translation script")
     require_file(QUALITY_REPORT_SCRIPT, "quality report script")
-    require_file(FILL_GAPS_SCRIPT, "gap fill script")
     if args.bilingual:
         require_file(BILINGUAL_SCRIPT, "bilingual ASS script")
 

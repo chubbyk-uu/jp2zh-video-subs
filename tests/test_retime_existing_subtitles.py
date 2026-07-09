@@ -18,7 +18,7 @@ def test_process_video_writes_retimed_srt_and_copied_ass(tmp_path):
         "2\n00:00:03,000 --> 00:00:04,000\n世界\n",
         encoding="utf-8",
     )
-    (work_dir / stem / f"{stem}.filled.ja.srt").write_text(
+    (work_dir / stem / f"{stem}.ja.srt").write_text(
         "1\n00:00:01,000 --> 00:00:01,400\nこんにちは\n\n"
         "2\n00:00:03,000 --> 00:00:04,000\n世界\n",
         encoding="utf-8",

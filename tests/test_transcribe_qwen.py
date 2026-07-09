@@ -5,8 +5,8 @@ import types
 import numpy as np
 import pytest
 
+from asr_common import SubtitleEntry
 from srt_utils import Interval
-from transcribe_ja_srt import SubtitleEntry
 from transcribe_ja_srt_qwen import (
     ISOLATED_INTERJECTION_CORES,
     ChunkJob,
@@ -935,25 +935,7 @@ def test_whisperseg_context_ratio_padding_uses_merged_span_with_clamp(monkeypatc
     assert [(r.start, r.end) for r in jobs[1].speech] == pytest.approx([(1.0, 2.0)])
 
 
-def test_build_qwen_jobs_default_uses_current_vad(monkeypatch):
-    calls = []
-    expected = [ChunkJob(1.0, 2.0, 1.0, 2.0)]
-
-    def fake_build_vad_jobs(audio, samplerate, duration, args):
-        calls.append((audio, samplerate, duration, args))
-        return expected
-
-    monkeypatch.setattr("transcribe_ja_srt_qwen.build_vad_jobs", fake_build_vad_jobs)
-    args = argparse.Namespace(vad_chunks=True, vad_backend="current")
-
-    jobs, mode = build_qwen_jobs(np.zeros(16000, dtype=np.float32), 16000, 1.0, args)
-
-    assert jobs is expected
-    assert mode == "vad"
-    assert len(calls) == 1
-
-
-def test_build_qwen_jobs_can_opt_into_whisperseg(monkeypatch):
+def test_build_qwen_jobs_uses_whisperseg_when_vad_chunks_enabled(monkeypatch):
     calls = []
     expected = [ChunkJob(1.0, 2.0, 1.0, 2.0)]
 

@@ -16,19 +16,18 @@ from alignment_recovery import (
     words_to_items,
 )
 from anime_text_clean import anime_clean_text, strip_leading_ellipsis
-from cli_config import add_dataclass_arguments
-from pipeline_configs import QwenAsrConfig
-from srt_utils import Interval
-from transcribe_ja_srt import (
+from asr_common import (
     SubtitleEntry,
     drop_adjacent_near_duplicates,
     filter_main_local_entries,
     resolve_overlaps,
     speech_clusters,
-    speech_intervals_from_sliding_audio,
     split_clip_with_overlap,
     write_entries,
 )
+from cli_config import add_dataclass_arguments
+from pipeline_configs import QwenAsrConfig
+from srt_utils import Interval
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
@@ -863,57 +862,6 @@ def merge_clusters_into_groups(clusters: list[Interval], merge_gap: float, targe
     return groups
 
 
-def build_vad_jobs(audio, samplerate: int, duration: float, args: argparse.Namespace) -> list[ChunkJob]:
-    """Speech-aligned clips: VAD is a speech anchor, not a sentence splitter.
-
-    intervals -> speech clusters (vad_max_cluster_gap) -> optional context groups
-    (vad_context_merge_gap, off by default). Each group is split into <=30s subs
-    with overlap; cue ownership uses overlap-midpoint handoff so an internal sub's
-    leading token (anchored to the clip edge) is owned by the previous sub where it
-    sits mid-clip and is well timed. The audio fed to Qwen may be widened a little
-    for recognition context (pre/post), but cue ownership stays tight; the total
-    leading expansion (including the pad speech_clusters already added) is capped at
-    vad_max_leading_silence so widening never re-introduces leading-silence drift.
-    """
-    if samplerate != 16000:
-        raise SystemExit("--vad-chunks requires 16 kHz audio")
-    intervals = speech_intervals_from_sliding_audio(
-        audio,
-        duration,
-        args.vad_threshold,
-        args.vad_min_silence_ms,
-        args.vad_speech_pad_ms,
-        args.vad_window_seconds,
-        args.vad_window_overlap_seconds,
-    )
-    clusters = speech_clusters(intervals, args.vad_max_cluster_gap, args.vad_pad_seconds, duration)
-    groups = merge_clusters_into_groups(clusters, args.vad_context_merge_gap, args.vad_target_context_seconds)
-    if args.vad_context_merge_gap > 0:
-        print(f"VAD context merge: clusters={len(clusters)} -> groups={len(groups)}", flush=True)
-
-    max_clip = min(args.chunk_seconds, 30.0)
-    overlap = args.chunk_overlap_seconds
-    half = overlap / 2.0
-    # Cap the new pre-context so pad (already in cluster.start) + pre <= max leading silence.
-    effective_pre = min(args.vad_pre_context_seconds, max(0.0, args.vad_max_leading_silence - args.vad_pad_seconds))
-
-    jobs: list[ChunkJob] = []
-    for group in groups:
-        if group.end - group.start < args.vad_min_clip_seconds:
-            continue
-        subs = split_clip_with_overlap(group, max_clip, overlap)
-        last = len(subs) - 1
-        for i, sub in enumerate(subs):
-            keep_lo = group.start if i == 0 else sub.start + half
-            keep_hi = group.end if i == last else sub.end - half
-            audio_start = max(0.0, sub.start - effective_pre)
-            audio_end = min(duration, sub.end + args.vad_post_context_seconds)
-            job = ChunkJob(audio_start, audio_end, keep_lo, keep_hi)
-            job.speech = _clip_relative_speech(intervals, audio_start, audio_end)
-            jobs.append(job)
-    return jobs
-
-
 def _validate_whisperseg_context_args(args: argparse.Namespace) -> tuple[str, float, float, float, float, float, float, str, float, float, float]:
     mode = getattr(args, "whisperseg_context_mode", "none")
     if mode not in {"none", "pad", "merge"}:
@@ -953,7 +901,7 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
     """Validate cross-field combinations that argparse choices cannot express."""
     if (
         getattr(args, "timestamp_mode", "aligner_fallback") == "vad_only"
-        and getattr(args, "vad_backend", "current") == "whisperseg"
+        and getattr(args, "vad_backend", "whisperseg") == "whisperseg"
         and getattr(args, "whisperseg_context_mode", "none") != "none"
     ):
         backend = getattr(args, "text_backend", "qwen")
@@ -1178,9 +1126,7 @@ def build_qwen_jobs(audio, samplerate: int, duration: float, args: argparse.Name
     pad/merge experiments remain selectable for comparison.
     """
     if args.vad_chunks:
-        if getattr(args, "vad_backend", "current") == "whisperseg":
-            return build_whisperseg_jobs(audio, samplerate, duration, args), "whisperseg"
-        return build_vad_jobs(audio, samplerate, duration, args), "vad"
+        return build_whisperseg_jobs(audio, samplerate, duration, args), "whisperseg"
     return build_fixed_jobs(duration, args), "fixed"
 
 
@@ -1545,12 +1491,9 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
 
     audio, samplerate = load_full_audio(args.audio)
     duration = audio.shape[0] / float(samplerate)
-    if getattr(args, "vad_backend", "current") == "whisperseg":
+    if args.vad_chunks:
         jobs = build_whisperseg_jobs(audio, samplerate, duration, args)
         mode = "whisperseg"
-    elif args.vad_chunks:
-        jobs = build_vad_jobs(audio, samplerate, duration, args)
-        mode = "vad"
     else:
         jobs = build_fixed_jobs(duration, args)
         mode = "fixed"
@@ -1692,7 +1635,7 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
     raw = {
         "text_backend": "anime",
         "scene_backend": getattr(args, "scene_backend", "none"),
-        "vad_backend": getattr(args, "vad_backend", "current"),
+        "vad_backend": getattr(args, "vad_backend", "whisperseg"),
         "timestamp_mode": args.timestamp_mode,
         "chunk_seconds": args.chunk_seconds,
         "chunk_overlap_seconds": args.chunk_overlap_seconds,
@@ -1870,7 +1813,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
     entries.sort(key=lambda e: (e.start, e.end))
     raw = {
         "text_backend": "qwen",
-        "vad_backend": getattr(args, "vad_backend", "current"),
+        "vad_backend": getattr(args, "vad_backend", "whisperseg"),
         "scene_backend": getattr(args, "scene_backend", "none"),
         "timestamp_mode": getattr(args, "timestamp_mode", "aligner_fallback"),
         "chunk_seconds": args.chunk_seconds,
@@ -1986,7 +1929,7 @@ def main() -> None:
                 "phrase_max_internal_gap": args.phrase_max_internal_gap,
                 "phrase_max_char_seconds": args.phrase_max_char_seconds,
                 "vad_chunks": args.vad_chunks,
-                "vad_backend": getattr(args, "vad_backend", "current"),
+                "vad_backend": getattr(args, "vad_backend", "whisperseg"),
                 "scene_backend": getattr(args, "scene_backend", "none"),
                 "timestamp_mode": getattr(args, "timestamp_mode", "aligner_fallback"),
                 "vad_threshold": args.vad_threshold,

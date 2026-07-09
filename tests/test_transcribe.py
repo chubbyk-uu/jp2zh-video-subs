@@ -1,15 +1,13 @@
 import types
 
-from transcribe_ja_srt import (
+from asr_common import (
     SubtitleEntry,
     drop_adjacent_near_duplicates,
     estimate_display_duration,
     filter_hallucination_entries,
     filter_main_local_entries,
-    merge_orphan_prefix_entries,
     merge_short_entries,
     resolve_overlaps,
-    sliding_windows,
     speech_clusters,
     split_clip_with_overlap,
 )
@@ -144,45 +142,6 @@ def test_filter_hallucination_entries_removes_main_asr_boilerplate_and_symbols()
         "ありがとうございました",
         "🐬🐬🐬",
         "タンジェント",
-    ]
-
-
-def test_merge_orphan_prefix_entries_joins_broken_words():
-    entries = [
-        SubtitleEntry(0, 1, "気"),
-        SubtitleEntry(5, 6, "持ちいい"),
-        SubtitleEntry(10, 11, "ブ"),
-        SubtitleEntry(16, 17, "ックピット"),
-        SubtitleEntry(20, 21, "さ"),
-        SubtitleEntry(25, 26, "っきから"),
-    ]
-
-    merged = merge_orphan_prefix_entries(entries, max_gap=10.0, max_duration=12.0, max_chars=42)
-
-    assert [entry.text for entry in merged] == ["気持ちいい", "ブックピット", "さっきから"]
-
-
-def test_merge_orphan_prefix_entries_does_not_join_normal_short_lines():
-    entries = [
-        SubtitleEntry(0, 1, "はい"),
-        SubtitleEntry(2, 3, "頑張って"),
-        SubtitleEntry(4, 5, "あ"),
-        SubtitleEntry(6, 7, "そうです"),
-    ]
-
-    merged = merge_orphan_prefix_entries(entries, max_gap=10.0, max_duration=12.0, max_chars=42)
-
-    assert [entry.text for entry in merged] == ["はい", "頑張って", "あ", "そうです"]
-
-
-def test_sliding_windows_uses_overlap_step():
-    windows = sliding_windows(20.0, window_seconds=8.0, overlap_seconds=4.0)
-
-    assert [(item.start, item.end) for item in windows] == [
-        (0.0, 8.0),
-        (4.0, 12.0),
-        (8.0, 16.0),
-        (12.0, 20.0),
     ]
 
 
