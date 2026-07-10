@@ -920,10 +920,10 @@ def _validate_whisperseg_context_args(args: argparse.Namespace) -> tuple[str, fl
     mode = getattr(args, "whisperseg_context_mode", "none")
     if mode not in {"none", "merge"}:
         raise SystemExit("--whisperseg-context-mode must be one of: none, merge")
-    merge_gap = float(getattr(args, "whisperseg_context_merge_gap", 2.0))
-    target = float(getattr(args, "whisperseg_context_target_seconds", 18.0))
+    merge_gap = float(getattr(args, "whisperseg_context_merge_gap", 1.0))
+    target = float(getattr(args, "whisperseg_context_target_seconds", 10.0))
     after_target_gap = float(getattr(args, "whisperseg_context_after_target_gap", 0.2))
-    hard_max = float(getattr(args, "whisperseg_context_hard_max_seconds", 35.0))
+    hard_max = float(getattr(args, "whisperseg_context_hard_max_seconds", 15.0))
     if merge_gap < 0:
         raise SystemExit("--whisperseg-context-merge-gap must be non-negative")
     if after_target_gap < 0:
@@ -983,25 +983,16 @@ def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Names
     if not atomic:
         return []
 
-    # Reuse the semantic-scene processing pad value as a conservative outer boundary
-    # for qwen merge jobs. This is not the scene processing window itself, and it is
-    # intentionally applied once around the merged job rather than as legacy per-frame
-    # pre/post context.
-    scene_pad = max(0.0, float(getattr(args, "scene_asr_pad_seconds", 0.0)))
-
     def make_job(component_groups: list, *, is_last: bool) -> ChunkJob:
         owned_start = _whisperseg_group_bounds(component_groups[0])[0]
         owned_end = _whisperseg_group_bounds(component_groups[-1])[1]
-        if mode == "merge":
-            audio_start = max(0.0, owned_start - scene_pad)
-            audio_end = min(duration, owned_end + scene_pad)
-        else:
-            audio_start = owned_start
-            audio_end = owned_end
         keep_hi = float("inf") if is_last else owned_end
-        job = ChunkJob(audio_start, audio_end, owned_start, keep_hi)
+        # Scene padding belongs solely to the WhisperSeg input window. Every Qwen
+        # job, including a merged one, is sliced exactly to its owned frame bounds.
+        # Otherwise Qwen can emit non-owned boundary speech and create duplicates.
+        job = ChunkJob(owned_start, owned_end, owned_start, keep_hi)
         job.speech = [
-            Interval(float(seg.start) - audio_start, float(seg.end) - audio_start)
+            Interval(float(seg.start) - owned_start, float(seg.end) - owned_start)
             for group in component_groups
             for seg in group
         ]
@@ -1048,7 +1039,7 @@ def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Names
     print(
         f"WhisperSeg qwen context: mode=merge frames={len(atomic)} jobs={len(jobs)} "
         f"gap={merge_gap}s target={target}s after_target_gap={after_target_gap}s hard_max={hard_max}s "
-        f"hard_cuts={hard_cuts} soft_breaks={soft_breaks} scene_pad={scene_pad}s",
+        f"hard_cuts={hard_cuts} soft_breaks={soft_breaks}",
         flush=True,
     )
     return jobs
@@ -1880,11 +1871,10 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
         },
         "whisperseg_context": {
             "mode": getattr(args, "whisperseg_context_mode", "none"),
-            "merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 2.0)),
-            "target_seconds": float(getattr(args, "whisperseg_context_target_seconds", 18.0)),
+            "merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 1.0)),
+            "target_seconds": float(getattr(args, "whisperseg_context_target_seconds", 10.0)),
             "after_target_gap": float(getattr(args, "whisperseg_context_after_target_gap", 0.2)),
-            "hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 35.0)),
-            "scene_asr_pad_seconds": float(getattr(args, "scene_asr_pad_seconds", 0.0)),
+            "hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 15.0)),
         },
         "stepdown": stepdown_stats,
         "chunks": raw_chunks,
@@ -1986,10 +1976,10 @@ def main() -> None:
                 "vad_max_leading_silence": args.vad_max_leading_silence,
                 "vad_context_merge_gap": args.vad_context_merge_gap,
                 "whisperseg_context_mode": getattr(args, "whisperseg_context_mode", "none"),
-                "whisperseg_context_merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 2.0)),
-                "whisperseg_context_target_seconds": float(getattr(args, "whisperseg_context_target_seconds", 18.0)),
+                "whisperseg_context_merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 1.0)),
+                "whisperseg_context_target_seconds": float(getattr(args, "whisperseg_context_target_seconds", 10.0)),
                 "whisperseg_context_after_target_gap": float(getattr(args, "whisperseg_context_after_target_gap", 0.2)),
-                "whisperseg_context_hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 35.0)),
+                "whisperseg_context_hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 15.0)),
                 "scene_asr_pad_seconds": float(getattr(args, "scene_asr_pad_seconds", 0.0)),
                 "entries": len(entries),
                 "elapsed_seconds": time.time() - started,

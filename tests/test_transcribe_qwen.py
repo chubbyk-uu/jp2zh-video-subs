@@ -692,7 +692,7 @@ def test_whisperseg_context_pad_mode_is_removed(monkeypatch, tmp_path):
         build_whisperseg_jobs(np.zeros(16000 * 10, dtype=np.float32), 16000, 10.0, args)
 
 
-def test_whisperseg_context_none_does_not_add_merge_outer_padding(monkeypatch, tmp_path):
+def test_whisperseg_context_none_does_not_add_scene_padding_to_qwen_job(monkeypatch, tmp_path):
     class FakeWhisperSegVAD:
         def __init__(self, **_kwargs):
             pass
@@ -829,21 +829,21 @@ def test_whisperseg_context_merge_combines_adjacent_frames_with_owned_speech(mon
 
     assert len(jobs) == 2
     first = jobs[0]
-    assert first.start == pytest.approx(0.65)
-    assert first.end == pytest.approx(3.35)
+    assert first.start == pytest.approx(1.0)
+    assert first.end == pytest.approx(3.0)
     assert first.keep_lo == pytest.approx(1.0)
     assert first.keep_hi == pytest.approx(3.0)
     assert [(r.start, r.end) for r in first.speech] == [
-        pytest.approx((0.35, 1.35)),
-        pytest.approx((1.75, 2.35)),
+        pytest.approx((0.0, 1.0)),
+        pytest.approx((1.4, 2.0)),
     ]
 
     second = jobs[1]
-    assert second.start == pytest.approx(7.65)
-    assert second.end == pytest.approx(9.35)
+    assert second.start == pytest.approx(8.0)
+    assert second.end == pytest.approx(9.0)
     assert second.keep_lo == pytest.approx(8.0)
     assert second.keep_hi == float("inf")
-    assert [(r.start, r.end) for r in second.speech] == [pytest.approx((0.35, 1.35))]
+    assert [(r.start, r.end) for r in second.speech] == [pytest.approx((0.0, 1.0))]
 
 
 def _whisperseg_merge_args(model, **overrides):
@@ -898,9 +898,9 @@ def test_whisperseg_context_merge_soft_target_breaks_at_next_pause(monkeypatch, 
     jobs = build_whisperseg_jobs(np.zeros(16000 * 30, dtype=np.float32), 16000, 30.0, args)
 
     assert len(jobs) == 2
-    assert (jobs[0].start, jobs[0].end) == pytest.approx((0.0, 14.35))
+    assert (jobs[0].start, jobs[0].end) == pytest.approx((0.0, 14.0))
     assert (jobs[0].keep_lo, jobs[0].keep_hi) == pytest.approx((0.0, 14.0))
-    assert (jobs[1].start, jobs[1].end) == pytest.approx((14.65, 24.35))
+    assert (jobs[1].start, jobs[1].end) == pytest.approx((15.0, 24.0))
     assert jobs[1].keep_hi == float("inf")
 
 
@@ -914,11 +914,11 @@ def test_whisperseg_context_merge_hard_max_still_splits_continuous_speech(monkey
     jobs = build_whisperseg_jobs(np.zeros(16000 * 40, dtype=np.float32), 16000, 40.0, args)
 
     spans = [j.end - j.start for j in jobs]
-    assert max(spans) <= 20.0 + 0.7 + 1e-6  # hard_max owned span + one outer scene pad
+    assert max(spans) <= 20.0 + 1e-6
     assert len(jobs) >= 2  # continuous run was split rather than kept whole
 
 
-def test_whisperseg_context_merge_uses_one_scene_pad_around_each_job(monkeypatch, tmp_path):
+def test_whisperseg_context_merge_does_not_add_scene_padding_to_qwen_jobs(monkeypatch, tmp_path):
     class FakeWhisperSegVAD:
         def __init__(self, **_kwargs):
             pass
@@ -955,13 +955,13 @@ def test_whisperseg_context_merge_uses_one_scene_pad_around_each_job(monkeypatch
     jobs = build_whisperseg_jobs(np.zeros(16000 * 50, dtype=np.float32), 16000, 50.0, args)
 
     assert len(jobs) == 2
-    assert (jobs[0].start, jobs[0].end) == pytest.approx((9.65, 30.35))
+    assert (jobs[0].start, jobs[0].end) == pytest.approx((10.0, 30.0))
     assert [(r.start, r.end) for r in jobs[0].speech] == [
-        pytest.approx((0.35, 4.35)),
-        pytest.approx((5.35, 20.35)),
+        pytest.approx((0.0, 4.0)),
+        pytest.approx((5.0, 20.0)),
     ]
-    assert (jobs[1].start, jobs[1].end) == pytest.approx((39.65, 41.35))
-    assert [(r.start, r.end) for r in jobs[1].speech] == [pytest.approx((0.35, 1.35))]
+    assert (jobs[1].start, jobs[1].end) == pytest.approx((40.0, 41.0))
+    assert [(r.start, r.end) for r in jobs[1].speech] == [pytest.approx((0.0, 1.0))]
 
 
 def test_build_qwen_jobs_uses_whisperseg_when_vad_chunks_enabled(monkeypatch):

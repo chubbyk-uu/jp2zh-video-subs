@@ -178,10 +178,10 @@ def test_build_qwen_command_survives_unexposed_config_fields(tmp_path):
     assert cmd[cmd.index("--max-tokens-per-second") + 1] == "20.0"
     assert cmd[cmd.index("--min-tokens-floor") + 1] == "256"
     assert cmd[cmd.index("--whisperseg-context-mode") + 1] == "none"
-    assert cmd[cmd.index("--whisperseg-context-merge-gap") + 1] == "2.0"
-    assert cmd[cmd.index("--whisperseg-context-target-seconds") + 1] == "18.0"
+    assert cmd[cmd.index("--whisperseg-context-merge-gap") + 1] == "1.0"
+    assert cmd[cmd.index("--whisperseg-context-target-seconds") + 1] == "10.0"
     assert cmd[cmd.index("--whisperseg-context-after-target-gap") + 1] == "0.2"
-    assert cmd[cmd.index("--whisperseg-context-hard-max-seconds") + 1] == "35.0"
+    assert cmd[cmd.index("--whisperseg-context-hard-max-seconds") + 1] == "15.0"
 
 
 def test_top_level_rejects_qwen_vad_only_with_context_merge():

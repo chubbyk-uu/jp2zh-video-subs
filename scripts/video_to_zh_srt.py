@@ -672,7 +672,7 @@ def main() -> None:
         "--qwen-whisperseg-context-mode",
         choices=("none", "merge"),
         default=None,
-        help="Qwen WhisperSeg context experiment: none, or merge adjacent frames with one outer boundary using the scene ASR pad value.",
+        help="Qwen WhisperSeg context experiment: none, or merge adjacent frames into one exact-boundary recognition job.",
     )
     parser.add_argument("--qwen-whisperseg-context-merge-gap", type=float, default=None,
                         help="Max gap between frames to merge when --qwen-whisperseg-context-mode merge.")
