@@ -114,17 +114,10 @@ def test_qwen_and_anime_backend_defaults_are_separate():
     assert qwen.stepdown is False
     assert qwen.stepdown_fallback_group == 6.0
     assert qwen.whisperseg_context_mode == "none"
-    assert qwen.whisperseg_context_pre_seconds == 2.0
-    assert qwen.whisperseg_context_post_seconds == 2.0
     assert qwen.whisperseg_context_merge_gap == 2.0
     assert qwen.whisperseg_context_target_seconds == 18.0
     assert qwen.whisperseg_context_after_target_gap == 0.2
     assert qwen.whisperseg_context_hard_max_seconds == 35.0
-    assert qwen.whisperseg_context_pad_mode == "fixed"
-    assert qwen.whisperseg_context_pad_ratio == 0.10
-    assert qwen.whisperseg_context_min_pad_seconds == 1.0
-    assert qwen.whisperseg_context_max_pad_seconds == 3.0
-
     assert anime.text_backend == "anime"
     assert anime.timestamp_mode == "vad_only"
     assert anime.vad_backend == "whisperseg"

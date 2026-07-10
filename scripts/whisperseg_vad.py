@@ -106,6 +106,7 @@ class WhisperSegVAD:
         )
         self.force_cpu = bool(force_cpu)
         self.actual_device = "unloaded"
+        self.requested_providers: list[str] = []
         self.providers: list[str] = []
         self._session = None
         self._fe = None
@@ -121,15 +122,24 @@ class WhisperSegVAD:
 
         if not os.path.exists(self.model_path):
             raise SystemExit(f"WhisperSeg onnx not found: {self.model_path}")
-        providers = ["CPUExecutionProvider"] if self.force_cpu else list(ort.get_available_providers())
-        if "CUDAExecutionProvider" in providers and not self.force_cpu:
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            self.actual_device = "GPU (CUDA)"
+        available_providers = list(ort.get_available_providers())
+        if "CUDAExecutionProvider" in available_providers and not self.force_cpu:
+            requested_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
         else:
-            providers = ["CPUExecutionProvider"]
+            requested_providers = ["CPUExecutionProvider"]
+        self.requested_providers = list(requested_providers)
+        self._session = ort.InferenceSession(self.model_path, providers=requested_providers)
+        self.providers = list(self._session.get_providers())
+        if self.providers and self.providers[0] == "CUDAExecutionProvider":
+            self.actual_device = "GPU (CUDAExecutionProvider)"
+        else:
             self.actual_device = "CPU"
-        self.providers = list(providers)
-        self._session = ort.InferenceSession(self.model_path, providers=providers)
+            if "CUDAExecutionProvider" in self.requested_providers:
+                print(
+                    "Warning: WhisperSeg requested CUDAExecutionProvider but the ONNX "
+                    f"session activated {self.providers}; using CPU.",
+                    flush=True,
+                )
         self._input = self._session.get_inputs()[0].name
         self._outputs = [o.name for o in self._session.get_outputs()]
         # WhisperSeg was trained/exported against Whisper-base features. Construct
@@ -138,7 +148,8 @@ class WhisperSegVAD:
         self._fe = WhisperFeatureExtractor()
         print(
             "WhisperSeg ready: "
-            f"device={self.actual_device} providers={self.providers} "
+            f"device={self.actual_device} requested_providers={self.requested_providers} "
+            f"active_providers={self.providers} "
             f"threshold={self.threshold} max_speech={self.max_speech_duration_s}s "
             f"max_group={self.max_group_duration_s}s",
             flush=True,

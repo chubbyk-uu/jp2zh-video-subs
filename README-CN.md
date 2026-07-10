@@ -278,7 +278,7 @@ python -m pytest tests/ -q
 
 建议提交：
 
-- `README.md`、`README-CN.md`、`docs/`、`requirements.txt`
+- `README.md`、`README-CN.md`、`docs/` 下已跟踪的公开文档、`requirements.txt`
 - `scripts/`
 - `tests/`
 - `.gitignore` 与目录占位文件
@@ -289,6 +289,7 @@ python -m pytest tests/ -q
 - 私有输入视频
 - `work/`
 - 生成的 `outputs/`
+- 本地工作计划 `docs/PLAN-anime-whisper.md`
 - 虚拟环境和 `__pycache__/`
 
 ## 后续改进

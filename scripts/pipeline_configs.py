@@ -128,19 +128,10 @@ class QwenAsrConfig(BaseAsrConfig):
         "none", choices=("none", "merge"),
         help="qwen WhisperSeg context mode: none (default; short scene-processed frames) or merge adjacent frames with one outer boundary using scene_asr_pad_seconds",
     )
-    whisperseg_context_pre_seconds: float = arg_field(2.0, help="Deprecated/ignored: merge uses the scene_asr_pad_seconds value instead")
-    whisperseg_context_post_seconds: float = arg_field(2.0, help="Deprecated/ignored: merge uses the scene_asr_pad_seconds value instead")
     whisperseg_context_merge_gap: float = arg_field(2.0, help="Max gap between WhisperSeg frames to merge for qwen context mode")
     whisperseg_context_target_seconds: float = arg_field(18.0, help="Soft target span for qwen merged WhisperSeg context: past this span, only pauses <= --whisperseg-context-after-target-gap keep merging, so groups end at a natural break instead of the hard cap")
     whisperseg_context_after_target_gap: float = arg_field(0.2, help="Tighter merge-gap tolerance once a merged group passes the soft target (s); keeps continuous speech merging while breaking at the next real pause to avoid mid-speech hard cuts")
     whisperseg_context_hard_max_seconds: float = arg_field(35.0, help="Hard max span for qwen merged WhisperSeg context")
-    whisperseg_context_pad_mode: str = arg_field(
-        "fixed", choices=("fixed", "ratio"), help="Deprecated/ignored: qwen context pad mode was removed",
-    )
-    whisperseg_context_pad_ratio: float = arg_field(0.10, help="Deprecated/ignored: qwen context pad mode was removed")
-    whisperseg_context_min_pad_seconds: float = arg_field(1.0, help="Deprecated/ignored: qwen context pad mode was removed")
-    whisperseg_context_max_pad_seconds: float = arg_field(3.0, help="Deprecated/ignored: qwen context pad mode was removed")
-
     scene_backend: str = arg_field("semantic", choices=("none", "semantic"), help="qwen scene pre-segmentation")
     scene_min_seconds: float = arg_field(12.0, help="semantic scene min duration (s)")
     scene_max_seconds: float = arg_field(48.0, help="semantic scene max duration (s)")

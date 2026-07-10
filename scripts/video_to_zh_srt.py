@@ -674,10 +674,6 @@ def main() -> None:
         default=None,
         help="Qwen WhisperSeg context experiment: none, or merge adjacent frames with one outer boundary using the scene ASR pad value.",
     )
-    parser.add_argument("--qwen-whisperseg-context-pre-seconds", type=float, default=None,
-                        help="Deprecated/ignored: merge uses the qwen scene ASR pad value instead.")
-    parser.add_argument("--qwen-whisperseg-context-post-seconds", type=float, default=None,
-                        help="Deprecated/ignored: merge uses the qwen scene ASR pad value instead.")
     parser.add_argument("--qwen-whisperseg-context-merge-gap", type=float, default=None,
                         help="Max gap between frames to merge when --qwen-whisperseg-context-mode merge.")
     parser.add_argument("--qwen-whisperseg-context-target-seconds", type=float, default=None,
@@ -686,18 +682,6 @@ def main() -> None:
                         help="Tighter merge-gap tolerance once a merged group passes the soft target, to break at a pause instead of a mid-speech hard cut.")
     parser.add_argument("--qwen-whisperseg-context-hard-max-seconds", type=float, default=None,
                         help="Hard max recognition span when --qwen-whisperseg-context-mode merge.")
-    parser.add_argument(
-        "--qwen-whisperseg-context-pad-mode",
-        choices=("fixed", "ratio"),
-        default=None,
-        help="Deprecated/ignored: qwen context pad mode was removed.",
-    )
-    parser.add_argument("--qwen-whisperseg-context-pad-ratio", type=float, default=None,
-                        help="Deprecated/ignored: qwen context pad mode was removed.")
-    parser.add_argument("--qwen-whisperseg-context-min-pad-seconds", type=float, default=None,
-                        help="Deprecated/ignored: qwen context pad mode was removed.")
-    parser.add_argument("--qwen-whisperseg-context-max-pad-seconds", type=float, default=None,
-                        help="Deprecated/ignored: qwen context pad mode was removed.")
     parser.add_argument("--qwen-isolated-interjection-silence", type=float, default=3.0)
     parser.add_argument("--qwen-isolated-interjection-run", type=int, default=3)
     parser.add_argument("--qwen-isolated-interjection-run-gap", type=float, default=5.0)

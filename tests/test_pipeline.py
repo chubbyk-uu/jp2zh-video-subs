@@ -182,8 +182,6 @@ def test_build_qwen_command_survives_unexposed_config_fields(tmp_path):
     assert cmd[cmd.index("--whisperseg-context-target-seconds") + 1] == "18.0"
     assert cmd[cmd.index("--whisperseg-context-after-target-gap") + 1] == "0.2"
     assert cmd[cmd.index("--whisperseg-context-hard-max-seconds") + 1] == "35.0"
-    assert cmd[cmd.index("--whisperseg-context-pre-seconds") + 1] == "2.0"
-    assert cmd[cmd.index("--whisperseg-context-post-seconds") + 1] == "2.0"
 
 
 def test_top_level_rejects_qwen_vad_only_with_context_merge():
@@ -237,10 +235,6 @@ def test_build_qwen_command_can_override_qwen_framing(tmp_path):
         qwen_whisperseg_context_merge_gap=1.25,
         qwen_whisperseg_context_target_seconds=18.0,
         qwen_whisperseg_context_hard_max_seconds=36.0,
-        qwen_whisperseg_context_pad_mode="ratio",
-        qwen_whisperseg_context_pad_ratio=0.1,
-        qwen_whisperseg_context_min_pad_seconds=1.0,
-        qwen_whisperseg_context_max_pad_seconds=3.0,
         qwen_scene_backend="semantic",
         qwen_scene_max_seconds=36.0,
     )
@@ -254,10 +248,6 @@ def test_build_qwen_command_can_override_qwen_framing(tmp_path):
     assert cmd[cmd.index("--whisperseg-context-merge-gap") + 1] == "1.25"
     assert cmd[cmd.index("--whisperseg-context-target-seconds") + 1] == "18.0"
     assert cmd[cmd.index("--whisperseg-context-hard-max-seconds") + 1] == "36.0"
-    assert cmd[cmd.index("--whisperseg-context-pad-mode") + 1] == "ratio"
-    assert cmd[cmd.index("--whisperseg-context-pad-ratio") + 1] == "0.1"
-    assert cmd[cmd.index("--whisperseg-context-min-pad-seconds") + 1] == "1.0"
-    assert cmd[cmd.index("--whisperseg-context-max-pad-seconds") + 1] == "3.0"
     assert cmd[cmd.index("--scene-backend") + 1] == "semantic"
     assert cmd[cmd.index("--scene-max-seconds") + 1] == "36.0"
 

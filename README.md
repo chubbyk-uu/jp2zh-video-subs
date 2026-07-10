@@ -305,7 +305,7 @@ python -m pytest tests/ -q
 
 Commit source files and documentation:
 
-- `README.md`, `README-CN.md`, `docs/`, `requirements.txt`
+- `README.md`, `README-CN.md`, tracked public documents under `docs/`, `requirements.txt`
 - `scripts/`
 - `tests/`
 - `.gitignore` and placeholder files
@@ -316,6 +316,7 @@ Do not commit:
 - private input videos
 - `work/`
 - generated `outputs/`
+- the local working plan `docs/PLAN-anime-whisper.md`
 - virtual environments and `__pycache__/`
 
 ## Future Work

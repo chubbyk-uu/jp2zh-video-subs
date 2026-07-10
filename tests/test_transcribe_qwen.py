@@ -586,6 +586,45 @@ def test_whisperseg_resolve_model_path_local_only(tmp_path, monkeypatch):
         whisperseg_vad.resolve_model_path()
 
 
+def test_whisperseg_logs_active_session_provider_after_cuda_fallback(tmp_path, monkeypatch, capsys):
+    calls = {}
+
+    class FakeSession:
+        def get_providers(self):
+            return ["CPUExecutionProvider"]
+
+        def get_inputs(self):
+            return [types.SimpleNamespace(name="audio")]
+
+        def get_outputs(self):
+            return [types.SimpleNamespace(name="logits")]
+
+    fake_ort = types.SimpleNamespace(
+        get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        InferenceSession=lambda _path, providers: calls.setdefault("providers", providers) and FakeSession(),
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(WhisperFeatureExtractor=lambda: object()),
+    )
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"onnx")
+    vad = whisperseg_vad.WhisperSegVAD(str(model))
+
+    vad._ensure_model()
+
+    assert calls["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    assert vad.requested_providers == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    assert vad.providers == ["CPUExecutionProvider"]
+    assert vad.actual_device == "CPU"
+    output = capsys.readouterr().out
+    assert "requested CUDAExecutionProvider" in output
+    assert "requested_providers=['CUDAExecutionProvider', 'CPUExecutionProvider']" in output
+    assert "active_providers=['CPUExecutionProvider']" in output
+
+
 def test_whisperseg_jobs_use_min_frame_not_legacy_vad_min_clip(monkeypatch, tmp_path):
     class FakeWhisperSegVAD:
         def __init__(self, **_kwargs):
@@ -642,8 +681,6 @@ def test_whisperseg_context_pad_mode_is_removed(monkeypatch, tmp_path):
         whisperseg_chunk_threshold=1.0,
         whisperseg_min_frame_seconds=0.1,
         whisperseg_context_mode="pad",
-        whisperseg_context_pre_seconds=0.5,
-        whisperseg_context_post_seconds=1.0,
         whisperseg_context_merge_gap=1.0,
         whisperseg_context_target_seconds=18.0,
         whisperseg_context_after_target_gap=0.2,
@@ -655,7 +692,7 @@ def test_whisperseg_context_pad_mode_is_removed(monkeypatch, tmp_path):
         build_whisperseg_jobs(np.zeros(16000 * 10, dtype=np.float32), 16000, 10.0, args)
 
 
-def test_whisperseg_context_none_ignores_padding_options(monkeypatch, tmp_path):
+def test_whisperseg_context_none_does_not_add_merge_outer_padding(monkeypatch, tmp_path):
     class FakeWhisperSegVAD:
         def __init__(self, **_kwargs):
             pass
@@ -678,15 +715,9 @@ def test_whisperseg_context_none_ignores_padding_options(monkeypatch, tmp_path):
         whisperseg_chunk_threshold=1.0,
         whisperseg_min_frame_seconds=0.1,
         whisperseg_context_mode="none",
-        whisperseg_context_pre_seconds=9.0,
-        whisperseg_context_post_seconds=9.0,
         whisperseg_context_merge_gap=1.0,
         whisperseg_context_target_seconds=18.0,
         whisperseg_context_hard_max_seconds=36.0,
-        whisperseg_context_pad_mode="ratio",
-        whisperseg_context_pad_ratio=0.10,
-        whisperseg_context_min_pad_seconds=1.0,
-        whisperseg_context_max_pad_seconds=3.0,
         scene_backend="none",
         scene_asr_pad_seconds=9.0,
     )
@@ -786,16 +817,10 @@ def test_whisperseg_context_merge_combines_adjacent_frames_with_owned_speech(mon
         whisperseg_chunk_threshold=1.0,
         whisperseg_min_frame_seconds=0.1,
         whisperseg_context_mode="merge",
-        whisperseg_context_pre_seconds=9.0,
-        whisperseg_context_post_seconds=9.0,
         whisperseg_context_merge_gap=1.0,
         whisperseg_context_target_seconds=6.0,
         whisperseg_context_after_target_gap=0.2,
         whisperseg_context_hard_max_seconds=35.0,
-        whisperseg_context_pad_mode="ratio",
-        whisperseg_context_pad_ratio=0.10,
-        whisperseg_context_min_pad_seconds=1.0,
-        whisperseg_context_max_pad_seconds=3.0,
         scene_backend="none",
         scene_asr_pad_seconds=0.35,
     )
@@ -830,8 +855,6 @@ def _whisperseg_merge_args(model, **overrides):
         whisperseg_chunk_threshold=1.0,
         whisperseg_min_frame_seconds=0.1,
         whisperseg_context_mode="merge",
-        whisperseg_context_pre_seconds=0.0,
-        whisperseg_context_post_seconds=0.0,
         whisperseg_context_merge_gap=1.0,
         whisperseg_context_target_seconds=12.0,
         whisperseg_context_after_target_gap=0.5,
@@ -895,7 +918,7 @@ def test_whisperseg_context_merge_hard_max_still_splits_continuous_speech(monkey
     assert len(jobs) >= 2  # continuous run was split rather than kept whole
 
 
-def test_whisperseg_context_merge_ignores_legacy_padding_knobs(monkeypatch, tmp_path):
+def test_whisperseg_context_merge_uses_one_scene_pad_around_each_job(monkeypatch, tmp_path):
     class FakeWhisperSegVAD:
         def __init__(self, **_kwargs):
             pass
@@ -922,15 +945,9 @@ def test_whisperseg_context_merge_ignores_legacy_padding_knobs(monkeypatch, tmp_
         whisperseg_chunk_threshold=1.0,
         whisperseg_min_frame_seconds=0.1,
         whisperseg_context_mode="merge",
-        whisperseg_context_pre_seconds=9.0,
-        whisperseg_context_post_seconds=9.0,
         whisperseg_context_merge_gap=1.0,
         whisperseg_context_target_seconds=18.0,
         whisperseg_context_hard_max_seconds=36.0,
-        whisperseg_context_pad_mode="ratio",
-        whisperseg_context_pad_ratio=0.10,
-        whisperseg_context_min_pad_seconds=1.0,
-        whisperseg_context_max_pad_seconds=3.0,
         scene_backend="none",
         scene_asr_pad_seconds=0.35,
     )
