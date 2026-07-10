@@ -79,8 +79,9 @@ Verified environment:
 - FFmpeg: 6.1.1
 - `qwen-asr`: 0.0.6 (Qwen ASR and optional forced-aligner diagnostics; pulls in `torch`, `transformers`, `librosa`, `soundfile`)
 - `onnxruntime-gpu`: 1.27.0 (WhisperSeg VAD for the default anime backend; imported directly, not pulled in by `qwen-asr` — on a CPU-only host install `onnxruntime` instead)
-- `torch`: 2.10 with CUDA 12.8 (`cu128`) on an RTX 50-series (Blackwell) GPU
-- `llama-cpp-python`: 0.3.23
+- `torch`: 2.12 on an RTX 50-series (Blackwell) GPU
+- `llama-cpp-python`: 0.3.33 (CUDA build for GPU translation)
+- `numpy`: 2.4.6 (`<2.5` is required by the installed `numba` used for semantic scenes)
 - `huggingface-hub`: 0.36.2
 
 Recommended hardware:
@@ -123,7 +124,7 @@ sudo apt install -y ffmpeg
 
 ```bash
 CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
-  python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.23
+  python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.33
 ```
 
 ## Download Models

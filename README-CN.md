@@ -71,8 +71,9 @@
 - FFmpeg：6.1.1
 - `qwen-asr`：0.0.6（Qwen 识别和可选 forced-aligner 诊断；会带入 `torch`、`transformers`、`librosa`、`soundfile`）
 - `onnxruntime-gpu`：1.27.0（默认 anime 后端的 WhisperSeg VAD；由脚本直接导入，不随 `qwen-asr` 带入——CPU-only 主机改装 `onnxruntime`）
-- `torch`：2.10，CUDA 12.8（`cu128`），在 RTX 50 系（Blackwell）显卡上验证
-- `llama-cpp-python`：0.3.23
+- `torch`：2.12，已在 RTX 50 系（Blackwell）显卡上验证
+- `llama-cpp-python`：0.3.33（翻译使用 GPU 时需安装 CUDA 构建）
+- `numpy`：2.4.6（semantic scene 所用的 `numba` 要求 `<2.5`）
 - `huggingface-hub`：0.36.2
 
 推荐硬件：
@@ -108,7 +109,7 @@ sudo apt install -y ffmpeg
 
 ```bash
 CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
-  python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.23
+  python -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.33
 ```
 
 ## 下载模型

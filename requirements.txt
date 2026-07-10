@@ -3,6 +3,10 @@
 # match very new GPUs: for NVIDIA Blackwell (RTX 50-series) install a CUDA 12.8 build
 # first, e.g.:
 #   pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio
+# Numba (used by librosa for semantic scene detection) currently requires NumPy < 2.5.
+# Keep this explicit so rebuilding llama-cpp-python cannot silently break the default
+# semantic-scene path by upgrading NumPy beyond Numba's supported range.
+numpy>=1.22,<2.5
 qwen-asr==0.0.6
 
 # --- Default anime ASR backend: WhisperSeg ONNX weak-speech VAD ---
@@ -15,5 +19,5 @@ huggingface-hub==0.36.2
 pykakasi==2.3.0
 # NOTE: PyPI wheel is CPU-only. For NVIDIA GPU, rebuild after install:
 #   CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
-#     pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.23
-llama-cpp-python==0.3.23
+#     pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.33
+llama-cpp-python==0.3.33
