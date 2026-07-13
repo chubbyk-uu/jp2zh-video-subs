@@ -317,7 +317,7 @@ Do not commit:
 - private input videos
 - `work/`
 - generated `outputs/`
-- the local working plan `docs/PLAN-anime-whisper.md`
+- the local project plan `docs/PLAN.md`
 - virtual environments and `__pycache__/`
 
 ## Future Work

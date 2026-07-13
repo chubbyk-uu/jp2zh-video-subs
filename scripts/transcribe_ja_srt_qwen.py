@@ -867,6 +867,10 @@ class ChunkJob:
     # Absolute original frame ownership regions inside this job. Context-merge jobs
     # can give Qwen longer audio while keeping WJ-style cue regrouping frame-native.
     regroup_regions: list[Interval] = field(default_factory=list)
+    # Diagnostic provenance for the frame boundaries. These do not influence ASR,
+    # cue shaping, or ownership; they are emitted in raw dumps for cut analysis.
+    left_boundary_reason: str = "unknown"
+    right_boundary_reason: str = "unknown"
 
 
 def _clip_relative_speech(intervals: list[Interval], job_start: float, job_end: float) -> list[Interval]:
@@ -889,7 +893,7 @@ def build_fixed_jobs(duration: float, args: argparse.Namespace) -> list[ChunkJob
     for start, end in ranges:
         is_last = end >= duration - 1e-3
         keep_hi = float("inf") if is_last else start + step
-        jobs.append(ChunkJob(start, end, start, keep_hi))
+        jobs.append(ChunkJob(start, end, start, keep_hi, left_boundary_reason="fixed_tiling", right_boundary_reason="fixed_tiling"))
     return jobs
 
 
@@ -970,6 +974,12 @@ def _whisperseg_group_bounds(group) -> tuple[float, float]:
     return float(group[0].start), float(group[-1].end)
 
 
+def _whisperseg_group_boundary_reason(group, side: str) -> str:
+    """Read provenance from native WhisperSeg groups, tolerating legacy bare lists."""
+    attr = f"{side}_boundary_reason"
+    return str(getattr(group, attr, "unknown"))
+
+
 def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Namespace) -> list[ChunkJob]:
     """Convert atomic WhisperSeg groups to Qwen recognition jobs.
 
@@ -990,7 +1000,14 @@ def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Names
         # Scene padding belongs solely to the WhisperSeg input window. Every Qwen
         # job, including a merged one, is sliced exactly to its owned frame bounds.
         # Otherwise Qwen can emit non-owned boundary speech and create duplicates.
-        job = ChunkJob(owned_start, owned_end, owned_start, keep_hi)
+        job = ChunkJob(
+            owned_start,
+            owned_end,
+            owned_start,
+            keep_hi,
+            left_boundary_reason=_whisperseg_group_boundary_reason(component_groups[0], "left"),
+            right_boundary_reason=_whisperseg_group_boundary_reason(component_groups[-1], "right"),
+        )
         job.speech = [
             Interval(float(seg.start) - owned_start, float(seg.end) - owned_start)
             for group in component_groups
@@ -1091,7 +1108,14 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
             seg_audio = audio[int(asr_start * samplerate) : int(asr_end * samplerate)]
             if len(seg_audio) < int(0.1 * samplerate):
                 continue
-            for g in vad.segment(seg_audio, samplerate):
+            scene_groups = vad.segment(seg_audio, samplerate)
+            # A VAD "audio_end" here can mean only the end of this semantic-scene
+            # input window. Preserve that distinction for boundary diagnostics.
+            if scene_groups and asr_start > 0 and getattr(scene_groups[0], "left_boundary_reason", "") == "audio_start":
+                scene_groups[0].left_boundary_reason = "semantic_scene_start"
+            if scene_groups and asr_end < duration and getattr(scene_groups[-1], "right_boundary_reason", "") == "audio_end":
+                scene_groups[-1].right_boundary_reason = "semantic_scene_end"
+            for g in scene_groups:
                 for s in g:
                     s.start += asr_start
                     s.end += asr_start
@@ -1099,6 +1123,11 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
     else:
         groups = vad.segment(audio, samplerate)
     vad.cleanup()
+    boundary_counts: dict[str, int] = {}
+    for group in groups:
+        reason = _whisperseg_group_boundary_reason(group, "right")
+        boundary_counts[reason] = boundary_counts.get(reason, 0) + 1
+    print(f"WhisperSeg frame boundaries: {boundary_counts}", flush=True)
     return _whisperseg_context_jobs(groups, duration, args)
 
 
@@ -1142,7 +1171,14 @@ def reframe_collapsed_jobs(audio, samplerate: int, collapsed_jobs: list[ChunkJob
             a, e = job.start + fs, job.start + fe
             keep_lo = job.keep_lo if k == 0 else a
             keep_hi = job.keep_hi if k == last else e
-            sub = ChunkJob(a, e, keep_lo, keep_hi)
+            sub = ChunkJob(
+                a,
+                e,
+                keep_lo,
+                keep_hi,
+                left_boundary_reason="stepdown",
+                right_boundary_reason="stepdown",
+            )
             sub.speech = [Interval(s.start - fs, s.end - fs) for s in g]
             sub_jobs.append(sub)
     vad.cleanup()
@@ -1650,6 +1686,8 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
             "end": job.end,
             "keep_lo": job.keep_lo,
             "keep_hi": None if job.keep_hi == float("inf") else job.keep_hi,
+            "left_boundary_reason": job.left_boundary_reason,
+            "right_boundary_reason": job.right_boundary_reason,
             "raw_text": raw_texts[i],
             "clean_text": clean,
             "speech_regions": [[iv.start, iv.end] for iv in job.speech],
@@ -1787,6 +1825,8 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                     "end": job.end,
                     "keep_lo": job.keep_lo,
                     "keep_hi": None if job.keep_hi == float("inf") else job.keep_hi,
+                    "left_boundary_reason": job.left_boundary_reason,
+                    "right_boundary_reason": job.right_boundary_reason,
                     "language": str(result.language),
                     "text": text,
                     "pass": label,

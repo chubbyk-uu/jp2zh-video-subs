@@ -6,7 +6,7 @@
 forced aligner 偶尔"塌缩"：把整段词都压到 ~100ms 窗口，文本对但时间戳全错。
 本模块提供检测（assess_alignment_quality）与恢复（redistribute_collapsed_words）。
 
-坐标约定（配合本项目两阶段 anime 线，见 docs/PLAN-anime-whisper.md 1.3/1.7）：
+坐标约定（配合本项目两阶段 anime 线，见 docs/PLAN.md）：
   - 全程在 clip-relative 坐标系运行。
   - scene_duration_sec 传【加宽后】的 clip 时长 job.end - job.start。
   - speech_regions 传 clip-relative 的 [(start, end), ...]。

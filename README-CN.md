@@ -290,7 +290,7 @@ python -m pytest tests/ -q
 - 私有输入视频
 - `work/`
 - 生成的 `outputs/`
-- 本地工作计划 `docs/PLAN-anime-whisper.md`
+- 本地项目计划 `docs/PLAN.md`
 - 虚拟环境和 `__pycache__/`
 
 ## 后续改进

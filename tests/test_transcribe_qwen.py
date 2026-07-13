@@ -15,6 +15,7 @@ from transcribe_ja_srt_qwen import (
     _interjection_core,
     _time_aligned_job,
     _time_anime_job,
+    _whisperseg_context_jobs,
     anime_vad_only_frame_entry,
     apply_qwen_generation_config,
     build_qwen_jobs,
@@ -36,7 +37,7 @@ from transcribe_ja_srt_qwen import (
     validate_runtime_args,
 )
 import whisperseg_vad
-from whisperseg_vad import SpeechSegment
+from whisperseg_vad import SpeechSegment, group_segments
 
 
 def _shaping_args(**overrides):
@@ -584,6 +585,61 @@ def test_whisperseg_resolve_model_path_local_only(tmp_path, monkeypatch):
     monkeypatch.setattr(whisperseg_vad, "DEFAULT_MODEL_PATH", tmp_path / "missing.onnx")
     with pytest.raises(SystemExit):
         whisperseg_vad.resolve_model_path()
+
+
+def test_whisperseg_marks_forced_max_speech_without_changing_spans():
+    """A continuous probability run carries explicit force-cut provenance."""
+    vad = whisperseg_vad.WhisperSegVAD("unused.onnx", max_speech_duration_s=5.0)
+    # 20 ms frames: a 12 s continuous run forces a 5 s close, then ends at EOF.
+    segments = vad._probs_to_segments(np.ones(600, dtype=np.float32), audio_dur=12.0)
+
+    assert segments[0].end_reason == "forced_max_speech"
+    assert segments[0].start == pytest.approx(0.0)
+    assert segments[0].end == pytest.approx(5.04)  # existing overlap-prevented padding
+    assert segments[-1].end_reason == "audio_end"
+
+
+def test_whisperseg_group_marks_max_group_and_jobs_preserve_it():
+    groups = group_segments(
+        [
+            SpeechSegment(0.0, 2.0, "silence"),
+            SpeechSegment(2.1, 4.1, "silence"),
+            SpeechSegment(4.2, 6.2, "silence"),
+        ],
+        max_group_duration_s=5.0,
+        chunk_threshold_s=1.0,
+    )
+
+    assert len(groups) == 2
+    assert groups[0].right_boundary_reason == "forced_max_group"
+    assert groups[1].left_boundary_reason == "forced_max_group"
+
+    args = argparse.Namespace(
+        whisperseg_context_mode="none",
+        whisperseg_context_merge_gap=1.0,
+        whisperseg_context_target_seconds=10.0,
+        whisperseg_context_after_target_gap=0.2,
+        whisperseg_context_hard_max_seconds=15.0,
+        whisperseg_min_frame_seconds=0.1,
+    )
+    jobs = _whisperseg_context_jobs(groups, duration=10.0, args=args)
+
+    assert jobs[0].right_boundary_reason == "forced_max_group"
+    assert jobs[1].left_boundary_reason == "forced_max_group"
+
+
+def test_whisperseg_long_silence_beats_prior_forced_segment_reason():
+    groups = group_segments(
+        [
+            SpeechSegment(0.0, 5.0, "forced_max_speech"),
+            SpeechSegment(6.0, 7.0, "silence"),
+        ],
+        max_group_duration_s=8.0,
+        chunk_threshold_s=0.5,
+    )
+
+    assert groups[0].right_boundary_reason == "silence_gap"
+    assert groups[1].left_boundary_reason == "silence_gap"
 
 
 def test_whisperseg_logs_active_session_provider_after_cuda_fallback(tmp_path, monkeypatch, capsys):

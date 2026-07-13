@@ -54,13 +54,36 @@ def resolve_model_path(explicit: str = "") -> str:
 class SpeechSegment:
     start: float  # seconds
     end: float
+    # Why this speech segment ended before padding. This is diagnostic metadata:
+    # the timing state machine and its output spans remain unchanged.
+    end_reason: str = "unknown"
+
+
+class SpeechGroup(list[SpeechSegment]):
+    """A WhisperSeg frame with the cause of its outer timeline boundaries.
+
+    It intentionally subclasses ``list`` so existing framing consumers keep using
+    ``group[0]``, ``group[-1]``, and iteration unchanged. Bare lists returned by
+    test doubles or third-party callers remain supported by consumers.
+    """
+
+    def __init__(
+        self,
+        segments: List[SpeechSegment] = (),
+        *,
+        left_boundary_reason: str = "audio_start",
+        right_boundary_reason: str = "audio_end",
+    ) -> None:
+        super().__init__(segments)
+        self.left_boundary_reason = left_boundary_reason
+        self.right_boundary_reason = right_boundary_reason
 
 
 def group_segments(
     segments: List[SpeechSegment],
     max_group_duration_s: float = 8.0,
     chunk_threshold_s: float = 1.0,
-) -> List[List[SpeechSegment]]:
+) -> List[SpeechGroup]:
     """Group speech segments by silence gap and max group duration.
 
     Starts a new group when the gap to the previous segment exceeds
@@ -68,13 +91,22 @@ def group_segments(
     """
     if not segments:
         return []
-    groups: List[List[SpeechSegment]] = [[]]
+    groups: List[SpeechGroup] = [SpeechGroup()]
     for i, seg in enumerate(segments):
         if i > 0:
             gap = seg.start - segments[i - 1].end
             would_exceed = bool(groups[-1]) and (seg.end - groups[-1][0].start) > max_group_duration_s
             if gap > chunk_threshold_s or would_exceed:
-                groups.append([])
+                # A segment-level max split is stronger evidence than the later
+                # group cap: this exact boundary arose while speech was ongoing.
+                if segments[i - 1].end_reason == "forced_max_speech" and gap <= chunk_threshold_s:
+                    reason = "forced_max_speech"
+                elif gap > chunk_threshold_s:
+                    reason = "silence_gap"
+                else:
+                    reason = "forced_max_group"
+                groups[-1].right_boundary_reason = reason
+                groups.append(SpeechGroup(left_boundary_reason=reason))
         groups[-1].append(seg)
     return [g for g in groups if g]
 
@@ -194,6 +226,7 @@ class WhisperSegVAD:
                 continue
             if triggered and "start" in cur and (i - cur["start"]) > max_speech:
                 cur["end"] = cur["start"] + max_speech
+                cur["end_reason"] = "forced_max_speech"
                 speeches.append(cur)
                 cur, triggered, temp_end = {}, False, 0
                 continue
@@ -203,6 +236,7 @@ class WhisperSegVAD:
                 if i - temp_end >= min_sil:
                     cur["end"] = temp_end
                     if cur["end"] - cur["start"] >= min_speech:
+                        cur["end_reason"] = "silence"
                         speeches.append(cur)
                     cur, triggered, temp_end = {}, False, 0
             elif prob >= thr and temp_end:
@@ -210,6 +244,7 @@ class WhisperSegVAD:
         if triggered and "start" in cur:
             cur["end"] = len(probs)
             if cur["end"] - cur["start"] >= min_speech:
+                cur["end_reason"] = "audio_end"
                 speeches.append(cur)
 
         for idx, s in enumerate(speeches):  # overlap-prevented padding
@@ -224,7 +259,7 @@ class WhisperSegVAD:
             st = s["start"] * fm / 1000.0
             en = min(s["end"] * fm / 1000.0, audio_dur)
             if en > st:
-                out.append(SpeechSegment(st, en))
+                out.append(SpeechSegment(st, en, str(s.get("end_reason", "unknown"))))
         return out
 
     def segment(self, audio: np.ndarray, sample_rate: int = _SAMPLE_RATE) -> List[List[SpeechSegment]]:
