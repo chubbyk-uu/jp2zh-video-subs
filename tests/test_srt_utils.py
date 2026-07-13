@@ -10,12 +10,40 @@ from srt_utils import (
     parse_time,
     srt_gaps,
     srt_time,
+    wrap_display_text,
+    wrap_srt_display_file,
 )
 
 
 def test_compact_text_removes_all_whitespace():
     assert compact_text("a b\tc\n d") == "abcd"
     assert compact_text("   ") == ""
+
+
+def test_wrap_display_text_uses_punctuation_nearest_midpoint():
+    text = "这是前半句。这里是后半句仍然很长。"
+    assert wrap_display_text(text, 15) == "这是前半句。\n这里是后半句仍然很长。"
+
+
+def test_wrap_display_text_counts_punctuation_and_does_not_force_break():
+    assert wrap_display_text("一二三四五。", 6) == "一二三四五。"
+    assert wrap_display_text("这是一段没有句末标点的很长字幕", 8) == "这是一段没有句末标点的很长字幕"
+    assert wrap_display_text("前半句? 后半句!", 7) == "前半句?\n后半句!"
+
+
+def test_wrap_srt_display_file_preserves_cue_count_and_timecodes(tmp_path):
+    path = tmp_path / "out.srt"
+    path.write_text(
+        "1\n00:00:01,000 --> 00:00:03,000\n这是前半句。这里是后半句仍然很长。\n\n"
+        "2\n00:00:04,000 --> 00:00:05,000\n短句。\n",
+        encoding="utf-8",
+    )
+
+    assert wrap_srt_display_file(path, 15) == 1
+    assert path.read_text(encoding="utf-8") == (
+        "1\n00:00:01,000 --> 00:00:03,000\n这是前半句。\n这里是后半句仍然很长。\n\n"
+        "2\n00:00:04,000 --> 00:00:05,000\n短句。\n"
+    )
 
 
 def test_srt_time_formats_milliseconds():

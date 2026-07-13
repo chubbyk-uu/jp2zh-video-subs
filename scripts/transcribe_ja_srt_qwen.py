@@ -1077,6 +1077,10 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
         model_path=resolve_model_path(str(args.whisperseg_model)),
         threshold=args.whisperseg_threshold,
         max_speech_duration_s=args.whisperseg_max_speech,
+        hard_max_speech_duration_s=getattr(
+            args, "whisperseg_hard_max_speech", getattr(args, "whisperseg_max_speech", 5.0)
+        ),
+        soft_split_lookback_s=getattr(args, "whisperseg_soft_split_lookback", 1.0),
         max_group_duration_s=args.whisperseg_max_group,
         chunk_threshold_s=args.whisperseg_chunk_threshold,
     )
@@ -1146,10 +1150,15 @@ def reframe_collapsed_jobs(audio, samplerate: int, collapsed_jobs: list[ChunkJob
     if samplerate != 16000:
         return []
     fallback = float(getattr(args, "stepdown_fallback_group", args.whisperseg_max_group))
+    main_hard_max = float(
+        getattr(args, "whisperseg_hard_max_speech", getattr(args, "whisperseg_max_speech", 5.0))
+    )
     vad = WhisperSegVAD(
         model_path=resolve_model_path(str(args.whisperseg_model)),
         threshold=args.whisperseg_threshold,
         max_speech_duration_s=min(float(args.whisperseg_max_speech), fallback),
+        hard_max_speech_duration_s=min(main_hard_max, fallback),
+        soft_split_lookback_s=getattr(args, "whisperseg_soft_split_lookback", 1.0),
         max_group_duration_s=fallback,
         chunk_threshold_s=args.whisperseg_chunk_threshold,
     )
@@ -1909,6 +1918,13 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
             "min_tokens_floor": int(getattr(args, "min_tokens_floor", 256)),
             "budget_strategy": "per_batch_max",
         },
+        "whisperseg_split": {
+            "soft_target_seconds": float(getattr(args, "whisperseg_max_speech", 5.0)),
+            "hard_max_seconds": float(
+                getattr(args, "whisperseg_hard_max_speech", getattr(args, "whisperseg_max_speech", 5.0))
+            ),
+            "lookback_seconds": float(getattr(args, "whisperseg_soft_split_lookback", 1.0)),
+        },
         "whisperseg_context": {
             "mode": getattr(args, "whisperseg_context_mode", "none"),
             "merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 1.0)),
@@ -2015,6 +2031,11 @@ def main() -> None:
                 "vad_post_context_seconds": args.vad_post_context_seconds,
                 "vad_max_leading_silence": args.vad_max_leading_silence,
                 "vad_context_merge_gap": args.vad_context_merge_gap,
+                "whisperseg_max_speech": float(getattr(args, "whisperseg_max_speech", 5.0)),
+                "whisperseg_hard_max_speech": float(
+                    getattr(args, "whisperseg_hard_max_speech", getattr(args, "whisperseg_max_speech", 5.0))
+                ),
+                "whisperseg_soft_split_lookback": float(getattr(args, "whisperseg_soft_split_lookback", 1.0)),
                 "whisperseg_context_mode": getattr(args, "whisperseg_context_mode", "none"),
                 "whisperseg_context_merge_gap": float(getattr(args, "whisperseg_context_merge_gap", 1.0)),
                 "whisperseg_context_target_seconds": float(getattr(args, "whisperseg_context_target_seconds", 10.0)),

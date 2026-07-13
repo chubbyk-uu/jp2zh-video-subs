@@ -89,6 +89,16 @@ def test_parse_srt_reads_index_times_and_text(tmp_path):
     ]
 
 
+def test_parse_srt_preserves_display_line_breaks_for_ass(tmp_path):
+    srt = tmp_path / "x.srt"
+    srt.write_text("1\n00:00:01,000 --> 00:00:03,000\n第一行。\n第二行。\n", encoding="utf-8")
+
+    entry = parse_srt(srt)[0]
+
+    assert entry.text == "第一行。\n第二行。"
+    assert "第一行。\\N第二行。\\N{\\rJA}日本語" in build_dialogue(entry, "日本語")
+
+
 def test_parse_srt_ignores_timing_settings(tmp_path):
     srt = tmp_path / "x.srt"
     srt.write_text(

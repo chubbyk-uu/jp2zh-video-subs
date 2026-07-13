@@ -599,6 +599,64 @@ def test_whisperseg_marks_forced_max_speech_without_changing_spans():
     assert segments[-1].end_reason == "audio_end"
 
 
+def test_whisperseg_soft_hard_split_prefers_probability_valley_and_caps_span():
+    """A weak but non-silent region can replace an arbitrary five-second cut."""
+    vad = whisperseg_vad.WhisperSegVAD(
+        "unused.onnx",
+        max_speech_duration_s=5.0,
+        hard_max_speech_duration_s=8.0,
+        soft_split_lookback_s=1.0,
+        speech_pad_ms=0,
+    )
+    probs = np.ones(700, dtype=np.float32)  # 14 seconds of one hysteresis speech run
+    probs[280:290] = 0.36  # 5.6--5.8 seconds: weak speech, not a VAD silence
+
+    segments = vad._probs_to_segments(probs, audio_dur=14.0)
+
+    assert segments[0].end_reason == "soft_max_valley"
+    assert segments[0].end == pytest.approx(5.64, abs=0.08)
+    assert all(item.end - item.start <= 8.0 + 1e-6 for item in segments)
+    assert segments[-1].end_reason == "audio_end"
+
+
+def test_whisperseg_soft_hard_padding_does_not_overlap_adjacent_segments():
+    vad = whisperseg_vad.WhisperSegVAD(
+        "unused.onnx", max_speech_duration_s=5.0, hard_max_speech_duration_s=8.0,
+    )
+    segments = vad._probs_to_segments(np.ones(700, dtype=np.float32), audio_dur=14.0)
+
+    assert all(left.end <= right.start for left, right in zip(segments, segments[1:]))
+
+
+def test_whisperseg_soft_hard_mode_keeps_natural_silence_after_split():
+    """Finding a natural run before splitting must not mask its later silence edge."""
+    vad = whisperseg_vad.WhisperSegVAD(
+        "unused.onnx", max_speech_duration_s=5.0, hard_max_speech_duration_s=8.0, speech_pad_ms=0,
+    )
+    probs = np.ones(700, dtype=np.float32)
+    probs[500:510] = 0.0  # 10.0--10.2 seconds, longer than min_silence
+
+    segments = vad._probs_to_segments(probs, audio_dur=14.0)
+
+    assert any(item.end == pytest.approx(10.0) and item.end_reason == "silence" for item in segments)
+    assert segments[-1].start == pytest.approx(10.2)
+
+
+def test_whisperseg_hard_at_soft_is_exact_legacy_mode():
+    probs = np.ones(600, dtype=np.float32)
+    legacy = whisperseg_vad.WhisperSegVAD("unused.onnx", max_speech_duration_s=5.0)
+    explicit = whisperseg_vad.WhisperSegVAD(
+        "unused.onnx", max_speech_duration_s=5.0, hard_max_speech_duration_s=5.0,
+    )
+
+    actual = explicit._probs_to_segments(probs, audio_dur=12.0)
+    expected = legacy._probs_to_segments(probs, audio_dur=12.0)
+
+    assert [(x.start, x.end, x.end_reason) for x in actual] == [
+        (x.start, x.end, x.end_reason) for x in expected
+    ]
+
+
 def test_whisperseg_group_marks_max_group_and_jobs_preserve_it():
     groups = group_segments(
         [
@@ -640,6 +698,17 @@ def test_whisperseg_long_silence_beats_prior_forced_segment_reason():
 
     assert groups[0].right_boundary_reason == "silence_gap"
     assert groups[1].left_boundary_reason == "silence_gap"
+
+
+def test_whisperseg_group_promotes_new_forced_split_reason():
+    groups = group_segments(
+        [SpeechSegment(0.0, 5.5, "soft_max_valley"), SpeechSegment(5.5, 6.0, "silence")],
+        max_group_duration_s=5.0,
+        chunk_threshold_s=1.0,
+    )
+
+    assert groups[0].right_boundary_reason == "soft_max_valley"
+    assert groups[1].left_boundary_reason == "soft_max_valley"
 
 
 def test_whisperseg_logs_active_session_provider_after_cuda_fallback(tmp_path, monkeypatch, capsys):
@@ -1360,7 +1429,13 @@ def test_reframe_collapsed_jobs_preserves_outer_keep_window(monkeypatch):
         def cleanup(self):
             pass
 
-    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", lambda **kw: _FakeVAD())
+    created = {}
+
+    def make_vad(**kw):
+        created.update(kw)
+        return _FakeVAD()
+
+    monkeypatch.setattr(whisperseg_vad, "WhisperSegVAD", make_vad)
     monkeypatch.setattr(whisperseg_vad, "resolve_model_path", lambda p: p)
 
     job = ChunkJob(10.0, 20.0, 10.0, float("inf"))  # last frame → keep_hi open
@@ -1368,6 +1443,7 @@ def test_reframe_collapsed_jobs_preserves_outer_keep_window(monkeypatch):
         whisperseg_model="x.onnx", whisperseg_threshold=0.35, whisperseg_max_speech=5.0,
         whisperseg_max_group=6.0, whisperseg_chunk_threshold=1.0,
         whisperseg_min_frame_seconds=0.1, stepdown_fallback_group=3.0,
+        whisperseg_hard_max_speech=8.0, whisperseg_soft_split_lookback=1.0,
     )
     subs = reframe_collapsed_jobs(np.zeros(16000 * 20, dtype=np.float32), 16000, [job], args)
 
@@ -1380,6 +1456,7 @@ def test_reframe_collapsed_jobs_preserves_outer_keep_window(monkeypatch):
     assert subs[1].keep_lo == pytest.approx(14.0)  # interior boundary = own frame start
     # speech stored clip-relative to each sub-frame
     assert subs[0].speech[0].start == pytest.approx(0.0)
+    assert created["hard_max_speech_duration_s"] == 3.0
 
 
 def test_entries_from_raw_skips_superseded_stepdown_chunk():

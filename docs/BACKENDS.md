@@ -16,15 +16,19 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen      # Qwen 对�
 ### 默认 Anime 主线的工作方式
 
 1. semantic scene 先把整段音频切成 12-48 秒的声学场景。
-2. WhisperSeg 在每个场景内检测并组合短语音 frame，anime 默认与 WJ 对齐：`max_group=5.0`、`chunk_threshold=0.5`、`max_speech=5.0`、`min_frame=0.1`。
+2. WhisperSeg 在每个场景内检测并组合短语音 frame。`max_speech=5.0` 现在是软切分目标：连续语音会在 `4--8` 秒窗口内优先选概率弱谷，硬上限为 8 秒；找不到合格谷才使用受限回退。anime 其余默认值是 `max_group=5.0`、`chunk_threshold=0.5`、`min_frame=0.1`。
 3. `litagin/anime-whisper` 逐 frame 识别文本，anime cleaner 清理省略号-only 和短重复伪迹。
 4. 默认 `vad_only` 保持 frame 时间轴、整帧不拆，只做基于长度的可读性切分：超过 50 个内容字符的长段可在逗号处切，逗号-less 长段最多 80 个内容字符硬切；句末标点和 `…` 都不切（anime-whisper 在每个软停顿都撒句末标点，按它切会碎成一闪而过的短字幕）。这样避免 anime 文本走 Qwen forced aligner 时的坍缩/碎片化，同时保证字幕停留时间够长、能读完。
+
+最终中文显示层独立于上述 ASR cue 塑形：超过 20 个可见字符时，会在最接近中点的
+`。？！.!?` 后插入显示换行。它不增加字幕条数，也不改变时间轴；ASS 将该换行写为 `\N`。
+`--display-wrap-max-chars 0` 可关闭。
 
 需要对比时可以用 `--asr qwen`；也可用 `--anime-scene-backend none` 关闭 semantic scene 做 A/B。
 
 ### Qwen 主线的工作方式
 
-1. Qwen 默认用 WhisperSeg 做 frame（`--qwen-vad-backend whisperseg`），使用 WJ qwen 风格参数：`max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`。
+1. Qwen 默认用 WhisperSeg 做 frame（`--qwen-vad-backend whisperseg`）：`max_speech=5.0` 是软目标，使用 1 秒回看和 8 秒硬上限选择概率谷；其余参数为 `max_group=6.0`、`chunk_threshold=1.0`、`min_frame=0.1`、`threshold=0.35`。
 2. Qwen 默认直接使用短 WhisperSeg frame（`--qwen-whisperseg-context-mode none`）。`merge` 仍可用于实验，但当前测试里更长的 merge 窗口会增加 Qwen 幻觉和尾部漂移，所以不是默认。`pad` 模式及其 pre/post/ratio 参数已从 CLI 删除；它曾是额外 per-frame context expansion，和 semantic scene processing window 不是一回事。无论 `none` 还是 `merge`，Qwen 都只听 owned WhisperSeg frame 的精确首尾；`--qwen-scene-asr-pad-seconds 0.35` 只扩展 WhisperSeg 的 scene 输入窗口，不会扩展最终 Qwen job。
 3. 切片分批送入 `Qwen3-ASR-1.7B`；生成参数默认也是 WJ 风格：`max_new_tokens=4096`、`repetition_penalty=1.1`、动态预算 `20` tokens/音频秒。
 4. 模型带标点的 `result.text` 作为权威文本内容；单独的 `Qwen3-ForcedAligner-0.6B` 给出逐字时间。句子按标点和较大的内部时间间隙切分，再由对齐器定时。同一 clip 内相邻 cue 只有在间隔小于 1.5 秒且合并后不超过 80 个内容字符 / 8 秒时才会合并。

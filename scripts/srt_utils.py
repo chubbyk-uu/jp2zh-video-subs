@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -12,6 +13,55 @@ class Interval:
 
 def compact_text(text: str) -> str:
     return re.sub(r"\s+", "", text)
+
+
+DISPLAY_WRAP_PUNCTUATION = frozenset("。？！.!?")
+
+
+def wrap_display_text(text: str, max_chars: int) -> str:
+    """Split one subtitle display string into two lines without changing its cue."""
+    if max_chars <= 0 or "\n" in text:
+        return text
+    normalized = " ".join(line.strip() for line in text.splitlines()).strip()
+    visible_positions = [idx for idx, char in enumerate(normalized) if not char.isspace()]
+    if len(visible_positions) <= max_chars:
+        return normalized
+    midpoint = len(visible_positions) / 2.0
+    candidates: list[tuple[float, int]] = []
+    seen = 0
+    for idx, char in enumerate(normalized):
+        if char.isspace():
+            continue
+        seen += 1
+        if char in DISPLAY_WRAP_PUNCTUATION and 0 < seen < len(visible_positions):
+            candidates.append((abs(seen - midpoint), idx))
+    if not candidates:
+        return normalized
+    _, split_at = min(candidates, key=lambda item: (item[0], item[1]))
+    return normalized[: split_at + 1].rstrip() + "\n" + normalized[split_at + 1 :].lstrip()
+
+
+def wrap_srt_display_file(path: Path, max_chars: int) -> int:
+    """Apply punctuation-based two-line display wrapping to an SRT in place."""
+    if max_chars <= 0:
+        return 0
+    content = path.read_text(encoding="utf-8")
+    trailing_newline = "\n" if content.endswith("\n") else ""
+    blocks = re.split(r"\n\s*\n", content.strip())
+    wrapped = 0
+    out: list[str] = []
+    for block in blocks:
+        lines = block.splitlines()
+        if len(lines) < 3 or "-->" not in lines[1]:
+            out.append(block)
+            continue
+        text = "\n".join(lines[2:])
+        display = wrap_display_text(text, max_chars)
+        if display != text:
+            wrapped += 1
+        out.append("\n".join([*lines[:2], *display.splitlines()]))
+    path.write_text("\n\n".join(out) + trailing_newline, encoding="utf-8")
+    return wrapped
 
 
 def parse_time(value: str) -> float:

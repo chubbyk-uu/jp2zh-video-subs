@@ -343,6 +343,8 @@ def test_build_quality_command_asr_anime_uses_whisperseg_backend(tmp_path):
 
     assert cmd[cmd.index("--vad-backend") + 1] == "whisperseg"
     assert cmd[cmd.index("--whisperseg-model") + 1] == "models/whisperseg/model.onnx"
+    assert cmd[cmd.index("--whisperseg-hard-max-speech") + 1] == "8.0"
+    assert cmd[cmd.index("--whisperseg-soft-split-lookback") + 1] == "1.0"
 
 
 def test_build_quality_command_can_override_quality_vad_backend(tmp_path):
@@ -384,6 +386,7 @@ def test_quality_report_is_opt_in_by_default():
     default = printed_config()
     assert "quality_report = false" in default
     assert "skip_quality_report = false" in default
+    assert "display_wrap_max_chars = 20" in default
 
     enabled = printed_config("--quality-report")
     assert "quality_report = true" in enabled

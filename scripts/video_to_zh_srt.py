@@ -27,6 +27,7 @@ from pipeline_configs import (
     QwenAsrConfig,
     SakuraTranslateConfig,
 )
+from srt_utils import wrap_srt_display_file
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
@@ -401,15 +402,15 @@ def build_quality_command(
     qwen_metadata: Path | None,
 ) -> list[str]:
     cfg = QualityReportConfig()
-    if getattr(args, "asr", None) == "anime":
-        anime_cfg = asr_config_for_command(args)
-        cfg.vad_backend = "whisperseg"
-        cfg.whisperseg_model = anime_cfg.whisperseg_model
-        cfg.whisperseg_max_speech = anime_cfg.whisperseg_max_speech
-        cfg.whisperseg_max_group = anime_cfg.whisperseg_max_group
-        cfg.whisperseg_chunk_threshold = anime_cfg.whisperseg_chunk_threshold
-        cfg.whisperseg_threshold = anime_cfg.whisperseg_threshold
-        cfg.whisperseg_min_frame_seconds = anime_cfg.whisperseg_min_frame_seconds
+    if getattr(args, "asr", None) in ("anime", "qwen"):
+        asr_cfg = asr_config_for_command(args)
+        cfg.vad_backend = "whisperseg" if args.asr == "anime" else cfg.vad_backend
+        for name in (
+            "whisperseg_model", "whisperseg_max_speech", "whisperseg_hard_max_speech",
+            "whisperseg_soft_split_lookback", "whisperseg_max_group",
+            "whisperseg_chunk_threshold", "whisperseg_threshold", "whisperseg_min_frame_seconds",
+        ):
+            setattr(cfg, name, getattr(asr_cfg, name))
     if getattr(args, "quality_vad_backend", None):
         cfg.vad_backend = args.quality_vad_backend
     command = [
@@ -466,6 +467,13 @@ def process_video_stages(
         log.print(f"Resume: skipping translation, reusing {output}")
     else:
         run(translate_command, log)
+
+    wrapped = wrap_srt_display_file(output, args.display_wrap_max_chars)
+    if wrapped:
+        log.print(
+            f"Display wrapping: {wrapped} cues split at punctuation "
+            f"(max_chars={args.display_wrap_max_chars})"
+        )
 
     bilingual_output: Path | None = None
     if args.bilingual:
@@ -604,6 +612,10 @@ def main() -> None:
     )
     parser.add_argument("--lead-out-seconds", type=float, default=0.5)
     parser.add_argument("--min-display-seconds", type=float, default=1.5)
+    parser.add_argument(
+        "--display-wrap-max-chars", type=int, default=20,
+        help="Split long final Chinese cues into two display lines at punctuation nearest the midpoint (0 disables)",
+    )
     parser.add_argument("--language", default="ja")
     parser.add_argument(
         "--translator",
@@ -664,6 +676,8 @@ def main() -> None:
     parser.add_argument("--qwen-vad-backend", choices=("whisperseg",), default=None)
     parser.add_argument("--qwen-whisperseg-model", default=None)
     parser.add_argument("--qwen-whisperseg-max-speech", type=float, default=None)
+    parser.add_argument("--qwen-whisperseg-hard-max-speech", type=float, default=None)
+    parser.add_argument("--qwen-whisperseg-soft-split-lookback", type=float, default=None)
     parser.add_argument("--qwen-whisperseg-max-group", type=float, default=None)
     parser.add_argument("--qwen-whisperseg-chunk-threshold", type=float, default=None)
     parser.add_argument("--qwen-whisperseg-threshold", type=float, default=None)
@@ -760,6 +774,8 @@ def main() -> None:
         raise SystemExit("--lead-out-seconds must be >= 0")
     if args.min_display_seconds < 0:
         raise SystemExit("--min-display-seconds must be >= 0")
+    if args.display_wrap_max_chars < 0:
+        raise SystemExit("--display-wrap-max-chars must be >= 0")
     if args.context_size is not None and args.context_size < 0:
         raise SystemExit("--context-size must be >= 0")
     if shutil.which("ffmpeg") is None:

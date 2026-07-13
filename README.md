@@ -285,6 +285,10 @@ subtitle: the one-command pipeline slightly extends its cue end times so short
 lines do not disappear immediately when speech ends. Bilingual ASS files take
 their timing from the Chinese SRT; Japanese text in ASS is aligned by subtitle
 index only.
+By default, a Chinese cue over 20 visible characters (including punctuation) is
+shown on two lines after the `。？！.!?` nearest its midpoint. It remains one SRT/ASS
+cue with the same timing; cues without suitable punctuation are not hard-split. Use
+`--display-wrap-max-chars 0` to disable this or pass another threshold.
 
 ## Documentation
 

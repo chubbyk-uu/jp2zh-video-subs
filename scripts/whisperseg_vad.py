@@ -99,8 +99,13 @@ def group_segments(
             if gap > chunk_threshold_s or would_exceed:
                 # A segment-level max split is stronger evidence than the later
                 # group cap: this exact boundary arose while speech was ongoing.
-                if segments[i - 1].end_reason == "forced_max_speech" and gap <= chunk_threshold_s:
-                    reason = "forced_max_speech"
+                if segments[i - 1].end_reason in {
+                    "forced_max_speech",
+                    "soft_max_valley",
+                    "hard_max_valley",
+                    "hard_max_speech",
+                } and gap <= chunk_threshold_s:
+                    reason = segments[i - 1].end_reason
                 elif gap > chunk_threshold_s:
                     reason = "silence_gap"
                 else:
@@ -122,6 +127,8 @@ class WhisperSegVAD:
         min_silence_duration_ms: int = 100,
         speech_pad_ms: int = 300,
         max_speech_duration_s: Optional[float] = 5.0,
+        hard_max_speech_duration_s: Optional[float] = None,
+        soft_split_lookback_s: float = 1.0,
         max_group_duration_s: float = 8.0,
         chunk_threshold_s: float = 1.0,
         force_cpu: bool = False,
@@ -136,6 +143,14 @@ class WhisperSegVAD:
         self.max_speech_duration_s = (
             float(max_speech_duration_s) if max_speech_duration_s is not None else float(max_group_duration_s)
         )
+        # ``None`` deliberately means the legacy immediate force-cut behaviour.
+        # Callers that opt into the soft/hard splitter pass an explicit value.
+        self.hard_max_speech_duration_s = (
+            float(hard_max_speech_duration_s)
+            if hard_max_speech_duration_s is not None
+            else self.max_speech_duration_s
+        )
+        self.soft_split_lookback_s = max(0.0, float(soft_split_lookback_s))
         self.force_cpu = bool(force_cpu)
         self.actual_device = "unloaded"
         self.requested_providers: list[str] = []
@@ -183,6 +198,7 @@ class WhisperSegVAD:
             f"device={self.actual_device} requested_providers={self.requested_providers} "
             f"active_providers={self.providers} "
             f"threshold={self.threshold} max_speech={self.max_speech_duration_s}s "
+            f"hard_max_speech={self.hard_max_speech_duration_s}s "
             f"max_group={self.max_group_duration_s}s",
             flush=True,
         )
@@ -201,19 +217,17 @@ class WhisperSegVAD:
             probs.append(1.0 / (1.0 + np.exp(-logits)))
         return np.concatenate(probs) if probs else np.zeros(0, dtype=np.float32)
 
-    def _probs_to_segments(self, probs: np.ndarray, audio_dur: float) -> List[SpeechSegment]:
-        """State machine with dual-threshold hysteresis, min-duration filtering,
-        max-duration force-split and overlap-prevented padding."""
-        if len(probs) == 0:
-            return []
-        fm = float(_FRAME_MS)
+    def _natural_speeches(
+        self,
+        probs: np.ndarray,
+        *,
+        min_speech: int,
+        min_sil: int,
+        max_speech: Optional[int],
+    ) -> List[dict]:
+        """Return unpadded hysteresis segments, optionally using the legacy hard cut."""
         thr = self.threshold
         neg = max(thr - 0.15, 0.01)
-        min_speech = max(1, int(self.min_speech_duration_ms / fm))
-        min_sil = max(1, int(self.min_silence_duration_ms / fm))
-        pad = max(0, int(self.speech_pad_ms / fm))
-        max_speech = int(self.max_speech_duration_s * 1000.0 / fm) if self.max_speech_duration_s > 0 else len(probs)
-
         triggered = False
         speeches: List[dict] = []
         cur: dict = {}
@@ -224,7 +238,7 @@ class WhisperSegVAD:
                 triggered = True
                 cur = {"start": i}
                 continue
-            if triggered and "start" in cur and (i - cur["start"]) > max_speech:
+            if max_speech is not None and triggered and "start" in cur and (i - cur["start"]) > max_speech:
                 cur["end"] = cur["start"] + max_speech
                 cur["end_reason"] = "forced_max_speech"
                 speeches.append(cur)
@@ -246,6 +260,115 @@ class WhisperSegVAD:
             if cur["end"] - cur["start"] >= min_speech:
                 cur["end_reason"] = "audio_end"
                 speeches.append(cur)
+        return speeches
+
+    @staticmethod
+    def _smoothed_probs(probs: np.ndarray, radius: int = 2) -> np.ndarray:
+        """A short moving average makes one-frame ONNX fluctuations non-decisive."""
+        if radius <= 0 or len(probs) < 3:
+            return probs.astype(np.float32, copy=False)
+        kernel = np.full(radius * 2 + 1, 1.0 / (radius * 2 + 1), dtype=np.float32)
+        return np.convolve(np.pad(probs, (radius, radius), mode="edge"), kernel, mode="valid")
+
+    def _choose_soft_split(
+        self,
+        smooth: np.ndarray,
+        start: int,
+        end: int,
+        soft: int,
+        hard: int,
+        min_speech: int,
+    ) -> tuple[int, str]:
+        """Choose one probability valley in ``[soft-lookback, hard]``.
+
+        A qualified valley is allowed to win near the soft target. If no such valley
+        exists, the lowest relative point in the same bounded window is still used,
+        keeping the ASR job below the hard cap without adding an audio/RMS subsystem.
+        """
+        target = start + soft
+        lo = max(start + min_speech, target - int(self.soft_split_lookback_s * 1000 / _FRAME_MS))
+        hi = min(start + hard, end - min_speech)
+        if hi < lo:
+            # A terminal sub-second tail is legal but undesirable. The normal path
+            # below penalizes it; this is only a last-resort hard cap.
+            hi = min(start + hard, end - 1)
+            lo = min(lo, hi)
+        candidates = np.arange(lo, hi + 1, dtype=int)
+        if len(candidates) == 0:
+            return min(start + hard, end - 1), "hard_max_speech"
+
+        values = smooth[candidates]
+        prominence = np.empty(len(candidates), dtype=np.float32)
+        widths = np.empty(len(candidates), dtype=np.float32)
+        for idx, cut in enumerate(candidates):
+            left = max(start, cut - 10)
+            right = min(end, cut + 10)
+            local = smooth[left : right + 1]
+            prominence[idx] = float(np.mean(local) - smooth[cut])
+            # Count nearby low-probability frames; a sustained valley is preferred
+            # over a single noisy frame with the same depth.
+            widths[idx] = float(np.count_nonzero(local <= smooth[cut] + 0.03))
+
+        distance = np.abs(candidates - target) / max(1, hard - soft)
+        tail = end - candidates
+        tail_penalty = np.where(tail < int(1000 / _FRAME_MS), 0.08, 0.0)
+        qualified = (values <= self.threshold + 0.05) & (prominence >= 0.02)
+        if np.any(qualified):
+            score = (1.0 - values) + 0.8 * prominence + 0.015 * widths - 0.12 * distance - tail_penalty
+            masked = np.where(qualified, score, -np.inf)
+            return int(candidates[int(np.argmax(masked))]), "soft_max_valley"
+
+        # No real pause: retain a bounded deterministic fallback. Depth dominates,
+        # while target distance resolves flat-probability ties at the soft target.
+        score = (1.0 - values) + 0.35 * prominence + 0.01 * widths - 0.20 * distance - tail_penalty
+        return int(candidates[int(np.argmax(score))]), "hard_max_valley"
+
+    def _split_natural_speeches(
+        self,
+        speeches: List[dict],
+        probs: np.ndarray,
+        min_speech: int,
+    ) -> List[dict]:
+        soft = int(self.max_speech_duration_s * 1000.0 / _FRAME_MS)
+        hard = int(self.hard_max_speech_duration_s * 1000.0 / _FRAME_MS)
+        # Exact legacy path: preserve old spans and reasons for reproducible A/B.
+        if hard <= soft or soft <= 0:
+            return speeches
+        smooth = self._smoothed_probs(probs)
+        split: List[dict] = []
+        for speech in speeches:
+            start, end = int(speech["start"]), int(speech["end"])
+            while end - start > hard:
+                cut, reason = self._choose_soft_split(smooth, start, end, soft, hard, min_speech)
+                if cut <= start or cut >= end:
+                    cut = min(start + hard, end - 1)
+                    reason = "hard_max_speech"
+                split.append({"start": start, "end": cut, "end_reason": reason})
+                start = cut
+            split.append({"start": start, "end": end, "end_reason": speech["end_reason"]})
+        return split
+
+    def _probs_to_segments(self, probs: np.ndarray, audio_dur: float) -> List[SpeechSegment]:
+        """Hysteresis VAD with legacy or soft/hard probability-valley splitting."""
+        if len(probs) == 0:
+            return []
+        fm = float(_FRAME_MS)
+        min_speech = max(1, int(self.min_speech_duration_ms / fm))
+        min_sil = max(1, int(self.min_silence_duration_ms / fm))
+        pad = max(0, int(self.speech_pad_ms / fm))
+        # Legacy force-splitting happens inside the state machine before a following
+        # silence can be observed. The soft/hard mode first finds natural runs, so a
+        # real silence at 60.794s is no longer hidden by a prior artificial 5s cut.
+        legacy = self.hard_max_speech_duration_s <= self.max_speech_duration_s
+        max_speech = int(self.max_speech_duration_s * 1000.0 / fm) if legacy and self.max_speech_duration_s > 0 else None
+        speeches = self._natural_speeches(
+            probs,
+            min_speech=min_speech,
+            min_sil=min_sil,
+            max_speech=max_speech,
+        )
+        if not legacy:
+            speeches = self._split_natural_speeches(speeches, probs, min_speech)
 
         for idx, s in enumerate(speeches):  # overlap-prevented padding
             s["start"] = max(speeches[idx - 1]["end"], s["start"] - pad) if idx else max(0, s["start"] - pad)

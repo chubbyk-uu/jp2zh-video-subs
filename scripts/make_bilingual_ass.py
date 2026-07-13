@@ -52,7 +52,9 @@ def parse_srt(path: Path) -> list[AssEntry]:
             continue
         start_str, end_str = (part.strip() for part in lines[1].split("-->", 1))
         end_str = end_str.split(maxsplit=1)[0]
-        text = " ".join(line.strip() for line in lines[2:] if line.strip())
+        # Preserve display wrapping from the final Chinese SRT; escape_ass_text
+        # converts these real newlines to ASS \N later.
+        text = "\n".join(line.strip() for line in lines[2:] if line.strip())
         entries.append(AssEntry(lines[0].strip(), parse_time(start_str), parse_time(end_str), text))
     return entries
 

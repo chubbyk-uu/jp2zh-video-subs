@@ -121,6 +121,8 @@ def _probe_args(args: argparse.Namespace) -> SimpleNamespace:
         whisperseg_model=str(args.whisperseg_model),
         whisperseg_threshold=args.whisperseg_threshold,
         whisperseg_max_speech=args.whisperseg_max_speech,
+        whisperseg_hard_max_speech=args.whisperseg_hard_max_speech,
+        whisperseg_soft_split_lookback=args.whisperseg_soft_split_lookback,
         whisperseg_max_group=args.whisperseg_max_group,
         whisperseg_chunk_threshold=args.whisperseg_chunk_threshold,
         whisperseg_min_frame_seconds=args.whisperseg_min_frame_seconds,
@@ -242,6 +244,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--whisperseg-model", type=Path, default=Path("models/whisperseg/model.onnx"))
     parser.add_argument("--whisperseg-threshold", type=float, default=0.35)
     parser.add_argument("--whisperseg-max-speech", type=float, default=5.0)
+    parser.add_argument("--whisperseg-hard-max-speech", type=float, default=8.0)
+    parser.add_argument("--whisperseg-soft-split-lookback", type=float, default=1.0)
     parser.add_argument("--whisperseg-max-group", type=float, default=6.0)
     parser.add_argument("--whisperseg-chunk-threshold", type=float, default=1.0)
     parser.add_argument("--whisperseg-min-frame-seconds", type=float, default=0.1)

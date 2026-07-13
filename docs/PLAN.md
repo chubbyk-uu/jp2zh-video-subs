@@ -307,7 +307,7 @@ We currently match the major defaults in the top-level anime path, but not every
 
 SRT-to-SRT text similarity is not a reliable semantic metric. It is good for regression spotting, but manual window review is still required.
 
-### 5. Confirmed forced-WhisperSeg boundary sentence breaks (open)
+### 5. Forced-WhisperSeg boundary sentence breaks (implemented)
 
 The project can now identify why a WhisperSeg frame ended. `SpeechSegment` records its
 end cause, grouped frames carry left/right boundary provenance, `ChunkJob` preserves it,
@@ -331,33 +331,17 @@ the isolated second fragment can translate incorrectly (for example as a standal
 Chinese acknowledgement) even though the intended sentence is `何事も挑戦だよ。`.
 
 This is not a generic cue-shaping or translation-only defect: the boundary metadata proves
-that WhisperSeg cut continuous speech at its configured duration limit. The same material
-also shows that consecutive forced cuts can occur, so a future repair must account for more
-than one affected boundary in a row. `scene_asr_pad_seconds=0.35` is not per-job recognition
-padding; it only widens semantic-scene input before WhisperSeg runs, and final jobs remain
-their exact frame bounds.
+that WhisperSeg cut continuous speech at its configured duration limit. The fix is now at the
+VAD source, rather than a post-ASR repair: `whisperseg_max_speech=5.0` is a soft target,
+`whisperseg_soft_split_lookback=1.0` extends the search to 4 seconds, and
+`whisperseg_hard_max_speech=8.0` bounds each natural speech run. Phase one uses only smoothed
+WhisperSeg probabilities: valley depth/prominence, width, target distance, and a soft penalty
+for leaving a tail under one second. RMS/energy remains deliberately deferred.
 
-**Next work:** design and validate a repair policy for these proven forced boundaries. It
-must restore source-text continuity without introducing long-context recognition regressions,
-new timeline drift, collapsed timestamps, duplicated jobs, or unreadably long Anime cues.
-No repair behavior is implemented yet.
-
-### Planned shared WhisperSeg soft/hard split (not implemented)
-
-The next experiment should address the cut at the VAD source, rather than merge or repair
-ASR jobs after recognition. The current `whisperseg_max_speech=5.0` immediate cut becomes a
-soft target; the initial A/B candidate is a 5.0s soft target, 1.0s lookback, and an 8.0s
-hard maximum. Phase one uses only smoothed WhisperSeg probabilities: valley prominence,
-valley width, and distance from the soft target. RMS/energy is deliberately deferred until
-probability-only A/B evidence shows a need for it.
-
-For a natural continuous speech run longer than the hard maximum, each cut searches the
-candidate window `[soft_target - lookback, hard_max]` relative to the current remainder. A
-qualified probability valley becomes `soft_max_valley`; otherwise the best relative valley is
-used and marked `hard_max_valley`. The candidate score should apply a soft penalty, not a
-hard rejection, when a cut would leave a remainder shorter than 1 second. This prevents
-meaningless tail frames without discarding an unusually strong natural valley. The final
-fallback at the hard cap is `hard_max_speech`.
+A qualified valley is recorded as `soft_max_valley`; otherwise the best bounded relative
+valley is `hard_max_valley`, with `hard_max_speech` reserved for an invalid last-resort cap.
+When `hard_max <= soft_target`, the original immediate-cut state machine and exact
+`forced_max_speech` reason are retained for reproducible A/B.
 
 The DLDSS expectation must follow the actual no-cap VAD result, not infer continuity from
 the current forced-cut labels. A local probe using the same semantic-scene input produced:
@@ -373,41 +357,185 @@ max_speech=99.0:
 60.794--63.678  silence
 ```
 
-Thus `60.794` is a natural silence boundary that the current force-cut branch masks. With a
-new valley cut near the observed `56.55` weak point, the expected A/B frames are:
+Thus `60.794` is a natural silence boundary that the old force-cut branch masked. The current
+implementation selected a weak-probability valley at `56.694`, yielding:
 
 ```text
-50.574--about 56.55
-about 56.55--60.794
+50.574--56.694  soft_max_valley
+56.694--60.794  silence
 60.794--63.678
 ```
 
-The new algorithm does not imply a 50.574--63.678 13.1s job.
+The new algorithm does not imply a 50.574--63.678 13.1s job. All strong-cut reasons propagate
+through `SpeechSegment`, `SpeechGroup`, `ChunkJob`, and raw dumps. Main framing and
+quality-report WhisperSeg use the same soft/hard/lookback configuration; step-down stays
+tighter by using `min(main_hard_max, stepdown_fallback_group)`. Semantic-scene padding is still
+only VAD input context, never extra final-ASR padding; Anime remains VAD-only and Qwen keeps its
+existing aligner/fallback path.
 
-Implementation and propagation requirements:
+Validation passed synthetic legacy/valley/padding/reason tests, a DLDSS local VAD A/B, and a
+20.764-second end-to-end Anime/Qwen run. Both E2E outputs recognized `何事も挑戦だよ` as one
+ASR text window, with five final jobs and no job overlap in that scene. A separate 24-minute
+Anime framing run completed with 239 jobs and active `soft_max_valley`/`hard_max_valley`
+reasons. Adjacent semantic scenes intentionally have overlapping VAD input windows, so job
+audio spans can overlap across those scenes; final cue ownership and final subtitle entries,
+not those input windows, are the no-overlap contract.
 
-1. Keep `whisperseg_max_speech` as the soft target and add a hard-max parameter. When
-   `hard_max <= soft_target`, retain the legacy immediate-cut behavior and the exact legacy
-   reason string `forced_max_speech` for reproducible A/B.
-2. Preserve every boundary reason through `SpeechSegment`, `SpeechGroup`, `ChunkJob`, and raw
-   dumps. Group-boundary promotion must recognise both legacy and new strong-cut reasons:
-   `forced_max_speech`, `soft_max_valley`, `hard_max_valley`, and `hard_max_speech`.
-3. Audit every `WhisperSegVAD` construction. Main framing and quality-report WhisperSeg
-   coverage must use the same soft/hard/lookback configuration. Step-down is intentionally
-   tighter: its hard maximum must be `min(main_hard_max, stepdown_fallback_group)` so a
-   fallback group of 6s cannot still emit an 8s continuous segment.
-4. Do not change semantic-scene padding semantics. `scene_asr_pad_seconds=0.35` remains VAD
-   input context only; final ASR jobs use their exact frame bounds and receive no extra pad.
-5. Keep Anime's VAD-only timing and Qwen's existing aligner/fallback paths unchanged. Both
-   lines receive only the improved shared WhisperSeg frames; do not re-enable Qwen context
-   merge or add a full-film Anime aligner.
+### 6. Local LLM subtitle review pipeline (planned, not implemented)
 
-Validation must cover synthetic probability runs, non-overlapping post-padding spans,
-legacy-mode byte-for-byte reasons, reason propagation, step-down/quality-report parameter
-consistency, and backend-separated CLI defaults. E2E A/B must compare `hard=soft=5` against
-`soft=5, hard=8` on DLDSS and additional material. Track boundary-reason counts, frame/cue
-duration distributions, Anime long cues, Qwen sentinel/recovery statistics, peak VRAM, batch
-time, overlap/duplicate regressions, and manual Japanese source-text quality.
+Target implementation session: 2026-07-14.
+
+The next quality experiment is an auditable local-LLM review stage after ASR. Its purpose is
+to correct high-confidence context and consistency errors that acoustic decoding alone cannot
+resolve. It is not expected to recover inaudible or completely omitted speech, and uncertain
+acoustic cases must remain unchanged with `requires_audio_check=true`.
+
+Planned data flow:
+
+```text
+raw Japanese ASR
+  -> full-transcript glossary extraction
+  -> windowed Japanese proposal + independent verification
+  -> corrected Japanese
+  -> Chinese translation from corrected Japanese only
+  -> bilingual consistency review
+  -> final bilingual ASS
+```
+
+Default local service for the experiment:
+
+```text
+base_url = http://127.0.0.1:11434/v1
+model = qwen3.5:9b
+temperature = 0.1
+```
+
+Before implementation, verify that the Ollama OpenAI-compatible endpoint is reachable from
+WSL and that the model is installed. This is currently an unverified prerequisite: the local
+probe did not find an `ollama` command or a responding service at that address. A Windows-host
+Ollama instance may require a WSL-reachable host address instead of loopback.
+
+#### Stage A: Japanese review
+
+1. Parse the original Japanese SRT through the existing subtitle structures. Assign stable
+   IDs such as `seg-000001`, independent of the SRT display index, and retain the timestamp,
+   exact original text, settings, and original subtitle block.
+2. Extract people, name variants, places, jobs, forms of address, and domain terms without
+   changing subtitles. Process bounded chunks (roughly 150-250 cues), then consolidate them
+   into `glossary.json` entries containing `type`, `canonical_ja`, `variants`, `preferred_zh`,
+   `evidence_ids`, and `confidence`.
+3. Review owned cores of about 40 cues with 8-12 read-only context cues on each side and the
+   consolidated glossary. Check inconsistent names/terms, clear homophone errors, contextual
+   contradictions, cross-cue sentence breaks, and clearly ungrammatical Japanese. Do not
+   polish style, remove oral language, sanitize adult content, or invent unheard information.
+4. Save proposal patches with `segment_id`, `original_ja`, `replacement_ja`, `category`,
+   `confidence`, `evidence_ids`, `reason`, and `requires_audio_check`. Only core cues may be
+   proposed by a window, preventing duplicate ownership in overlapping context.
+5. Validate every proposal in a separate blind request. The validator sees the source,
+   replacement, evidence, context, and glossary, but not the proposer's reason or confidence.
+   Using the same model does not make the checks independent, so conservative hard gates are
+   required.
+
+Automatic application requires all of the following:
+
+- proposer and validator confidence are both at least 0.90;
+- `requires_audio_check` is false;
+- `original_ja` exactly matches the current cue, without normalization;
+- replacement is non-empty, different, and within a conservative edit-distance bound;
+- every evidence ID exists and proposals do not conflict;
+- numbers, negation, and person/relationship semantics are unchanged.
+
+Changes involving numbers, negation, people/relationships, conflicting patches, or excessive
+rewrites remain report-only even when the model is confident. Cross-cue redistribution also
+remains report-only until atomic grouped patches are implemented with a `patch_group_id`; a
+group must apply completely or not at all.
+
+Outputs:
+
+- `raw.ja.srt`
+- `corrected.ja.srt`
+- `glossary.json`
+- `ja_patches_proposed.json`
+- `ja_patches_verified.json`
+- `ja_review_report.md`
+
+#### Stage B: translation from corrected Japanese
+
+Translation must use `corrected.ja.srt` as its only Japanese subtitle input and record that
+file's hash in the stage manifest. It receives neighbouring context and the glossary for
+consistent names, jobs, forms of address, and terminology, and writes `translated.zh.srt`.
+
+The requested Ollama translation path must be benchmarked against the existing GalTransl
+backend before replacing the production default. A general 9B model may sanitize adult
+content, refuse, over-shorten, or invent text; prompts and validation must explicitly reject
+those behaviours. The review pipeline should therefore use a translation-backend adapter
+rather than silently changing the existing default.
+
+#### Stage C: bilingual review and final ASS
+
+Review `corrected.ja.srt`, `translated.zh.srt`, and `glossary.json` for source/target mismatch,
+omission, reversal, invention, inconsistent terminology, and errors in negation, numbers, or
+speaker/subject. This stage normally patches Chinese only. A clear Japanese error produces a
+separate report-only Japanese candidate and marks affected Chinese cues for retranslation.
+
+Save `bilingual_patches.json`, then reuse the existing ASS writer to create
+`final.bilingual.ass`. The final report must list every accepted, rejected, uncertain, and
+audio-check candidate. Before implementation, resolve one audit ambiguity: either add a
+recommended `final.zh.srt`, or define `translated.zh.srt` as the post-review final Chinese and
+retain its pre-review value only in request logs. The final ASS must never contain Chinese
+changes that have no inspectable SRT or patch representation.
+
+Planned per-video output directory:
+
+```text
+output/<video-stem>/
+|-- raw.ja.srt
+|-- corrected.ja.srt
+|-- translated.zh.srt
+|-- final.bilingual.ass
+|-- glossary.json
+|-- ja_patches_proposed.json
+|-- ja_patches_verified.json
+|-- bilingual_patches.json
+|-- ja_review_report.md
+`-- final_review_report.md
+```
+
+All prompts and raw responses belong under
+`work/<video-stem>/llm_review/requests/`, not in the final output directory.
+
+#### Reliability and implementation order
+
+Reuse `translation_common.Entry` and the existing SRT/ASS code. Add isolated review modules
+instead of refactoring ASR internals: a shared OpenAI-compatible client/schema/cache layer,
+Japanese reviewer, corrected-Japanese translator adapter, bilingual reviewer, and finally
+top-level orchestration in `video_to_zh_srt.py`.
+
+Implement in this order:
+
+1. Define versioned schemas, stage manifests, exact timeline invariants, and tests.
+2. Add the Ollama client with bounded retry, JSON parse/schema retry, request/response logs,
+   and content-addressed cache.
+3. Implement glossary map/consolidate and Japanese proposal/verification/application.
+4. Route translation exclusively from corrected Japanese and add the backend A/B gate.
+5. Implement Chinese-first bilingual review, final ASS output, resume, and a short E2E test.
+
+Resume must not rely on output existence or cue count alone. Each stage manifest records
+input SHA-256, model, temperature, prompt/schema versions, glossary hash, and output hash;
+changes to any of them invalidate that stage and its dependants.
+
+Acceptance criteria:
+
+- cue count, SRT indices, and every timestamp remain byte-for-byte equivalent through review;
+- no patch applies when its exact original text no longer matches;
+- no automatic number, negation, or person/relationship change occurs;
+- grouped cross-cue patches are atomic or report-only;
+- translation provenance proves it read `corrected.ja.srt`;
+- malformed JSON, transient request failures, cache invalidation, proposal conflicts, and
+  resume behaviour are covered by tests;
+- final ASS timestamps match the corrected Japanese timeline exactly;
+- manual precision of automatically applied Japanese patches reaches at least 95% on the
+  initial evaluation sample before the feature is enabled by default.
 
 ## Historical Implementation Record
 
