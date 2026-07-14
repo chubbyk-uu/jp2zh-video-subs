@@ -34,20 +34,20 @@ TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒�
 
 一键流程默认使用：
 
-- 识别后端：`anime`（`models/anime-whisper` + `models/whisperseg/model.onnx`）
+- 识别后端：`anime`（`models/anime-whisper` + `models/whisperseg/model.onnx` + `models/Qwen3-ForcedAligner-0.6B`）
 - Anime semantic scene 预切分：开启（`--anime-scene-backend semantic`；用 `--anime-scene-backend none` 关闭）
-- Anime 定时模式：`vad_only`（`--anime-timestamp-mode vad_only`；aligner 诊断模式需要 `models/Qwen3-ForcedAligner-0.6B`）
+- Anime 定时模式：`aligner_fallback`。forced aligner 正常时使用逐字时间；整段或局部 source unit 对齐坍缩时自动回退 VAD。`--anime-timestamp-mode vad_only` 保留用于 A/B，`aligner_only` 仅用于诊断。
 - Anime WhisperSeg frame 默认值：`max_group=5.0`、`chunk_threshold=0.5`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`
-- Anime semantic scene ASR pad：`--anime-scene-asr-pad-seconds 0.35`，匹配 WhisperJAV 的 padded `asr_processing` scene window，但最终时间轴仍使用 frame 时间
-- Anime 不使用 Qwen 的 WhisperSeg context `merge` 路径。`vad_only` 定时没有 aligner ownership pass 来过滤邻近上下文，而且目前 anime 评估也没有显示需要这层额外上下文。
-- Anime cleaner：开启，清理省略号-only 片段、句首软省略号和短重复伪迹；默认 `vad_only` 保持 frame 时间，只在超长逗号段处切分（不按句末标点切），再由共享最终清理删除重叠和闪字幕
+- Anime semantic scene ASR pad：`--anime-scene-asr-pad-seconds 0.35`，匹配 WhisperJAV 的 padded `asr_processing` scene window；相邻场景的 WhisperSeg 结果会先归并为 canonical frame，避免重叠区重复识别。
+- Anime 不使用 Qwen 的 WhisperSeg context `merge` 路径；该参数组只属于 Qwen。
+- Anime cleaner：开启，清理省略号-only 片段、句首软省略号和短重复伪迹。forced-align 输出以 anime 原始文本单元为权威，不用纯时间间隙随意切句，再由共享最终清理删除重叠和闪字幕。
 - Qwen 对比线：用 `--asr qwen` 开启。默认使用 WhisperSeg frame（`--qwen-vad-backend whisperseg`），Qwen 参数为 `max_group=6.0`、`chunk_threshold=1.0`、`max_speech=5.0`、`min_frame=0.1`、`threshold=0.35`；用 `--asr qwen --no-qwen-vad-chunks` 做固定 30 秒平铺。
 - Qwen context 模式：默认 `--qwen-whisperseg-context-mode none`；`merge` 仍可实验，但当前测试里更长的 merge 窗口会增加幻觉，不作为默认。`pad` 模式已移除，因为它是额外 per-frame context expansion，实测容易污染识别。`--qwen-scene-asr-pad-seconds 0.35` 只控制 semantic scene 的 WhisperSeg processing window；无论 `none` 还是 `merge`，最终 Qwen job 都按 owned WhisperSeg frame 的精确首尾切音频。
 - Qwen 定时、分句与生成：默认 `--qwen-timestamp-mode aligner_fallback`、`--qwen-scene-backend semantic`、`--qwen-scene-asr-pad-seconds 0.35`、`--qwen-phrase-max-chars 80`、`--qwen-phrase-max-internal-gap 1.5`、`--qwen-max-new-tokens 4096`、`--qwen-repetition-penalty 1.1`、`--qwen-max-tokens-per-second 20.0`。step-down retry 已在共享子脚本实现，但不是顶层默认路径。
 - Qwen `vad_only` 定时只作为诊断模式使用。显式设置 `--qwen-timestamp-mode vad_only` 时，必须同时设置 `--qwen-whisperseg-context-mode none`；纯 VAD 定时无法过滤从 merge 上下文里听到的邻近文本，所以管线会拒绝这种组合。
 - 对 Qwen 输出的 Whisper 式幻觉过滤：关闭（用 `--asr qwen --qwen-filter-hallucinations` 开启）
 - 纯语气词过滤：共享 qwen/anime 子脚本默认开启。整条归一化后只剩一个单语气词（うん/ん/ねえ/あ 等）、不含台词的 cue 会被丢弃——默认 anime 线是两侧各有 `--anime-isolated-interjection-silence 3.0` 秒静默的孤立单条，或连续 3 条及以上的语气词链。只有**整条等于单语气词**的 cue 才会被删，所以任何含实词的台词都会保留。anime 用 `--anime-isolated-interjection-silence 0` 关闭，qwen 用 `--qwen-isolated-interjection-silence 0` 关闭（同时关掉成链规则）。
-- 语气词重复拼接折叠：共享 qwen/anime 子脚本默认开启。同一条 cue 里同一语气词的连续重复（「うんうんうん。」，或「うん、うん、うん、一人。」这种包着真实台词的）会被折成一个。重复 run 两端必须落在标点或 cue 边界才折叠，所以真词内部的重复（ああいう）绝不会被碰。anime 可用 `--no-anime-collapse-filler-repetition` 做 A/B，qwen 用 `--no-qwen-collapse-filler-repetition`。
+- 语气词重复拼接折叠：共享 qwen/anime 子脚本默认开启，但只折叠至少 3 次、且每次都由明确标点分隔的失控 filler loop。无标点重复和正常双重复（如「ふふっ」「ねえねえ」「あ、ああ」）保留。anime 可用 `--no-anime-collapse-filler-repetition` 做 A/B，qwen 用 `--no-qwen-collapse-filler-repetition`。
 - 通用失控重复折叠：共享 qwen/anime 子脚本默认开启。类似「行く」连续重复很多次的短语 flood 会在最终字幕前折成两个，普通 2-3 次强调会保留。
 - 翻译后端：`galtransl`（`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`）；用 `--translator sakura` 切 Sakura-14B
 - 识别语言：日语 `ja`
@@ -221,7 +221,8 @@ python scripts/transcribe_ja_srt_qwen.py work/input/input.wav \
   work/input/input.ja.srt \
   --text-backend anime \
   --text-model models/anime-whisper \
-  --timestamp-mode vad_only \
+  --timestamp-mode aligner_fallback \
+  --forced-aligner models/Qwen3-ForcedAligner-0.6B \
   --vad-backend whisperseg \
   --whisperseg-model models/whisperseg/model.onnx
 ```
@@ -316,7 +317,7 @@ Missing GalTransl model: .../models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtran
 ```
 
 按 [README-CN.md 的下载模型](../README-CN.md#下载模型) 一节重新下载，并确认目录名和文件名没有改动。默认主线需要 anime-whisper、
-WhisperSeg 和 GalTransl；Qwen 模型只在 `--asr qwen` 或 anime forced-aligner 诊断模式下需要；
+WhisperSeg、Qwen forced aligner 和 GalTransl；Qwen ASR 模型只在 `--asr qwen` 时需要；
 Sakura 模型只在 `--translator sakura` 时需要。
 
 ### 翻译速度很慢

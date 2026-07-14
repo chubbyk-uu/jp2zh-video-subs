@@ -630,7 +630,7 @@ def main() -> None:
         choices=("qwen", "anime"),
         default="anime",
         help="Transcription backend (default anime). 'anime' uses litagin/anime-whisper "
-        "text + WhisperSeg framing + semantic scenes + vad_only timing; 'qwen' uses "
+        "text + WhisperSeg framing + semantic scenes + forced alignment with VAD fallback; 'qwen' uses "
         "Qwen3-ASR with WhisperSeg framing, aligner fallback recovery, and WJ-style "
         "generation knobs. anime shares the qwen sub-script implementation but uses "
         "its own --anime-* tuning surface. Downstream stages are shared.",

@@ -8,7 +8,7 @@ audio and runs fully offline after the required models are downloaded.
 
 It ships two transcription backends, selectable with `--asr`:
 
-- **`anime` (default)** — `litagin/anime-whisper` for text, WhisperSeg for weak-speech framing, semantic scene boundaries, and VAD-only timing. This is the recommended main line for the current JAV/anime-style material.
+- **`anime` (default)** — `litagin/anime-whisper` for text, WhisperSeg for weak-speech framing, semantic scene boundaries, and Qwen forced alignment with automatic VAD fallback. This is the recommended main line for the current JAV/anime-style material.
 - **`qwen`** — `Qwen3-ASR-1.7B` for content plus `Qwen3-ForcedAligner-0.6B` for timing, over WhisperSeg speech frames with aligner fallback recovery. Useful as a cleaner text/timing comparison line.
 
 …and two translation backends, selectable with `--translator`:
@@ -32,7 +32,7 @@ The one-command pipeline performs these steps:
 5. Optionally write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles when `--quality-report` is set.
 
 The default anime backend runs WJ-style ASR framing (semantic scene boundaries, WhisperSeg
-grouped frames, anime-whisper text, and `vad_only` timing); `--asr qwen` is the cleaner
+grouped frames, anime-whisper text, and forced alignment with local/whole-frame VAD fallback); `--asr qwen` is the cleaner
 text/timing comparison line. How each line works and how cues are shaped is detailed in
 [docs/BACKENDS.md](docs/BACKENDS.md). The translation step runs in its own process so the
 ASR and translation models never share VRAM. All generated SRTs are sorted and
@@ -50,7 +50,7 @@ No online API is required for inference. Model files are not included in this re
 │   ├── anime-whisper/               # Default anime ASR text model
 │   ├── whisperseg/model.onnx        # Default anime weak-speech VAD model
 │   ├── Qwen3-ASR-1.7B/              # Optional Qwen ASR model (content)
-│   ├── Qwen3-ForcedAligner-0.6B/    # Optional Qwen/anime aligner diagnostics
+│   ├── Qwen3-ForcedAligner-0.6B/    # Default Anime/Qwen timing model
 │   ├── Sakura-GalTransl-7B-v3.7-GGUF/ # Default translation model
 │   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # Alternate (larger) translation model
 │   └── voice-gender-classifier/     # Optional ECAPA gender model (bilingual colouring)
@@ -77,7 +77,7 @@ Verified environment:
 - OS: Ubuntu 24.04 / Linux x86_64
 - Python: 3.11 or 3.12 (the current test host uses Python 3.12)
 - FFmpeg: 6.1.1
-- `qwen-asr`: 0.0.6 (Qwen ASR and optional forced-aligner diagnostics; pulls in `torch`, `transformers`, `librosa`, `soundfile`)
+- `qwen-asr`: 0.0.6 (Qwen ASR and forced-aligner runtime; pulls in `torch`, `transformers`, `librosa`, `soundfile`)
 - `onnxruntime-gpu`: 1.27.0 (WhisperSeg VAD for the default anime backend; imported directly, not pulled in by `qwen-asr` — on a CPU-only host install `onnxruntime` instead)
 - `torch`: 2.12 on an RTX 50-series (Blackwell) GPU
 - `llama-cpp-python`: 0.3.33 (CUDA build for GPU translation)
@@ -87,7 +87,7 @@ Verified environment:
 Recommended hardware:
 
 - GPU: NVIDIA GPU with around 12 GB VRAM is a comfortable target. The default anime
-  backend loads anime-whisper plus WhisperSeg; Qwen comparison mode (1.7B ASR + 0.6B
+  backend loads anime-whisper and the forced aligner sequentially, plus WhisperSeg; Qwen comparison mode (1.7B ASR + 0.6B
   aligner) peaks near 11.5 GB at the default `--qwen-batch-size 24`, so lower it to `16`
   if you hit out-of-memory. Translation runs in a separate process, so it does not stack
   on top of ASR.
@@ -133,12 +133,12 @@ Default one-command models:
 
 - Anime ASR text: [`litagin/anime-whisper`](https://huggingface.co/litagin/anime-whisper)
 - Anime weak-speech VAD: [`TransWithAI/Whisper-Vad-EncDec-ASMR-onnx`](https://huggingface.co/TransWithAI/Whisper-Vad-EncDec-ASMR-onnx)
+- Anime/Qwen timing: [`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
 - Translation: [`SakuraLLM/Sakura-GalTransl-7B-v3.7`](https://huggingface.co/SakuraLLM/Sakura-GalTransl-7B-v3.7)
 
-Optional comparison/diagnostic models:
+Optional comparison models:
 
 - Qwen ASR comparison: [`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
-- Qwen forced aligner: [`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B), required for `--asr qwen` and for anime `aligner_fallback` / `aligner_only` diagnostics, not for default anime `vad_only`
 
 The `hf` command is installed by `huggingface-hub` from `requirements.txt`. Download
 models to the default paths:
@@ -156,12 +156,13 @@ hf download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx \
   --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c \
   --local-dir models/whisperseg
 
-# Qwen comparison line and optional anime forced-aligner diagnostics
-hf download Qwen/Qwen3-ASR-1.7B \
-  --local-dir models/Qwen3-ASR-1.7B
-
+# Default Anime timing and Qwen timing
 hf download Qwen/Qwen3-ForcedAligner-0.6B \
   --local-dir models/Qwen3-ForcedAligner-0.6B
+
+# Optional Qwen ASR comparison line
+hf download Qwen/Qwen3-ASR-1.7B \
+  --local-dir models/Qwen3-ASR-1.7B
 
 # Default translation model (Sakura-GalTransl-7B-v3.7, ~6.25 GB high-quality quant)
 hf download SakuraLLM/Sakura-GalTransl-7B-v3.7 \
@@ -175,17 +176,17 @@ Default required files:
 models/anime-whisper/config.json
 models/anime-whisper/model.safetensors
 models/whisperseg/model.onnx
+models/Qwen3-ForcedAligner-0.6B/config.json
+models/Qwen3-ForcedAligner-0.6B/model.safetensors
 models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 ```
 
-Qwen comparison / forced-aligner diagnostics additionally need:
+Qwen comparison additionally needs:
 
 ```text
 models/Qwen3-ASR-1.7B/config.json
 models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors
 models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
-models/Qwen3-ForcedAligner-0.6B/config.json
-models/Qwen3-ForcedAligner-0.6B/model.safetensors
 ```
 
 The larger `sakura` translator (`--translator sakura`) needs
@@ -221,7 +222,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4
 ```
 
 That command is the default line: `anime` ASR (anime-whisper + WhisperSeg + semantic scene
-+ vad_only timing), `galtransl` translation, Chinese SRT, and bilingual ASS. Add
++ forced alignment with VAD fallback), `galtransl` translation, Chinese SRT, and bilingual ASS. Add
 `--quality-report` for tuning/test runs. Common variants:
 
 ```bash

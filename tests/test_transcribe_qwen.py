@@ -13,13 +13,16 @@ from transcribe_ja_srt_qwen import (
     _RawItem,
     _clip_relative_speech,
     _interjection_core,
+    _reconcile_semantic_scene_groups,
     _time_aligned_job,
     _time_anime_job,
     _whisperseg_context_jobs,
+    anime_local_alignment_collapse_reasons,
     anime_vad_only_frame_entry,
     apply_qwen_generation_config,
     build_qwen_jobs,
     build_whisperseg_jobs,
+    content_chars,
     collapse_repeated_phrases,
     drop_isolated_interjections,
     entries_from_raw,
@@ -241,10 +244,9 @@ def test_collapse_trailing_filler_run_keeps_first_instance():
     assert entries[0].end == 1.2
 
 
-def test_collapse_whole_cue_repetition_feeds_the_silence_gate():
-    # A cue that is nothing but repetition collapses to its first instance; the
-    # result is a plain single filler that drop_isolated_interjections then
-    # judges with the usual silence/chain rules.
+def test_collapse_preserves_unpunctuated_whole_cue_repetition():
+    # Without explicit instance boundaries this can be real spoken emphasis.
+    # Stronger unpunctuated loops remain covered by the generic 4+ repeat gate.
     chars = [
         ("う", 0.0, 0.1), ("ん", 0.1, 0.2),
         ("う", 0.5, 0.6), ("ん", 0.6, 0.7),
@@ -252,10 +254,9 @@ def test_collapse_whole_cue_repetition_feeds_the_silence_gate():
     ]
     entries = aligned_entries("うんうんうん。", chars)
     assert len(entries) == 1
-    assert entries[0].text == "うん"
+    assert entries[0].text == "うんうんうん。"
     assert entries[0].start == 0.0
-    assert entries[0].end == 0.2
-    assert _interjection_core(entries[0].text) in ISOLATED_INTERJECTION_CORES
+    assert entries[0].end == 1.2
 
 
 def test_collapse_keeps_lexical_double_mora_interjections():
@@ -311,6 +312,69 @@ def test_collapse_can_be_disabled():
     ]
     entries = aligned_entries("うん、うん、一人。", chars, collapse_fillers=False)
     assert entries[0].text == "うん、うん、一人。"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "あ、なんか広い…ふふっ。",
+        "幼馴染さん…ごめんね…ふふっ…",
+        "ゆ…あ、ああ…うぅ…",
+        "ねえねえ、市長の車を貸してくれる?",
+        "うん、うん、一人。",
+    ],
+)
+def test_collapse_preserves_normal_double_or_unseparated_repetition(text):
+    chars = content_chars(text)
+    timed = [(char, i * 0.1, i * 0.1 + 0.08) for i, char in enumerate(chars)]
+    entries = aligned_entries(text, timed, max_chars=80)
+    assert "".join(entry.text for entry in entries) == text
+
+
+def test_anime_source_authoritative_timing_preserves_unit_missing_from_aligner():
+    entries = sentences_from_alignment(
+        "前。大丈夫。",
+        [_RawItem("前", 0.0, 0.2)],
+        offset=0.0,
+        max_chars=80,
+        max_duration=8.0,
+        min_duration=0.0,
+        max_internal_gap=2.0,
+        max_char_seconds=0.5,
+        ellipsis_hard_split=False,
+        split_internal_gaps=False,
+    )
+
+    assert [entry.text for entry in entries] == ["前。", "大丈夫。"]
+    assert entries[1].start == pytest.approx(0.2)
+    assert entries[1].end == pytest.approx(0.2)
+
+
+def test_anime_alignment_preserves_leading_elongation_mark():
+    entries = sentences_from_alignment(
+        "ーっ。",
+        [_RawItem("っ", 0.2, 0.4)],
+        offset=0.0,
+        max_chars=80,
+        max_duration=8.0,
+        min_duration=0.0,
+        max_internal_gap=2.0,
+        max_char_seconds=0.5,
+        ellipsis_hard_split=False,
+        split_internal_gaps=False,
+    )
+
+    assert [entry.text for entry in entries] == ["ーっ。"]
+
+
+def test_anime_split_interjection_keeps_source_frame_provenance():
+    entry = SubtitleEntry(10.0, 10.8, "はい。")
+    entry._anime_source_text = "準備はいいですか?はい。"
+
+    kept, dropped = drop_isolated_interjections([entry], min_silence=3.0)
+
+    assert kept == [entry]
+    assert dropped == []
 
 
 def test_internal_gap_keeps_short_sentence_tail_fragment():
@@ -709,6 +773,58 @@ def test_whisperseg_group_promotes_new_forced_split_reason():
 
     assert groups[0].right_boundary_reason == "soft_max_valley"
     assert groups[1].left_boundary_reason == "soft_max_valley"
+
+
+def _scene_group(start, end):
+    return group_segments([SpeechSegment(start, end)], max_group_duration_s=6.0)[0]
+
+
+def test_semantic_scene_reconciliation_deduplicates_overlapping_detection():
+    groups = _reconcile_semantic_scene_groups(
+        [(0, _scene_group(9.70, 10.25)), (1, _scene_group(9.80, 10.30))],
+        max_group_duration_s=6.0,
+        chunk_threshold_s=1.0,
+    )
+
+    assert len(groups) == 1
+    assert [(seg.start, seg.end) for seg in groups[0]] == pytest.approx([(9.70, 10.30)])
+
+
+def test_semantic_scene_reconciliation_unions_complementary_fragments():
+    groups = _reconcile_semantic_scene_groups(
+        [(0, _scene_group(9.60, 10.05)), (1, _scene_group(9.95, 10.40))],
+        max_group_duration_s=6.0,
+        chunk_threshold_s=1.0,
+    )
+
+    assert len(groups) == 1
+    assert [(seg.start, seg.end) for seg in groups[0]] == pytest.approx([(9.60, 10.40)])
+
+
+def test_semantic_scene_reconciliation_keeps_one_sided_weak_detection_unchanged():
+    weak = _scene_group(9.85, 10.08)
+    groups = _reconcile_semantic_scene_groups(
+        [(0, weak)],
+        max_group_duration_s=6.0,
+        chunk_threshold_s=1.0,
+    )
+
+    assert groups == [weak]
+    assert groups[0] is weak
+
+
+def test_semantic_scene_reconciliation_preserves_real_silence_boundary():
+    left = _scene_group(9.0, 9.5)
+    right = _scene_group(10.2, 10.8)
+    groups = _reconcile_semantic_scene_groups(
+        [(0, left), (1, right)],
+        max_group_duration_s=6.0,
+        chunk_threshold_s=1.0,
+    )
+
+    assert groups == [left, right]
+    assert groups[0] is left
+    assert groups[1] is right
 
 
 def test_whisperseg_logs_active_session_provider_after_cuda_fallback(tmp_path, monkeypatch, capsys):
@@ -1136,6 +1252,51 @@ def test_time_anime_job_recovers_collapse_with_vad():
         assert (1.0 <= it.start_time <= 3.0) or (6.0 <= it.start_time <= 9.0), it.start_time
 
 
+def test_time_anime_job_recovers_single_collapsed_source_unit_with_vad():
+    text = "前です。大丈夫?次です。"
+    job = ChunkJob(10.0, 15.0, 10.0, 15.0)
+    job.speech = [Interval(0.2, 4.8)]
+    items = [
+        _RawItem("前です", 0.2, 1.0),
+        _RawItem("大丈夫", 2.0, 2.0),
+        _RawItem("次です", 3.0, 4.0),
+    ]
+
+    sentinel, recovery, out = _time_anime_job(job, items, _shaping_args(), text)
+
+    assert sentinel["status"] == "COLLAPSED"
+    assert "unit_1_zero_span" in sentinel["triggers"]
+    assert recovery["strategy"] == "vad_only_local_unit"
+    assert "".join(item.text for item in out) == "".join(content_chars(text))
+    assert out[0].start_time == pytest.approx(0.2)
+    assert out[-1].end_time == pytest.approx(4.8)
+
+
+def test_anime_local_collapse_does_not_fallback_in_aligner_only_mode():
+    text = "前です。大丈夫?次です。"
+    job = ChunkJob(10.0, 15.0, 10.0, 15.0)
+    job.speech = [Interval(0.2, 4.8)]
+    items = [
+        _RawItem("前です", 0.2, 1.0),
+        _RawItem("大丈夫", 2.0, 2.0),
+        _RawItem("次です", 3.0, 4.0),
+    ]
+
+    sentinel, recovery, out = _time_anime_job(
+        job,
+        items,
+        _shaping_args(timestamp_mode="aligner_only"),
+        text,
+    )
+
+    assert anime_local_alignment_collapse_reasons(text, items) == ["unit_1_zero_span"]
+    assert sentinel["status"] == "OK"
+    assert recovery["applied"] is False
+    assert [(item.text, item.start_time, item.end_time) for item in out] == [
+        (item.text, item.start_time, item.end_time) for item in items
+    ]
+
+
 def test_time_aligned_job_recovers_qwen_collapse_with_vad():
     job = ChunkJob(100.0, 110.0, 100.0, 110.0)
     job.speech = [Interval(2.0, 6.0)]
@@ -1320,6 +1481,29 @@ def test_qwen_alignment_still_splits_large_internal_gap():
     )
 
     assert [e.text for e in entries] == ["今日は仕事", "明日は休み"]
+
+
+@pytest.mark.parametrize("backend", ["anime", "qwen"])
+def test_alignment_claims_short_frame_tail_before_display_floor(backend):
+    raw = _aligned_raw(
+        "もぐ",
+        [{"text": "もぐ", "start": 1.36, "end": 1.60}],
+        backend=backend,
+    )
+    raw["chunks"][0].update({"end": 1.692, "keep_hi": 1.692})
+
+    entries = entries_from_raw(
+        raw,
+        _shaping_args(
+            text_backend=backend,
+            phrase_max_chars=80,
+            min_duration=0.8,
+        ),
+    )
+
+    assert [e.text for e in entries] == ["もぐ"]
+    assert entries[0].start == pytest.approx(1.36)
+    assert entries[0].end == pytest.approx(2.16)
 
 
 def test_entries_from_raw_anime_vad_only_rebuilds_from_speech_regions():

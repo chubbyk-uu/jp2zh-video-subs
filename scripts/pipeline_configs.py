@@ -152,15 +152,14 @@ class QwenAsrConfig(BaseAsrConfig):
 class AnimeAsrConfig(BaseAsrConfig):
     """anime-whisper backend defaults forwarded to the shared qwen/anime sub-script."""
 
-    # VAD-only uses its independent 50/80 frame-native splitter. This value governs
-    # forced-align modes, where 26 could isolate a sentence-final particle even
-    # though the aligned source unit was otherwise valid.
+    # Forced alignment is the default; VAD-only retains its independent 50/80
+    # frame-native splitter as a comparison/fallback timing mode.
     phrase_max_chars: int = arg_field(80, help="Anime forced-align cue safety cap (VAD-only uses its own 50/80 splitter)")
     text_backend: str = arg_field("anime", choices=("qwen", "anime"), help="ASR text source")
     text_model: str = arg_field("models/anime-whisper", help="anime-whisper model path")
     timestamp_mode: str = arg_field(
-        "vad_only", choices=("aligner_fallback", "aligner_only", "vad_only"),
-        help="anime timing mode: vad_only skips forced alignment; aligner modes are diagnostics",
+        "aligner_fallback", choices=("aligner_fallback", "aligner_only", "vad_only"),
+        help="anime timing mode: forced aligner with VAD fallback (default), raw aligner diagnostic, or VAD-only comparison",
     )
     collapse_recovery: bool = arg_field(
         True, action="boolean_optional", help="Recover collapsed forced alignment in anime aligner modes",

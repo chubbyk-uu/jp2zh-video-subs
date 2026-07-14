@@ -228,6 +228,61 @@ def flatten_item_chars(time_stamps, max_char_seconds: float) -> list[tuple[str, 
     return out
 
 
+def source_authoritative_char_times(
+    text: str,
+    aligned: list[tuple[str, float, float]],
+) -> list[tuple[str, float, float]]:
+    """Map every source character onto the aligner's timing stream.
+
+    Anime text is authoritative, but the forced aligner can omit a short source
+    unit entirely. Sequence alignment preserves matched timings and interpolates
+    only missing source characters, preventing a truncated aligner stream from
+    silently deleting later sentences.
+    """
+    source = content_chars(text)
+    if not source:
+        return []
+    if not aligned:
+        return [(char, 0.0, 0.0) for char in source]
+
+    target = [char for char, _, _ in aligned]
+    mapped: list[tuple[float, float] | None] = [None] * len(source)
+    matcher = difflib.SequenceMatcher(None, source, target, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for source_idx, target_idx in zip(range(i1, i2), range(j1, j2)):
+                mapped[source_idx] = (aligned[target_idx][1], aligned[target_idx][2])
+        elif tag == "replace" and j2 > j1:
+            start, end = aligned[j1][1], aligned[j2 - 1][2]
+            width = max(0.0, end - start) / max(1, i2 - i1)
+            for offset, source_idx in enumerate(range(i1, i2)):
+                mapped[source_idx] = (start + offset * width, start + (offset + 1) * width)
+
+    idx = 0
+    while idx < len(mapped):
+        if mapped[idx] is not None:
+            idx += 1
+            continue
+        run_start = idx
+        while idx < len(mapped) and mapped[idx] is None:
+            idx += 1
+        run_end = idx
+        previous_end = mapped[run_start - 1][1] if run_start > 0 and mapped[run_start - 1] else None
+        next_start = mapped[run_end][0] if run_end < len(mapped) and mapped[run_end] else None
+        if previous_end is None:
+            previous_end = next_start if next_start is not None else aligned[0][1]
+        if next_start is None:
+            next_start = previous_end
+        width = max(0.0, next_start - previous_end) / (run_end - run_start)
+        for offset, source_idx in enumerate(range(run_start, run_end)):
+            mapped[source_idx] = (
+                previous_end + offset * width,
+                previous_end + (offset + 1) * width,
+            )
+
+    return [(char, timing[0], timing[1]) for char, timing in zip(source, mapped) if timing is not None]
+
+
 def split_into_units(text: str, max_chars: int, ellipsis_hard: bool = True) -> list[str]:
     """Split the punctuated transcript into sentence-level cue units.
 
@@ -348,10 +403,10 @@ def _split_segment(
     return pieces
 
 
-# Punctuation accepted as a filler-run boundary (rides on the preceding token's
-# display). A repetition run only collapses when both edges sit on such punctuation
-# or the segment boundary, so word-initial repetition inside real words (ああいう)
-# is never touched.
+# Punctuation accepted as a filler-instance boundary (rides on the preceding
+# token's display). Token-level collapse is intentionally limited to 3+ explicitly
+# separated instances (うん、うん、うん); unpunctuated laughter/emphasis such as
+# ふふっ and ねえねえ is source text, not sufficient loop evidence.
 RUN_BOUNDARY_PUNCT = set("。、，．,.！？!?…・")
 # Longest-first so うんうん matches core うん rather than two ん with stray う.
 # Includes reply words so はい、はい。 collapses to a single はい before the
@@ -405,7 +460,13 @@ def collapse_filler_repetitions(
                 return -1
             pos += 1
             j += 1
-        return j if pos == len(core) else -1
+        if pos != len(core):
+            return -1
+        # Small kana / elongation marks belong to the instance just matched,
+        # including any punctuation carried by their display token.
+        while j < n and cores[j] == "":
+            j += 1
+        return j
 
     keep = [True] * n
     i = 0
@@ -422,7 +483,12 @@ def collapse_filler_repetitions(
             bounds = [(i, first_end)]
             while (next_end := match_core(core, bounds[-1][1])) >= 0:
                 bounds.append((bounds[-1][1], next_end))
-            if len(bounds) >= 2:
+            if len(bounds) >= 3:
+                # Every repeated instance must be explicitly separated. Without
+                # this, lexical/emphatic doubles inside a larger run (あ、ああ) are
+                # indistinguishable from genuine spoken repetition.
+                if not all(has_trailing_punct(end - 1) for _, end in bounds[:-1]):
+                    continue
                 # ああ/ええ/おお/んん … are lexical interjections in their own
                 # right, not padding; a run that *is* one known core stays whole
                 # (the whole-cue silence gate already knows how to judge it).
@@ -478,6 +544,8 @@ def sentences_from_alignment(
     exceeds max_chars/max_duration even when Qwen emitted no punctuation.
     """
     char_times = flatten_item_chars(time_stamps, max_char_seconds)
+    if not split_internal_gaps:
+        char_times = source_authoritative_char_times(text, char_times)
     units = split_into_units(text, max_chars, ellipsis_hard=ellipsis_hard_split)
     entries: list[SubtitleEntry] = []
     pos = 0
@@ -493,19 +561,23 @@ def sentences_from_alignment(
         # One token per content character: (display, start, end, ends_in_break_punct).
         # Punctuation has no aligner time, so it rides on the preceding character.
         tokens: list[tuple[str, float, float, bool]] = []
+        pending_prefix = ""
         ci = 0
         for ch in unit:
             if ch in PUNCT_CHARS:
                 if tokens:
                     disp, s, e, br = tokens[-1]
                     tokens[-1] = (disp + ch, s, e, br or ch in BREAK_PUNCT)
+                else:
+                    pending_prefix += ch
                 continue
             if ci >= len(span):
                 if tokens:
                     disp, s, e, br = tokens[-1]
                     tokens[-1] = (disp + ch, s, e, br)
                 continue
-            tokens.append((ch, span[ci][1], span[ci][2], False))
+            tokens.append((pending_prefix + ch, span[ci][1], span[ci][2], False))
+            pending_prefix = ""
             ci += 1
         if not tokens:
             continue
@@ -579,6 +651,16 @@ def drop_same_start_piles(entries: list[SubtitleEntry], tol: float = 0.05) -> li
     result: list[SubtitleEntry] = []
     for entry in ordered:
         if result and entry.start - result[-1].start <= tol:
+            previous_source = getattr(result[-1], "_anime_source_text", None)
+            current_source = getattr(entry, "_anime_source_text", None)
+            if previous_source is not None and previous_source == current_source:
+                # Both cues are distinct source units from one authoritative Anime
+                # frame. The aligner collapsed their clocks, not their text; keep
+                # both as one cue instead of choosing one and deleting the other.
+                result[-1].text += entry.text
+                result[-1].end = max(result[-1].end, entry.end)
+                result[-1].collapsed = result[-1].collapsed and entry.collapsed
+                continue
             # Replace the kept cue only when it is a collapsed point and the new one
             # is genuinely timed; otherwise keep the first (both real, or both
             # collapsed, or kept-real vs new-collapsed).
@@ -640,17 +722,36 @@ def drop_isolated_interjections(
     # metronomic run decays after the one genuinely answering the line.
     anchored = [False] * n
     last_word_end: float | None = None
+
+    def source_start(index: int) -> float:
+        return float(getattr(ordered[index], "_anime_source_start", ordered[index].start))
+
+    def source_end(index: int) -> float:
+        return float(getattr(ordered[index], "_anime_source_end", ordered[index].end))
+
     for k in range(n):
         if cores[k] in REPLY_INTERJECTION_CORES:
             if (
                 reply_anchor_lag > 0
                 and last_word_end is not None
-                and ordered[k].start - last_word_end <= reply_anchor_lag
+                and source_start(k) - last_word_end <= reply_anchor_lag
             ):
                 anchored[k] = True
         elif cores[k] not in ALL_FILLER_CORES:
-            last_word_end = ordered[k].end
-    is_filler = [c in ALL_FILLER_CORES and not anchored[k] for k, c in enumerate(cores)]
+            last_word_end = source_end(k)
+    # Anime forced-align can split one source frame into several cues. A bare
+    # interjection inside a larger source frame is real source text and must not
+    # become newly eligible for deletion merely because alignment isolated it.
+    source_cores = [
+        _interjection_core(str(getattr(entry, "_anime_source_text", entry.text)))
+        for entry in ordered
+    ]
+    is_filler = [
+        c in ALL_FILLER_CORES
+        and source_cores[k] in ALL_FILLER_CORES
+        and not anchored[k]
+        for k, c in enumerate(cores)
+    ]
     drop = [False] * n
     i = 0
     while i < n:
@@ -659,10 +760,10 @@ def drop_isolated_interjections(
             continue
         # Extend a chain of consecutive fillers separated by <= run_gap.
         j = i
-        while j + 1 < n and is_filler[j + 1] and (ordered[j + 1].start - ordered[j].end) <= run_gap:
+        while j + 1 < n and is_filler[j + 1] and (source_start(j + 1) - source_end(j)) <= run_gap:
             j += 1
-        lead = ordered[i].start - ordered[i - 1].end if i > 0 else float("inf")
-        trail = ordered[j + 1].start - ordered[j].end if j + 1 < n else float("inf")
+        lead = source_start(i) - source_end(i - 1) if i > 0 else float("inf")
+        trail = source_start(j + 1) - source_end(j) if j + 1 < n else float("inf")
         bracketed = min_silence > 0 and lead >= min_silence and trail >= min_silence
         chained = run_min > 0 and (j - i + 1) >= run_min
         if bracketed or chained:
@@ -845,7 +946,26 @@ def finalize_qwen_entries(entries: list[SubtitleEntry], args: argparse.Namespace
     # (WJ-style cue merge now runs per-clip inside chunk_entries, so it never
     # crosses a clip/frame boundary; nothing to merge globally here.)
     if args.min_cue_seconds > 0:
-        entries = [e for e in entries if e.end - e.start >= args.min_cue_seconds]
+        filtered: list[SubtitleEntry] = []
+        for index, entry in enumerate(entries):
+            if entry.end - entry.start >= args.min_cue_seconds:
+                filtered.append(entry)
+                continue
+            source = getattr(entry, "_anime_source_text", None)
+            if source is None:
+                continue
+            if filtered and getattr(filtered[-1], "_anime_source_text", None) == source:
+                filtered[-1].text += entry.text
+                filtered[-1].end = max(filtered[-1].end, entry.end)
+                continue
+            if index + 1 < len(entries) and getattr(entries[index + 1], "_anime_source_text", None) == source:
+                entries[index + 1].text = entry.text + entries[index + 1].text
+                entries[index + 1].start = min(entry.start, entries[index + 1].start)
+                continue
+            # No safe merge target: preserving authoritative Anime text takes
+            # precedence over silently deleting a short, poorly localised cue.
+            filtered.append(entry)
+        entries = filtered
     return entries
 
 
@@ -992,6 +1112,94 @@ def _whisperseg_group_boundary_reason(group, side: str) -> str:
     return str(getattr(group, attr, "unknown"))
 
 
+def _reconcile_semantic_scene_groups(
+    candidates: list[tuple[int, object]],
+    *,
+    max_group_duration_s: float,
+    chunk_threshold_s: float,
+) -> list:
+    """Canonicalize WhisperSeg groups duplicated by adjacent padded scenes.
+
+    Only materially overlapping envelopes from adjacent scenes participate. This
+    leaves ordinary per-scene framing and one-sided weak detections untouched,
+    while a connected overlap component is reduced to non-overlapping speech
+    intervals and regrouped with the backend's normal rules.
+    """
+    from whisperseg_vad import SpeechSegment, group_segments
+
+    ordered = sorted(
+        [(scene_idx, group) for scene_idx, group in candidates if group],
+        key=lambda item: _whisperseg_group_bounds(item[1]),
+    )
+    if len(ordered) < 2:
+        return [group for _, group in ordered]
+
+    parent = list(range(len(ordered)))
+
+    def find(idx: int) -> int:
+        while parent[idx] != idx:
+            parent[idx] = parent[parent[idx]]
+            idx = parent[idx]
+        return idx
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    # WhisperSeg probabilities have 20ms resolution. Requiring two frames of
+    # envelope overlap avoids treating rounding contact as duplicate evidence.
+    material_overlap = 0.04 - 1e-9
+    for left in range(len(ordered)):
+        left_scene, left_group = ordered[left]
+        _, left_end = _whisperseg_group_bounds(left_group)
+        for right in range(left + 1, len(ordered)):
+            right_scene, right_group = ordered[right]
+            right_start, right_end = _whisperseg_group_bounds(right_group)
+            if right_start >= left_end:
+                break
+            if abs(right_scene - left_scene) != 1:
+                continue
+            left_start, _ = _whisperseg_group_bounds(left_group)
+            if min(left_end, right_end) - max(left_start, right_start) >= material_overlap:
+                union(left, right)
+
+    components: dict[int, list[int]] = {}
+    for idx in range(len(ordered)):
+        components.setdefault(find(idx), []).append(idx)
+
+    canonical = []
+    for indices in components.values():
+        if len(indices) == 1:
+            canonical.append(ordered[indices[0]][1])
+            continue
+
+        source_groups = [ordered[idx][1] for idx in indices]
+        segments = sorted(
+            (seg for group in source_groups for seg in group),
+            key=lambda seg: (float(seg.start), float(seg.end)),
+        )
+        merged: list[SpeechSegment] = []
+        for seg in segments:
+            start, end = float(seg.start), float(seg.end)
+            if merged and start <= merged[-1].end + 1e-9:
+                if end > merged[-1].end:
+                    merged[-1].end = end
+                    merged[-1].end_reason = str(getattr(seg, "end_reason", "unknown"))
+            else:
+                merged.append(SpeechSegment(start, end, str(getattr(seg, "end_reason", "unknown"))))
+
+        regrouped = group_segments(merged, max_group_duration_s, chunk_threshold_s)
+        if regrouped:
+            earliest = min(source_groups, key=lambda group: _whisperseg_group_bounds(group)[0])
+            latest = max(source_groups, key=lambda group: _whisperseg_group_bounds(group)[1])
+            regrouped[0].left_boundary_reason = _whisperseg_group_boundary_reason(earliest, "left")
+            regrouped[-1].right_boundary_reason = _whisperseg_group_boundary_reason(latest, "right")
+            canonical.extend(regrouped)
+
+    return sorted(canonical, key=_whisperseg_group_bounds)
+
+
 def _whisperseg_context_jobs(groups: list, duration: float, args: argparse.Namespace) -> list[ChunkJob]:
     """Convert atomic WhisperSeg groups to Qwen recognition jobs.
 
@@ -1079,7 +1287,8 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
     one ChunkJob spanning its speech; the frame's speech segments are stored
     clip-relative for the collapse sentinel's VAD-guided recovery.
 
-    Frames do not overlap, so cue ownership is simply the frame's own [start, end).
+    Semantic-scene candidates are reconciled before job creation, so cue ownership
+    is simply the canonical frame's own [start, end).
     """
     from whisperseg_vad import WhisperSegVAD, resolve_model_path
 
@@ -1112,8 +1321,8 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
             f"asr_pad={scene_asr_pad}s)",
             flush=True,
         )
-        groups = []
-        for ss, se in scenes:
+        scene_candidates: list[tuple[int, object]] = []
+        for scene_idx, (ss, se) in enumerate(scenes):
             # WhisperJAV semantic scenes use strict timestamps for the timeline, but
             # feed ASR/VAD with an overlapped "asr_processing" window (±0.35s).
             # The pad changes WhisperSeg's 30s chunk origin and preserves soft
@@ -1135,7 +1344,17 @@ def build_whisperseg_jobs(audio, samplerate: int, duration: float, args: argpars
                 for s in g:
                     s.start += asr_start
                     s.end += asr_start
-                groups.append(g)
+                scene_candidates.append((scene_idx, g))
+        groups = _reconcile_semantic_scene_groups(
+            scene_candidates,
+            max_group_duration_s=args.whisperseg_max_group,
+            chunk_threshold_s=args.whisperseg_chunk_threshold,
+        )
+        print(
+            f"semantic WhisperSeg reconciliation: candidates={len(scene_candidates)} "
+            f"canonical={len(groups)}",
+            flush=True,
+        )
     else:
         groups = vad.segment(audio, samplerate)
     vad.cleanup()
@@ -1223,6 +1442,7 @@ def chunk_entries(
     items,
     *,
     start: float,
+    source_end: float | None = None,
     keep_lo: float,
     keep_hi: float,
     regroup_regions: list[Interval] | None = None,
@@ -1235,13 +1455,16 @@ def chunk_entries(
     clip whose [keep_lo, keep_hi) window holds the cue center.
     """
     anime_backend = getattr(args, "text_backend", "qwen") == "anime"
+    # Claim ownership with the raw aligner span. Applying the display-duration
+    # floor first can move a short cue's center beyond keep_hi and discard valid
+    # frame-tail speech (for example a 240ms cue expanded to 800ms).
     sentence_entries = sentences_from_alignment(
         text,
         items,
         offset=start,
         max_chars=args.phrase_max_chars,
         max_duration=args.phrase_max_duration,
-        min_duration=args.min_duration,
+        min_duration=0.0,
         max_internal_gap=args.phrase_max_internal_gap,
         max_char_seconds=args.phrase_max_char_seconds,
         collapse_fillers=getattr(args, "collapse_filler_repetition", True),
@@ -1249,6 +1472,9 @@ def chunk_entries(
         split_internal_gaps=not anime_backend,
     )
     kept = [e for e in sentence_entries if keep_lo <= (e.start + e.end) / 2.0 < keep_hi]
+    for entry in kept:
+        entry.end = max(entry.end, entry.start + args.min_duration)
+        entry.end = min(entry.end, entry.start + args.phrase_max_duration)
     # WJ REGROUP_JAV cue merge is applied *within this clip's own cues* only (WJ
     # regroups per stable-ts clip result, never across clip boundaries). This packs
     # a clip's back-to-back sentences into one cue while a real clip/frame boundary
@@ -1262,6 +1488,11 @@ def chunk_entries(
             max_chars=getattr(args, "phrase_max_chars", 80),
             max_duration=getattr(args, "phrase_max_duration", 8.0),
         )
+    else:
+        for entry in kept:
+            entry._anime_source_text = text
+            entry._anime_source_start = start
+            entry._anime_source_end = source_end if source_end is not None else max(e.end for e in kept)
     return kept
 
 
@@ -1370,10 +1601,19 @@ def anime_vad_only_frame_entry(text: str, start: float, end: float) -> list[Subt
     display = text.strip()
     if not display or not content_chars(display) or end <= start:
         return []
+
+    def mark_source(entries: list[SubtitleEntry]) -> list[SubtitleEntry]:
+        for entry in entries:
+            entry._anime_source_text = text
+            entry._anime_source_start = start
+            entry._anime_source_end = end
+        return entries
+
     pieces = wj_regroup_vad_only_split(display)
     if len(pieces) <= 1:
         single = strip_leading_ellipsis(display)
-        return [SubtitleEntry(start, end, single)] if content_chars(single) else []
+        entries = [SubtitleEntry(start, end, single)] if content_chars(single) else []
+        return mark_source(entries)
     total = sum(len(content_chars(p)) for p in pieces) or 1
     entries: list[SubtitleEntry] = []
     cursor = start
@@ -1386,7 +1626,7 @@ def anime_vad_only_frame_entry(text: str, start: float, end: float) -> list[Subt
         if content_chars(display_piece) and piece_end > cursor:
             entries.append(SubtitleEntry(cursor, piece_end, display_piece))
         cursor = piece_end
-    return entries or [SubtitleEntry(start, end, display)]
+    return mark_source(entries or [SubtitleEntry(start, end, display)])
 
 
 def _serialize_items(items) -> list[dict]:
@@ -1430,6 +1670,20 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
             else:
                 src = ch["raw_items"] if (anime_only and "raw_items" in ch) else ch["items"]
                 items = [_RawItem(it["text"], it["start"], it["end"]) for it in src]
+                if (
+                    not anime_only
+                    and getattr(args, "timestamp_mode", "aligner_fallback") == "aligner_fallback"
+                    and getattr(args, "collapse_recovery", True)
+                ):
+                    raw_src = ch.get("raw_items", src)
+                    raw_items = [_RawItem(it["text"], it["start"], it["end"]) for it in raw_src]
+                    if anime_local_alignment_collapse_reasons(
+                        text,
+                        raw_items,
+                        float(getattr(args, "phrase_max_char_seconds", 0.5)),
+                    ):
+                        regions = [Interval(float(s), float(e)) for s, e in ch.get("speech_regions", [])]
+                        items = vad_only_items_for_text(text, ch["end"] - ch["start"], regions)
         else:
             text = "" if is_context_echo(ch["text"], context) else ch["text"]
             raw_mode = getattr(args, "timestamp_mode", raw.get("timestamp_mode", "aligner_fallback"))
@@ -1454,7 +1708,7 @@ def entries_from_raw(raw: dict, args: argparse.Namespace) -> list[SubtitleEntry]
         else:
             entries.extend(
                 chunk_entries(
-                    text, items, start=ch["start"],
+                    text, items, start=ch["start"], source_end=ch["end"],
                     keep_lo=keep_lo, keep_hi=keep_hi,
                     regroup_regions=[Interval(float(s), float(e)) for s, e in ch.get("regroup_regions", [])],
                     args=args,
@@ -1518,8 +1772,69 @@ def _time_aligned_job(job: ChunkJob, items, args: argparse.Namespace) -> tuple[d
     return sentinel, recovery, out_items
 
 
-def _time_anime_job(job: ChunkJob, items, args: argparse.Namespace) -> tuple[dict, dict, list]:
-    return _time_aligned_job(job, items, args)
+def anime_local_alignment_collapse_reasons(
+    text: str,
+    items,
+    max_char_seconds: float = 0.5,
+) -> list[str]:
+    """Return source-unit collapse reasons missed by the job-level sentinel.
+
+    A long job can look healthy overall while one punctuated Anime source unit is
+    missing or stamped onto a point. Such a unit cannot be safely repaired with
+    neighbouring aligner timestamps; the whole short frame should use VAD timing.
+    """
+    units = split_into_units(text, max_chars=80, ellipsis_hard=False)
+    char_times = flatten_item_chars(items, max_char_seconds)
+    reasons: list[str] = []
+    pos = 0
+    previous_start: float | None = None
+    for unit_index, unit in enumerate(units):
+        need = len(content_chars(unit))
+        if need == 0:
+            continue
+        span = char_times[pos : pos + need]
+        pos += need
+        if len(span) < need:
+            reasons.append(f"unit_{unit_index}_missing_chars")
+        if not span:
+            continue
+        unit_start = min(item[1] for item in span)
+        unit_end = max(item[2] for item in span)
+        if unit_end - unit_start <= COLLAPSED_SPAN_SECONDS:
+            reasons.append(f"unit_{unit_index}_zero_span")
+        if previous_start is not None and abs(unit_start - previous_start) <= 0.05:
+            reasons.append(f"unit_{unit_index}_same_start")
+        previous_start = unit_start
+    return reasons
+
+
+def _time_anime_job(
+    job: ChunkJob,
+    items,
+    args: argparse.Namespace,
+    text: str = "",
+) -> tuple[dict, dict, list]:
+    sentinel, recovery, out_items = _time_aligned_job(job, items, args)
+    reasons = anime_local_alignment_collapse_reasons(
+        text,
+        items,
+        float(getattr(args, "phrase_max_char_seconds", 0.5)),
+    ) if text else []
+    if (
+        reasons
+        and args.timestamp_mode == "aligner_fallback"
+        and getattr(args, "collapse_recovery", True)
+    ):
+        out_items = vad_only_items_for_text(text, job.end - job.start, job.speech)
+        sentinel = dict(sentinel)
+        sentinel["status"] = "COLLAPSED"
+        sentinel["triggers"] = [*sentinel.get("triggers", []), *reasons]
+        recovery = {
+            "applied": True,
+            "strategy": "vad_only_local_unit",
+            "reasons": reasons,
+        }
+    return sentinel, recovery, out_items
 
 
 def resolve_qwen_generation_config(model) -> tuple[object | None, str]:
@@ -1669,7 +1984,9 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
                     except TypeError:
                         items = []
                 job_raw_items[i] = items
-                sentinel, recovery, out_items = _time_aligned_job(jobs[i], items, args)
+                sentinel, recovery, out_items = _time_anime_job(
+                    jobs[i], items, args, clean_texts[i]
+                )
                 job_sentinel[i] = sentinel
                 job_recovery[i] = recovery
                 job_items[i] = out_items
@@ -1686,7 +2003,7 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
     entries: list[SubtitleEntry] = []
     chunk_results: list[ChunkResult] = []
     raw_chunks: list[dict] = []
-    n_recovered = {"vad_guided": 0, "proportional": 0}
+    n_recovered = {"vad_guided": 0, "proportional": 0, "vad_only_local_unit": 0}
     for i, job in enumerate(jobs):
         clean = clean_texts[i]
         out_items = job_items.get(i, [])
@@ -1699,7 +2016,8 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
             kept = anime_vad_only_frame_entry(clean, job.start, job.end)
         else:
             kept = chunk_entries(
-                clean, out_items, start=job.start, keep_lo=job.keep_lo, keep_hi=job.keep_hi,
+                clean, out_items, start=job.start, source_end=job.end,
+                keep_lo=job.keep_lo, keep_hi=job.keep_hi,
                 regroup_regions=job.regroup_regions,
                 args=args,
             )
@@ -1728,7 +2046,8 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
     entries.sort(key=lambda e: (e.start, e.end))
     print(
         f"anime done: clips={len(jobs)} non_empty={len(idxs)} collapsed={n_collapsed} "
-        f"recovered(vad={n_recovered['vad_guided']}, prop={n_recovered['proportional']}) entries={len(entries)}",
+        f"recovered(vad={n_recovered['vad_guided']}, prop={n_recovered['proportional']}, "
+        f"local_vad={n_recovered['vad_only_local_unit']}) entries={len(entries)}",
         flush=True,
     )
     raw = {
@@ -1836,7 +2155,7 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                     raw_items = list(items or [])
                     sentinel, recovery, out_items = _time_aligned_job(job, raw_items, args)
                 kept = chunk_entries(
-                    display_text, out_items, start=job.start,
+                    display_text, out_items, start=job.start, source_end=job.end,
                     keep_lo=job.keep_lo, keep_hi=job.keep_hi,
                     regroup_regions=job.regroup_regions,
                     args=args,

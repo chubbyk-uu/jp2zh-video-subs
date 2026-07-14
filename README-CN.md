@@ -6,7 +6,7 @@
 
 项目提供两套识别后端，用 `--asr` 选择：
 
-- **`anime`（默认）**——用 `litagin/anime-whisper` 出文本，WhisperSeg 做弱语音切分，semantic scene 做场景边界，默认 `vad_only` 定时。它是当前 JAV/anime 风格素材的推荐主线。
+- **`anime`（默认）**——用 `litagin/anime-whisper` 出文本，WhisperSeg 做弱语音切分，semantic scene 做场景边界，默认使用 Qwen forced aligner 定时，并在整段或局部对齐坍缩时自动回退 VAD 时间。它是当前 JAV/anime 风格素材的推荐主线。
 - **`qwen`**——用 `Qwen3-ASR-1.7B` 出文本内容，配 `Qwen3-ForcedAligner-0.6B` 出时间轴，默认在 WhisperSeg 语音 frame 上识别，并带 aligner fallback recovery。适合作为更干净的文本/时间轴对比线。
 
 以及两套翻译后端，用 `--translator` 选择：
@@ -28,7 +28,7 @@
 4. 默认生成中日双语 ASS（中文在上、日文在下），并复制到输入视频同目录。
 5. 调参/测试时可加 `--quality-report` 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
 
-默认的 anime 后端采用 WJ-style 识别框架（semantic scene + WhisperSeg 短语音 frame + `litagin/anime-whisper` 文本 + `vad_only` 定时）；`--asr qwen` 是更干净的文本/时间轴对比线。两条线各自怎么工作、字幕怎么切分详见 [docs/BACKENDS.md](docs/BACKENDS.md)。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
+默认的 anime 后端采用 WJ-style 识别框架（semantic scene + WhisperSeg 短语音 frame + `litagin/anime-whisper` 文本 + forced alignment，并在局部/整段坍缩时回退 VAD）；`--asr qwen` 是更干净的文本/时间轴对比线。两条线各自怎么工作、字幕怎么切分详见 [docs/BACKENDS.md](docs/BACKENDS.md)。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
 
 批量处理时，视频按文件大小从小到大处理，并且每个视频的音频（第 1 步）会由后台线程提前一个抽取。抽音频是 CPU/IO 密集、识别和翻译是 GPU 密集，所以“当前视频在 GPU 上跑的同时，提前抽下一个视频的音频”能把提取藏进 GPU 时间里，而不是卡在它前面。提取始终保持单路串行读取，以降低机械盘随机 IO 压力；同一块机械盘上不建议同时跑多个流水线。
 
@@ -42,7 +42,7 @@
 │   ├── anime-whisper/               # 默认 anime ASR 文本模型
 │   ├── whisperseg/model.onnx        # 默认 anime 弱语音 VAD 模型
 │   ├── Qwen3-ASR-1.7B/              # 可选 Qwen ASR 模型（文本内容）
-│   ├── Qwen3-ForcedAligner-0.6B/    # 可选 Qwen/anime 对齐诊断模型
+│   ├── Qwen3-ForcedAligner-0.6B/    # 默认 Anime/Qwen 定时模型
 │   ├── Sakura-GalTransl-7B-v3.7-GGUF/ # 默认翻译模型
 │   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # 备选（更大）翻译模型
 │   └── voice-gender-classifier/     # 可选 ECAPA 性别模型（双语上色用）
@@ -69,7 +69,7 @@
 - OS：Ubuntu 24.04 / Linux x86_64
 - Python：3.11 或 3.12（当前测试主机使用 Python 3.12）
 - FFmpeg：6.1.1
-- `qwen-asr`：0.0.6（Qwen 识别和可选 forced-aligner 诊断；会带入 `torch`、`transformers`、`librosa`、`soundfile`）
+- `qwen-asr`：0.0.6（Qwen 识别与 forced-aligner 运行时；会带入 `torch`、`transformers`、`librosa`、`soundfile`）
 - `onnxruntime-gpu`：1.27.0（默认 anime 后端的 WhisperSeg VAD；由脚本直接导入，不随 `qwen-asr` 带入——CPU-only 主机改装 `onnxruntime`）
 - `torch`：2.12，已在 RTX 50 系（Blackwell）显卡上验证
 - `llama-cpp-python`：0.3.33（翻译使用 GPU 时需安装 CUDA 构建）
@@ -78,7 +78,7 @@
 
 推荐硬件：
 
-- GPU：建议 NVIDIA GPU，显存 12 GB 左右即可。默认 anime 后端加载 anime-whisper 和 WhisperSeg；Qwen 对比线（1.7B 识别 + 0.6B 对齐）在默认 `--qwen-batch-size 24` 下峰值约 11.5 GB，遇到显存不足把它降到 `16`。翻译是独立进程，不会叠加在识别之上。
+- GPU：建议 NVIDIA GPU，显存 12 GB 左右即可。默认 anime 后端依次加载 anime-whisper 和 forced aligner，并使用 WhisperSeg；Qwen 对比线（1.7B 识别 + 0.6B 对齐）在默认 `--qwen-batch-size 24` 下峰值约 11.5 GB，遇到显存不足把它降到 `16`。翻译是独立进程，不会叠加在识别之上。
 - CPU：建议 8 核以上。
 - 内存：建议 16 GB 以上，32 GB 更稳。
 - 磁盘：至少预留 20 GB，用于模型和生成文件。
@@ -118,12 +118,12 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 
 - Anime ASR 文本：[`litagin/anime-whisper`](https://huggingface.co/litagin/anime-whisper)
 - Anime 弱语音 VAD：[`TransWithAI/Whisper-Vad-EncDec-ASMR-onnx`](https://huggingface.co/TransWithAI/Whisper-Vad-EncDec-ASMR-onnx)
+- Anime/Qwen 定时：[`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
 - 翻译模型：[`SakuraLLM/Sakura-GalTransl-7B-v3.7`](https://huggingface.co/SakuraLLM/Sakura-GalTransl-7B-v3.7)
 
-可选对比/诊断模型：
+可选对比模型：
 
 - Qwen 对比线：[`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
-- Qwen forced aligner：[`Qwen/Qwen3-ForcedAligner-0.6B`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)，`--asr qwen` 和 anime 的 `aligner_fallback` / `aligner_only` 诊断模式需要；默认 anime `vad_only` 不需要
 
 `hf` 命令由 `requirements.txt` 里的 `huggingface-hub` 提供。下载到脚本默认目录：
 
@@ -140,12 +140,13 @@ hf download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx \
   --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c \
   --local-dir models/whisperseg
 
-# Qwen 对比线（识别 + 强制对齐；anime forced-aligner 诊断也会用）
-hf download Qwen/Qwen3-ASR-1.7B \
-  --local-dir models/Qwen3-ASR-1.7B
-
+# 默认 Anime 定时与 Qwen 定时
 hf download Qwen/Qwen3-ForcedAligner-0.6B \
   --local-dir models/Qwen3-ForcedAligner-0.6B
+
+# 可选 Qwen 识别对比线
+hf download Qwen/Qwen3-ASR-1.7B \
+  --local-dir models/Qwen3-ASR-1.7B
 
 # 默认翻译模型（Sakura-GalTransl-7B-v3.7，约 6.25GB 高质量量化档）
 hf download SakuraLLM/Sakura-GalTransl-7B-v3.7 \
@@ -159,17 +160,17 @@ hf download SakuraLLM/Sakura-GalTransl-7B-v3.7 \
 models/anime-whisper/config.json
 models/anime-whisper/model.safetensors
 models/whisperseg/model.onnx
+models/Qwen3-ForcedAligner-0.6B/config.json
+models/Qwen3-ForcedAligner-0.6B/model.safetensors
 models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 ```
 
-Qwen 对比线 / forced-aligner 诊断还需要：
+Qwen 对比线还需要：
 
 ```text
 models/Qwen3-ASR-1.7B/config.json
 models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors
 models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
-models/Qwen3-ForcedAligner-0.6B/config.json
-models/Qwen3-ForcedAligner-0.6B/model.safetensors
 ```
 
 更大的 `sakura` 翻译（`--translator sakura`）改用
@@ -203,7 +204,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4
 ```
 
 这条命令就是默认主线：`anime` 识别（anime-whisper + WhisperSeg + semantic scene +
-`vad_only` 定时）、`galtransl` 翻译、生成中文 SRT 和双语 ASS。调参/测试时加
+forced alignment + VAD fallback 定时）、`galtransl` 翻译、生成中文 SRT 和双语 ASS。调参/测试时加
 `--quality-report` 才生成质量报告。常用变体：
 
 ```bash

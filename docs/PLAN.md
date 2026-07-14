@@ -11,9 +11,9 @@ qualities, but they cannot compensate for an ASR mishearing the source dialogue.
 
 The project now has two usable ASR lines with different strengths:
 
-- **Anime (default):** better weak-speech recall and VAD-only timing that avoids forced-aligner
-  collapse, but still makes acoustic misrecognitions in breathy, noisy, overlapping, or
-  dialectal speech.
+- **Anime (default):** better weak-speech recall, with forced alignment for finer timing and
+  automatic VAD fallback for whole-job or local source-unit collapse. It still makes acoustic
+  misrecognitions in breathy, noisy, overlapping, or dialectal speech.
 - **Qwen (comparison line):** cleaner in some ordinary dialogue, with bounded aligner
   drift/collapse recovery, but short WhisperSeg frames can lose linguistic context and it
   has its own weak-speech and hallucination trade-offs.
@@ -51,21 +51,23 @@ audio
   -> WhisperSeg grouped frames
   -> anime-whisper text
   -> anime text cleaner
-  -> vad_only frame timing + readability split
+  -> Qwen forced aligner
+  -> whole-job and local source-unit collapse detection
+  -> VAD-guided / source-unit VAD fallback
+  -> source-authoritative cue shaping
   -> final overlap/filler hygiene
   -> translate / ASS
 ```
 
-Optional diagnostic paths remain available:
+Optional timing comparison remains available:
 
 ```text
 audio
   -> WhisperSeg
   -> anime-whisper text
   -> anime text cleaner
-  -> Qwen forced aligner
-  -> collapse sentinel / recovery
-  -> chunk_entries / finalize_qwen_entries
+  -> vad_only frame-native timing
+  -> readability split / final hygiene
 ```
 
 Semantic scene is implemented and enabled by default for the anime path:
@@ -73,9 +75,10 @@ Semantic scene is implemented and enabled by default for the anime path:
 ```text
 semantic scene
   -> WhisperSeg per scene
+  -> canonical cross-scene frame reconciliation
   -> anime-whisper text
-  -> vad_only frame-native timing
-  -> existing final hygiene chain
+  -> forced alignment with VAD fallback
+  -> source-authoritative cue shaping / final hygiene
 ```
 
 ## Implemented
@@ -111,7 +114,7 @@ Implemented:
 The anime backend uses a two-phase structure:
 
 1. Generate all clip texts with anime-whisper.
-2. Either keep VAD-only frame-native timing, or load the standalone Qwen aligner and align all non-empty clips.
+2. For `vad_only`, keep frame-native timing. Otherwise unload anime-whisper, load the standalone Qwen aligner, and align all non-empty clips.
 
 The Qwen backend still uses the existing `Qwen3ASRModel.from_pretrained(..., forced_aligner=...)` path.
 
@@ -129,7 +132,7 @@ Implemented:
 Important finding:
 
 - WhisperJAV's anime path avoids many collapse problems by using `vad_only`, not by relying on forced-aligner recovery.
-- Short collapsed phrases can evade sentinel logic because WhisperJAV also skips assessment for very short text. For anime, the stronger fix is to avoid forced aligner timing by default.
+- This was the original reason to keep VAD-only as the project default. Stage 7 later superseded that conclusion by adding source-unit-aware collapse detection and local VAD fallback, allowing forced alignment without silently dropping short collapsed phrases.
 
 ### Stage 3: WhisperSeg VAD
 
@@ -144,10 +147,10 @@ Implemented:
 - local-only WhisperSeg model loading
 - CUDA provider preference with provider/device logging
 
-Current anime defaults, matching the WhisperJAV anime preset more closely:
+Anime framing defaults, matching the WhisperJAV anime preset more closely (the timestamp default was changed after Stage 7):
 
 ```text
-timestamp_mode = vad_only
+timestamp_mode = aligner_fallback
 vad_backend = whisperseg
 whisperseg_threshold = 0.35
 whisperseg_max_speech = 5.0
@@ -622,7 +625,8 @@ After anime stabilizes:
 
 - README / README-CN default-command docs must stay in sync with the anime default.
 - Qwen and anime now have separate config surfaces, so qwen no longer inherits anime
-  defaults (`vad_only`, WhisperSeg 5.0/0.5, semantic scenes).
+  backend defaults (WhisperSeg 5.0/0.5 and semantic scenes; Anime timing is now
+  `aligner_fallback`).
 - Selected WJ qwen improvements are ported and benchmarked — see "## Qwen line
   (Stage 6): WJ feature audit and plan" below for the line-cited audit and final
   default decision.
@@ -648,7 +652,8 @@ Problem addressed:
 - Before Stage 5.9, `scripts/pipeline_configs.py::QwenAsrConfig` hosted both qwen and
   anime knobs.
 - Top-level `--asr anime` uses the shared qwen sub-script with `text_backend=anime`.
-- Anime defaults now live in the shared config: `timestamp_mode=vad_only`,
+- Anime defaults now live in the shared config. At this stage the timing default was
+  `vad_only` (changed to `aligner_fallback` after Stage 7), with
   `vad_backend=whisperseg`, `whisperseg_max_group=5.0`,
   `whisperseg_chunk_threshold=0.5`, and `scene_backend=semantic`.
 - If `transcribe_qwen()` starts honoring `vad_backend` / `scene_backend` for qwen without
@@ -670,7 +675,8 @@ Implemented shape:
   aligner-fallback recovery + WJ-style generation/cue-regrouping knobs; step-down
   remains selectable but OFF by default.
 - `AnimeAsrConfig`: anime-only backend defaults and help text. Keep the current anime
-  default: anime-whisper text, WhisperSeg 5.0/0.5, semantic scene, `vad_only` timing.
+  framing profile: anime-whisper text, WhisperSeg 5.0/0.5, and semantic scene. Its current
+  timing default is `aligner_fallback`; `vad_only` remains an A/B mode.
 - Top-level CLI:
   - `--qwen-*` affects only `--asr qwen`.
   - `--anime-*` affects only `--asr anime`.
@@ -978,23 +984,22 @@ anime-whisper model itself. It came from two project-side mismatches:
 1. Semantic scenes were cut at the same boundaries, but WhisperJAV feeds ASR/VAD with a
    padded `asr_processing` scene window. This project now mirrors that with
    `scene_asr_pad_seconds=0.35`.
-2. Anime `vad_only` output was still entering the aligned-stream `chunk_entries()` splitter,
+2. At that time, Anime `vad_only` output was still entering the aligned-stream `chunk_entries()` splitter,
    so one WhisperJAV frame could be over-fragmented by aligner-oriented splitting.
-   The default anime `vad_only` path now keeps VAD frame timing first, then applies only a
+   The then-default Anime path was changed to keep VAD frame timing first, then apply only a
    length-based readability split inside a frame (long comma segments >50 chars, hard
    80-character cap; sentence punctuation and `…` never split) before final hygiene. Sentence
    splitting was tried and reverted because anime-whisper's per-pause sentence enders
    over-fragmented frames into flash cues.
 
-Outcome: the default anime ASS now matches WhisperJAV anime closely on the primary long-form
-clip while retaining project output hygiene (no final overlaps). VAD-only remains the default,
-but the forced-align path is now a production candidate rather than diagnostic-only; the
-remaining gates are recorded below.
+Outcome: the anime ASS matched WhisperJAV anime closely on the primary long-form clip while
+retaining project output hygiene (no final overlaps). That established the VAD-only baseline;
+the forced-align follow-up below subsequently passed its production gates and became default.
 
-### Planned Anime forced-align default evaluation
+### Anime forced-align default evaluation
 
-Status: cue shaping implemented and validated on one long-form video; default switch blocked
-on text-preservation fixes, scene-boundary reconciliation, and multi-video review.
+Status: completed; `aligner_fallback` is now the Anime default. `vad_only` remains available
+as a comparison mode and `aligner_only` as a strict diagnostic mode.
 
 Anime forced-align now treats anime-whisper source punctuation as authoritative. Pure aligner
 character gaps no longer create cue boundaries inside one source unit; hard sentence endings
@@ -1002,12 +1007,12 @@ character gaps no longer create cue boundaries inside one source unit; hard sent
 remain valid boundaries. This removed grammatical tail fragments such as standalone `か?`,
 `です…`, and `ましょう…` without changing Anime VAD-only or Qwen shaping.
 
-On the 137-minute local MIDV-890 evaluation video, the revised path changed the Japanese cue
+On the 137-minute primary evaluation video, the revised path changed the Japanese cue
 count from 434 to 370 (VAD-only: 333). Forced-align cues under one second fell from 114 to 55,
 and cues over six seconds fell to 12 (VAD-only: 69). Its final Chinese ASS had no overlaps,
 16 cues under 1.5 seconds, and 21 cues over six seconds. Seven collapsed alignments were all
-recovered through the existing VAD fallback. This is enough to keep testing the path, but not
-enough to replace the default from one title.
+recovered through the existing VAD fallback. This first result justified the broader fixes and
+multi-video validation below, but was not used alone to change the default.
 
 The remaining 21 normalized Japanese characters of difference from VAD-only have three
 distinct causes:
@@ -1027,19 +1032,28 @@ distinct causes:
    spans before ownership was tested. The expanded centers moved beyond `keep_hi`, so valid
    cues were discarded. Ownership must use the raw aligned span, then apply the display floor.
 
-Implementation order, deliberately one behavior change at a time:
+Completed changes and acceptance evidence:
 
-1. Fix aligned-cue ownership to claim with the raw aligner span and apply `min_duration` only
-   after ownership. Cover short cues at a frame end and preserve Qwen behavior.
-2. Make shared filler collapse conservative: retain normal double repetition, collapse only
-   sufficiently strong filler-loop evidence, and A/B both Qwen and Anime forced-align.
-3. Implement the planned semantic-scene boundary reconciliation below so all backends receive
-   one canonical WhisperSeg frame set while retaining one-sided weak-speech detections.
-4. Re-run MIDV-890 VAD-only and forced-align. Require no unexplained source-text loss, no
-   duplicate boundary cues, no overlap, and no regression in short-cue/readability metrics.
-5. Run the same A/B on at least two additional videos with different dialogue density and weak
-   speech. Switch the Anime default only if manual playback confirms a net timing/readability
-   gain without source-text or translation regression.
+1. Aligned-cue ownership now uses the raw aligner span before applying the minimum display
+   duration, preserving valid short cues near frame boundaries without changing Qwen's model
+   text.
+2. Shared filler collapse is conservative: it keeps ordinary double repetition and only
+   collapses 3+ explicitly punctuation-separated filler loops.
+3. Semantic-scene WhisperSeg results are reconciled into one canonical frame set shared by
+   Anime and Qwen. This removes duplicate jobs from padded scene overlap while preserving
+   one-sided weak-speech detections.
+4. Anime timing remains source-authoritative. In addition to the whole-job collapse sentinel,
+   missing, zero-span, or same-start source units trigger a local VAD fallback for that source
+   unit only. Healthy units in the same frame keep their aligner timing; `aligner_only` retains
+   strict diagnostic behavior.
+5. Live GPU and raw-replay checks agreed. On the primary clip, VAD-only and forced-align had
+   identical normalized Japanese source text. Two additional clips differed only where the new
+   conservative filler rule intentionally retained or collapsed a punctuation-separated loop.
+   All three forced-align outputs had no final overlap and no cue longer than 8 seconds.
+
+Verdict: forced alignment now improves Anime cue timing/readability without unexplained source
+text loss in the evaluated set, and both global and short local collapse cases have a bounded
+VAD fallback. The Anime default is therefore `aligner_fallback`.
 
 ## Stage 8: Qwen line follow-up (historical baseline)
 

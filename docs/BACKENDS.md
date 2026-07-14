@@ -17,8 +17,8 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen      # Qwen 对�
 
 1. semantic scene 先把整段音频切成 12-48 秒的声学场景。
 2. WhisperSeg 在每个场景内检测并组合短语音 frame。`max_speech=5.0` 现在是软切分目标：连续语音会在 `4--8` 秒窗口内优先选概率弱谷，硬上限为 8 秒；找不到合格谷才使用受限回退。anime 其余默认值是 `max_group=5.0`、`chunk_threshold=0.5`、`min_frame=0.1`。
-3. `litagin/anime-whisper` 逐 frame 识别文本，anime cleaner 清理省略号-only 和短重复伪迹。
-4. 默认 `vad_only` 保持 frame 时间轴、整帧不拆，只做基于长度的可读性切分：超过 50 个内容字符的长段可在逗号处切，逗号-less 长段最多 80 个内容字符硬切；句末标点和 `…` 都不切（anime-whisper 在每个软停顿都撒句末标点，按它切会碎成一闪而过的短字幕）。这样避免 anime 文本走 Qwen forced aligner 时的坍缩/碎片化，同时保证字幕停留时间够长、能读完。
+3. 相邻 semantic scene 的 padded WhisperSeg 结果先归并为一套 canonical frame，避免边界重叠区被重复识别，同时保留只在单侧检出的弱语音。`litagin/anime-whisper` 再逐 frame 识别文本，anime cleaner 清理省略号-only 和短重复伪迹。
+4. 默认 `aligner_fallback` 用 `Qwen3-ForcedAligner-0.6B` 给 anime 文本分配逐字时间。整段对齐异常时沿用 VAD-guided frame fallback；即使整段看似正常，只要某个原始文本单元缺失、零跨度或与前一单元挤在同一起点，也只把该局部单元回退到对应的 VAD 时间，不牵连同 frame 内的正常对齐。最终 cue 以 anime 原文标点为边界依据，并保留 80 字 / 8 秒安全上限。`--anime-timestamp-mode vad_only` 仍可用于 A/B 对比。
 
 最终中文显示层独立于上述 ASR cue 塑形：超过 20 个可见字符时，会在最接近中点的
 `。？！.!?` 后插入显示换行。它不增加字幕条数，也不改变时间轴；ASS 将该换行写为 `\N`。
@@ -42,12 +42,12 @@ Qwen A/B 对比时，如果想关掉 VAD 切片、回退到固定 30 秒均匀�
 | | **Anime（默认）** | **Qwen（`--asr qwen`）** |
 |---|---|---|
 | 文本质量 | 当前 WJ 对比里弱语音召回最好；局部短句仍可能误听 | 正常语音有时更干净；喘息/轻声弱一些 |
-| 时间漂移 | VAD-only 避免 anime forced-aligner 坍缩 | WhisperSeg frame + aligner fallback recovery 明显减少旧 Qwen 的漂移/坍缩问题 |
+| 时间漂移 | forced aligner 提供细粒度时间；整段或局部坍缩自动回退 VAD | WhisperSeg frame + aligner fallback recovery 明显减少旧 Qwen 的漂移/坍缩问题 |
 | 速度 | Whisper-large 风格逐 frame 生成，慢于批量 Qwen | 批量主识别快 |
 | 轻声召回 | 当前默认最强；重点复查误听短句 | WhisperSeg 后已有改善，但喘息/轻声仍弱于 anime |
 | 专有名词/人名 | 可能听错人名和生僻词 | 同样可能听错 |
 | 后处理 | anime cleaner + 共享的重叠/闪字幕清理 | 共享清理 + Qwen 失控重复折叠；想要额外幻觉过滤用 `--qwen-filter-hallucinations` |
-| 显存 | anime-whisper + WhisperSeg；只有非 `vad_only` 诊断模式才加载 aligner | 1.7B + 0.6B，默认 `--qwen-batch-size 24` 约 11.5 GB |
+| 显存 | anime-whisper 与 0.6B aligner 分两阶段依次加载，另有 WhisperSeg | 1.7B + 0.6B，默认 `--qwen-batch-size 24` 约 11.5 GB |
 
 **推荐：** 当前 JAV/anime 风格素材默认使用 Anime 主线。局部误听明显时，用 `--asr qwen` 做对比。
 

@@ -264,7 +264,7 @@ def test_build_qwen_command_asr_anime_selects_anime_backend(tmp_path):
     assert cmd[cmd.index("--text-backend") + 1] == "anime"
     # anime defaults reach the shared sub-script through AnimeAsrConfig serialization
     assert cmd[cmd.index("--vad-backend") + 1] == "whisperseg"
-    assert cmd[cmd.index("--timestamp-mode") + 1] == "vad_only"
+    assert cmd[cmd.index("--timestamp-mode") + 1] == "aligner_fallback"
     assert cmd[cmd.index("--scene-backend") + 1] == "semantic"
     assert cmd[cmd.index("--whisperseg-chunk-threshold") + 1] == "0.5"
 
