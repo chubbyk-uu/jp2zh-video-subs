@@ -120,6 +120,7 @@ def test_qwen_and_anime_backend_defaults_are_separate():
     assert qwen.whisperseg_context_hard_max_seconds == 15.0
     assert anime.text_backend == "anime"
     assert anime.timestamp_mode == "vad_only"
+    assert anime.phrase_max_chars == 80
     assert anime.vad_backend == "whisperseg"
     assert anime.scene_backend == "semantic"
     assert qwen.whisperseg_chunk_threshold == 1.0

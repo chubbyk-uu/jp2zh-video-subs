@@ -1237,6 +1237,91 @@ def test_entries_from_raw_anime_schema():
     assert "おはよう" in "".join(e.text for e in entries)
 
 
+def _aligned_raw(text: str, items: list[dict], *, backend: str = "anime") -> dict:
+    chunk = {
+        "start": 0.0, "end": 8.0, "keep_lo": 0.0, "keep_hi": 8.0,
+        "speech_regions": [], "regroup_regions": [], "items": items,
+    }
+    if backend == "anime":
+        chunk.update({"raw_text": text, "clean_text": text})
+    else:
+        chunk.update({"language": "Japanese", "text": text})
+    return {
+        "text_backend": backend, "timestamp_mode": "aligner_fallback",
+        "chunk_seconds": 30.0, "chunk_overlap_seconds": 3.0, "duration": 8.0,
+        "context": "", "chunks": [chunk],
+    }
+
+
+def test_anime_forced_alignment_keeps_one_source_unit_across_aligner_gap():
+    text = "一緒にイきましょう…"
+    chars = list("一緒にイきましょう")
+    items = []
+    for i, char in enumerate(chars):
+        shift = 2.6 if i >= 5 else 0.0
+        items.append({"text": char, "start": i * 0.2 + shift, "end": i * 0.2 + shift + 0.15})
+
+    entries = entries_from_raw(
+        _aligned_raw(text, items),
+        _shaping_args(text_backend="anime", phrase_max_chars=80),
+    )
+
+    assert [e.text for e in entries] == [text]
+    assert entries[0].start == pytest.approx(0.0)
+    assert entries[0].end > 4.0
+
+
+def test_anime_forced_alignment_preserves_hard_source_sentence_boundaries():
+    text = "大丈夫ですか？はい。"
+    chars = list("大丈夫ですかはい")
+    items = [
+        {"text": char, "start": i * 0.2, "end": i * 0.2 + 0.15}
+        for i, char in enumerate(chars)
+    ]
+
+    entries = entries_from_raw(
+        _aligned_raw(text, items),
+        _shaping_args(text_backend="anime", phrase_max_chars=80),
+    )
+
+    assert [e.text for e in entries] == ["大丈夫ですか？", "はい。"]
+
+
+def test_anime_forced_alignment_retains_80_character_safety_cap():
+    text = "あ" * 90
+    items = [
+        {"text": char, "start": i * 0.05, "end": i * 0.05 + 0.04}
+        for i, char in enumerate(text)
+    ]
+
+    entries = entries_from_raw(
+        _aligned_raw(text, items),
+        _shaping_args(
+            text_backend="anime",
+            phrase_max_chars=80,
+            collapse_filler_repetition=False,
+        ),
+    )
+
+    assert [len(e.text) for e in entries] == [80, 10]
+
+
+def test_qwen_alignment_still_splits_large_internal_gap():
+    text = "今日は仕事明日は休み"
+    chars = list(text)
+    items = []
+    for i, char in enumerate(chars):
+        shift = 2.5 if i >= 5 else 0.0
+        items.append({"text": char, "start": i * 0.2 + shift, "end": i * 0.2 + shift + 0.15})
+
+    entries = entries_from_raw(
+        _aligned_raw(text, items, backend="qwen"),
+        _shaping_args(text_backend="qwen", phrase_max_chars=80, phrase_max_internal_gap=1.5),
+    )
+
+    assert [e.text for e in entries] == ["今日は仕事", "明日は休み"]
+
+
 def test_entries_from_raw_anime_vad_only_rebuilds_from_speech_regions():
     raw = {
         "text_backend": "anime", "timestamp_mode": "aligner_fallback",

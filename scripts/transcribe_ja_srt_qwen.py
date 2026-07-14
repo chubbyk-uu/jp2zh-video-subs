@@ -465,6 +465,7 @@ def sentences_from_alignment(
     max_char_seconds: float,
     collapse_fillers: bool = True,
     ellipsis_hard_split: bool = True,
+    split_internal_gaps: bool = True,
 ) -> list[SubtitleEntry]:
     """Build cues from the raw transcript, timed via the aligner stream.
 
@@ -508,20 +509,31 @@ def sentences_from_alignment(
             ci += 1
         if not tokens:
             continue
-        # Break on large internal time gaps (pauses between merged utterances).
+        # Qwen may merge separate utterances into one transcript, so its aligner
+        # gaps remain useful cue boundaries. Anime forced alignment starts from an
+        # already bounded WhisperSeg frame; an aligner gap inside one punctuated
+        # source unit is timing evidence, not permission to invent a text boundary.
         segments: list[list[tuple[str, float, float, bool]]] = [[tokens[0]]]
         for idx, tok in enumerate(tokens[1:], start=1):
             prev = segments[-1][-1]
             gap = tok[1] - prev[2]
-            # anime: a … sitting on a real pause is a sentence boundary; the same … with
-            # no gap is just trailing intonation and stays joined. Fires below
-            # max_internal_gap so tighter pauses still break, but only right after a ….
-            if not ellipsis_hard_split and "…" in prev[0] and gap > ELLIPSIS_SPLIT_GAP_SECONDS:
+            # Optional legacy ellipsis-gap split. Anime forced alignment disables
+            # every internal-gap boundary and trusts the source punctuation instead.
+            if (
+                split_internal_gaps
+                and not ellipsis_hard_split
+                and "…" in prev[0]
+                and gap > ELLIPSIS_SPLIT_GAP_SECONDS
+            ):
                 segments.append([tok])
                 continue
             left_text = "".join(t[0] for t in segments[-1])
             right_text = "".join(t[0] for t in tokens[idx : min(len(tokens), idx + 8)])
-            if gap > max_internal_gap and not should_keep_across_internal_gap(left_text, right_text, gap, max_internal_gap):
+            if (
+                split_internal_gaps
+                and gap > max_internal_gap
+                and not should_keep_across_internal_gap(left_text, right_text, gap, max_internal_gap)
+            ):
                 segments.append([tok])
             else:
                 segments[-1].append(tok)
@@ -1222,6 +1234,7 @@ def chunk_entries(
     identical output for the same post-processing knobs. A cue is kept by the one
     clip whose [keep_lo, keep_hi) window holds the cue center.
     """
+    anime_backend = getattr(args, "text_backend", "qwen") == "anime"
     sentence_entries = sentences_from_alignment(
         text,
         items,
@@ -1232,7 +1245,8 @@ def chunk_entries(
         max_internal_gap=args.phrase_max_internal_gap,
         max_char_seconds=args.phrase_max_char_seconds,
         collapse_fillers=getattr(args, "collapse_filler_repetition", True),
-        ellipsis_hard_split=getattr(args, "text_backend", "qwen") != "anime",
+        ellipsis_hard_split=not anime_backend,
+        split_internal_gaps=not anime_backend,
     )
     kept = [e for e in sentence_entries if keep_lo <= (e.start + e.end) / 2.0 < keep_hi]
     # WJ REGROUP_JAV cue merge is applied *within this clip's own cues* only (WJ
@@ -1240,7 +1254,7 @@ def chunk_entries(
     # a clip's back-to-back sentences into one cue while a real clip/frame boundary
     # (silence, scene edge) still separates speaker turns. qwen only; anime is
     # frame-native (WJ Branch B: no gap merge).
-    if getattr(args, "text_backend", "qwen") != "anime":
+    if not anime_backend:
         kept = merge_close_cues_with_regions(
             kept,
             regroup_regions or [],

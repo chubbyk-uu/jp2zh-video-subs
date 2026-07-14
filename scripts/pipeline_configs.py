@@ -152,6 +152,10 @@ class QwenAsrConfig(BaseAsrConfig):
 class AnimeAsrConfig(BaseAsrConfig):
     """anime-whisper backend defaults forwarded to the shared qwen/anime sub-script."""
 
+    # VAD-only uses its independent 50/80 frame-native splitter. This value governs
+    # forced-align modes, where 26 could isolate a sentence-final particle even
+    # though the aligned source unit was otherwise valid.
+    phrase_max_chars: int = arg_field(80, help="Anime forced-align cue safety cap (VAD-only uses its own 50/80 splitter)")
     text_backend: str = arg_field("anime", choices=("qwen", "anime"), help="ASR text source")
     text_model: str = arg_field("models/anime-whisper", help="anime-whisper model path")
     timestamp_mode: str = arg_field(
