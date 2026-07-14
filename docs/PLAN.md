@@ -987,8 +987,59 @@ anime-whisper model itself. It came from two project-side mismatches:
    over-fragmented frames into flash cues.
 
 Outcome: the default anime ASS now matches WhisperJAV anime closely on the primary long-form
-clip while retaining project output hygiene (no final overlaps). Keep forced-aligner modes
-diagnostic only unless new evidence shows a net gain over `vad_only`.
+clip while retaining project output hygiene (no final overlaps). VAD-only remains the default,
+but the forced-align path is now a production candidate rather than diagnostic-only; the
+remaining gates are recorded below.
+
+### Planned Anime forced-align default evaluation
+
+Status: cue shaping implemented and validated on one long-form video; default switch blocked
+on text-preservation fixes, scene-boundary reconciliation, and multi-video review.
+
+Anime forced-align now treats anime-whisper source punctuation as authoritative. Pure aligner
+character gaps no longer create cue boundaries inside one source unit; hard sentence endings
+(`。？！?!`), original WhisperSeg frame boundaries, and the 80-character / 8-second safety caps
+remain valid boundaries. This removed grammatical tail fragments such as standalone `か?`,
+`です…`, and `ましょう…` without changing Anime VAD-only or Qwen shaping.
+
+On the 137-minute local MIDV-890 evaluation video, the revised path changed the Japanese cue
+count from 434 to 370 (VAD-only: 333). Forced-align cues under one second fell from 114 to 55,
+and cues over six seconds fell to 12 (VAD-only: 69). Its final Chinese ASS had no overlaps,
+16 cues under 1.5 seconds, and 21 cues over six seconds. Seven collapsed alignments were all
+recovered through the existing VAD fallback. This is enough to keep testing the path, but not
+enough to replace the default from one title.
+
+The remaining 21 normalized Japanese characters of difference from VAD-only have three
+distinct causes:
+
+1. **Eight characters are over-aggressive shared filler collapse.** Anime forced-align and
+   Qwen both enter `collapse_filler_repetitions`; Anime VAD-only does not. Normal double
+   repetitions such as `ふふっ`, `ああ`, and `ねえねえ` can therefore lose real laughter,
+   vocalization, or emphasis. Two repetitions should remain; any revised collapse rule must
+   be conservative and regression-tested on both aligned backends.
+2. **Ten characters are duplicated semantic-scene boundary text.** Adjacent padded scene
+   windows independently detected and recognized overlapping speech (`エロい…エロいって`,
+   and a partial `すっごい、おちん` before the complete next cue). Forced-align ownership
+   removed those partial duplicates; VAD-only retained them. These characters must not be
+   restored. The shared canonical-frame reconciliation below is the source-level fix.
+3. **Three characters expose a real ownership-order bug.** The forced aligner returned valid
+   timestamps for short `もぐ` and `ぁ` cues, but `min_duration=0.8` expanded their display
+   spans before ownership was tested. The expanded centers moved beyond `keep_hi`, so valid
+   cues were discarded. Ownership must use the raw aligned span, then apply the display floor.
+
+Implementation order, deliberately one behavior change at a time:
+
+1. Fix aligned-cue ownership to claim with the raw aligner span and apply `min_duration` only
+   after ownership. Cover short cues at a frame end and preserve Qwen behavior.
+2. Make shared filler collapse conservative: retain normal double repetition, collapse only
+   sufficiently strong filler-loop evidence, and A/B both Qwen and Anime forced-align.
+3. Implement the planned semantic-scene boundary reconciliation below so all backends receive
+   one canonical WhisperSeg frame set while retaining one-sided weak-speech detections.
+4. Re-run MIDV-890 VAD-only and forced-align. Require no unexplained source-text loss, no
+   duplicate boundary cues, no overlap, and no regression in short-cue/readability metrics.
+5. Run the same A/B on at least two additional videos with different dialogue density and weak
+   speech. Switch the Anime default only if manual playback confirms a net timing/readability
+   gain without source-text or translation regression.
 
 ## Stage 8: Qwen line follow-up (historical baseline)
 
