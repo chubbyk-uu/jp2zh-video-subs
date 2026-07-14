@@ -37,4 +37,6 @@ CLAUDE.md
 *.log
 *.tmp
 docs/current-experiments.md
+
+# Local project planning notes
 docs/PLAN.md
