@@ -1,0 +1,4 @@
+interface:
+  display_name: "日中双语 ASS 审校"
+  short_description: "全文审校日中双语 ASS，并验证结构与可选双版本差异"
+  default_prompt: "使用 $review-bilingual-ass 全文审校这个日中双语 ASS；没有第二份 ASR 时按单文件完成，有第二份时再辅助对照。"
