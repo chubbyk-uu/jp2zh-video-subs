@@ -1,6 +1,6 @@
 # Project Quality Improvement Plan
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 ## Project Objective
 
@@ -1044,6 +1044,91 @@ Planned implementation, after a focused boundary audit:
 
 Do not implement center-only scene ownership as the final solution. Success means no lost
 one-sided weak speech, no duplicate boundary cue, and unchanged non-boundary framing.
+
+## Planned: Windows CUDA GUI portable distribution
+
+Status: approved future objective; implementation has not started.
+
+The desired release is a Windows x64 **portable folder** with a desktop GUI. A user should
+be able to unzip the folder and launch the application without separately installing Python,
+FFmpeg, or project Python packages. It must retain CUDA acceleration for the supported NVIDIA
+GPU stack. This is deliberately a folder distribution, not a single self-extracting executable:
+the runtime, CUDA-related DLLs, and models are too large and too dynamically loaded for a
+single-file package to be a good first target.
+
+The first GUI release is a batch subtitle-generation application, not a video player or
+timeline/subtitle editor. Its user-facing scope is:
+
+- drag/drop one or more videos or a directory;
+- select the normal Anime/Qwen ASR and GalTransl/Sakura translation presets;
+- select output/work locations and common options such as bilingual ASS, resume, and quality
+  report;
+- show live per-job stage, log output, failure, cancellation, retry, and links to results;
+- diagnose required models, FFmpeg, available CUDA providers/GPU, disk space, and common
+  configuration errors before a long job starts.
+
+The intended portable layout is:
+
+```text
+jp2zh-video-subs/
+  launch.bat or launcher.exe
+  runtime/       embedded Python and pinned package runtime
+  app/           project scripts and GUI
+  bin/ffmpeg.exe
+  models/        separately managed local model files
+  config/
+  outputs/
+  work/
+```
+
+NVIDIA display drivers remain a machine prerequisite and are not bundled. The exact supported
+Windows version, driver floor, Python version, CUDA/Torch wheel set, ONNX Runtime provider,
+and CUDA build of `llama-cpp-python` must be fixed and validated on native Windows before a
+release is claimed to support CUDA.
+
+Model weights are not part of the basic program archive. They should be distributed as
+separate optional archives (default Anime + WhisperSeg + GalTransl, optional Qwen/aligner,
+optional Sakura-14B), with a model manifest that checks required paths, sizes, and hashes.
+This avoids forcing every user to download every backend and reflects the current model
+footprint: the local `models/` directory is approximately 23 GB when all supported models are
+present.
+
+### Implementation order
+
+1. **Define the Windows support contract.** Choose Windows x64 versions and a tested NVIDIA
+   driver/CUDA compatibility baseline. Create a reproducible native-Windows environment
+   specification with pinned Python and GPU packages. Do not claim generic CUDA compatibility.
+2. **Add a GUI-facing pipeline contract.** Keep the CLI as a supported interface. Add
+   structured stage/progress/error events and cooperative cancellation around the existing
+   extraction, ASR, translation, ASS, and report stages. Preserve the current subprocess
+   boundary between ASR and translation so their GPU memory is not intentionally concurrent.
+3. **Implement the GUI in the existing WSL development workflow.** Use a desktop toolkit
+   (PySide6 is the current candidate) and drive the existing pipeline rather than duplicate its
+   ASR/translation logic. Make project-root resolution work from a source checkout and from the
+   portable folder.
+4. **Add preflight and model management.** Implement the runtime/model/FFmpeg/CUDA checks,
+   user-readable remediation messages, and model manifest/import/download workflow. The GUI
+   must fail clearly when a model or CUDA provider is unavailable rather than silently using an
+   unintended backend.
+5. **Assemble a development portable folder on native Windows.** Bundle FFmpeg and an embedded
+   Python runtime with the pinned dependencies. Start with `launch.bat`; only add a thin
+   launcher executable later if it materially improves usability. Do not start with a
+   PyInstaller single-file executable.
+6. **Run native Windows GPU validation.** On a clean unpacked folder, test the default Anime
+   path, Qwen comparison path, both translators, batch/resume/cancel behavior, missing-model
+   handling, and GPU/provider diagnostics. At least one additional NVIDIA GPU/driver
+   combination should be tested before public release.
+7. **Publish separated archives and release instructions.** Ship the program package and
+   model packages separately, document supported hardware/driver expectations, and retain a
+   reproducible build script for later releases.
+
+### Development-environment constraint
+
+Most implementation work should remain in the current WSL/Linux checkout. Native Windows is
+required only for dependency assembly and final CUDA/portable-folder verification; WSL, Wine,
+and CPU-only CI cannot establish that the Windows CUDA DLL/provider combination works. The
+first task when this work begins is therefore the GUI-facing pipeline contract, not a Windows
+environment migration.
 
 ### Files (Stage 6.1)
 
