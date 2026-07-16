@@ -7,6 +7,7 @@ from pathlib import Path
 
 from cli_config import add_dataclass_arguments
 from pipeline_configs import BilingualAssConfig
+from portable_runtime import project_root
 from srt_utils import parse_time
 
 
@@ -30,7 +31,7 @@ DEFAULT_PLAY_RES_Y = BILINGUAL_DEFAULTS.play_res_y
 # Speaker gender per cue comes from an ECAPA-TDNN classifier (VoxCeleb-trained), which
 # is more stable than raw pitch on noisy or music-laden audio. We colour only cues
 # classified confidently; the rest keep the default colour rather than risk a wrong guess.
-DEFAULT_GENDER_MODEL = Path(__file__).resolve().parent.parent / "models" / "voice-gender-classifier"
+DEFAULT_GENDER_MODEL = project_root(Path(__file__)) / "models" / "voice-gender-classifier"
 DEFAULT_GENDER_CONFIDENCE = BILINGUAL_DEFAULTS.gender_confidence
 MIN_GENDER_SECONDS = 0.30  # cues shorter than this carry too little signal to trust
 

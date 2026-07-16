@@ -31,15 +31,44 @@ def test_main_window_has_model_and_cleanup_choices(tmp_path):
         assert window.cleanup_combo.count() == 3
         assert window.cleanup_combo.findData(CleanupPolicy.FINAL_ONLY.value) >= 0
         assert window.width() >= 1120
-        assert window.asr_batch_spin.value() > 0
+        assert window.asr_batch_combo.currentData() == 24
+        assert [window.asr_batch_combo.itemData(i) for i in range(4)] == [24, 16, 8, 4]
         assert not window.advanced_dialog.isVisible()
         assert window.colour_buttons["zh"].text().startswith("#")
         assert window.bilingual_check.isChecked()
         assert window.copy_check.isChecked()
         assert not window.recursive_check.isChecked()
         assert not window.resume_check.isChecked()
+        assert window.log_toggle.isChecked()
+        assert not window.guidance_group.isHidden()
+        assert window.guidance_label.alignment() & window_module.Qt.AlignmentFlag.AlignVCenter
+        assert window.log_edit.maximumHeight() == 130
     finally:
         window.close()
+
+
+def test_log_panel_can_be_hidden_and_setting_is_restored(tmp_path):
+    app = application()
+    settings = window_settings(tmp_path)
+    first = MainWindow(settings=settings)
+    try:
+        first.show()
+        first.log_toggle.setChecked(False)
+        app.processEvents()
+        assert not first.log_edit.isVisible()
+        first._save_settings()
+        settings.sync()
+    finally:
+        first.close()
+
+    second = MainWindow(settings=settings)
+    try:
+        second.show()
+        app.processEvents()
+        assert not second.log_toggle.isChecked()
+        assert not second.log_edit.isVisible()
+    finally:
+        second.close()
 
 
 def test_main_window_add_paths_expands_folder_and_deduplicates(tmp_path):
@@ -175,7 +204,7 @@ def test_saved_settings_restore_in_new_window(tmp_path):
     settings = window_settings(tmp_path)
     first = MainWindow(settings=settings)
     try:
-        first.asr_batch_spin.setValue(13)
+        first._set_asr_batch_value(13)
         first.quality_check.setChecked(True)
         first.resume_check.setChecked(True)
         first.cleanup_combo.setCurrentIndex(first.cleanup_combo.findData(CleanupPolicy.FINAL_ONLY.value))
@@ -188,7 +217,7 @@ def test_saved_settings_restore_in_new_window(tmp_path):
 
     second = MainWindow(settings=settings)
     try:
-        assert second.asr_batch_spin.value() == 13
+        assert second.asr_batch_combo.currentData() == 13
         assert second.quality_check.isChecked()
         assert second.resume_check.isChecked()
         assert second.cleanup_combo.currentData() == CleanupPolicy.FINAL_ONLY.value

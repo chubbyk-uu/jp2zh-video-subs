@@ -1,9 +1,9 @@
 # GUI 测试计划与结果记录模板
 
-状态：待执行  
+状态：执行中
 适用范围：源码开发版 GUI，以及后续 Windows CUDA 绿色目录版  
 基线提交：`b6cec92 Add source GUI for subtitle pipeline`  
-最近自动测试基线：`323 passed`
+最近自动测试基线：`330 passed`
 
 ## 1. 目标
 
@@ -196,6 +196,7 @@ git diff --check
 |---|---|---|---|---|
 | BATCH-001 | P0 | 队列加入 V1、V2 后开始 | 严格逐个处理，不并行加载两套模型 | NOT RUN |
 | BATCH-002 | P1 | 观察单任务及总进度 | 阶段完成后进度前进，最终总进度 100% | NOT RUN |
+| BATCH-003 | P0 | 观察 Anime 分块识别、对齐和翻译 | 保持单一总体进度条；块/字幕完成时百分比持续前进，状态文字显示当前工作 | PASS |
 | BATCH-003 | P1 | 第一项完成后观察第二项 | 自动开始第二项，输出归属正确 | NOT RUN |
 | BATCH-004 | P1 | 全部完成后检查按钮 | 开始、编辑、重试、打开目录状态正确 | NOT RUN |
 
@@ -231,15 +232,17 @@ git diff --check
 
 | ID | 优先级 | 操作 | 预期 | 结果 |
 |---|---|---|---|---|
-| WIN-001 | P0 | 在无项目 Python 环境中解压并启动 | 不安装 Python/pip 也能启动 GUI | NOT RUN |
-| WIN-002 | P0 | 断开 WSL 后启动 | 不依赖 WSL 文件或进程 | NOT RUN |
-| WIN-003 | P0 | 运行设备检测 | 正确识别 Windows CUDA 三个组件 | NOT RUN |
-| WIN-004 | P0 | 用 V1 跑默认流程 | Windows 原生 CUDA 流程完成 | NOT RUN |
-| WIN-005 | P0 | 验证内置 FFmpeg | 不依赖系统 PATH 中的 FFmpeg | NOT RUN |
-| WIN-006 | P1 | 从中文、空格、长路径运行 | 输入、工作、输出和复制均成功 | NOT RUN |
-| WIN-007 | P1 | 移动整个绿色目录后再启动 | 相对路径和模型发现仍正常 | NOT RUN |
+| WIN-001 | P0 | 在无项目 Python 环境中解压并启动 | 不安装 Python/pip 也能启动 GUI | PASS |
+| WIN-002 | P0 | 断开 WSL 后启动 | 不依赖 WSL 文件或进程 | PASS |
+| WIN-003 | P0 | 运行设备检测 | 正确识别 Windows CUDA 三个组件 | PASS |
+| WIN-004 | P0 | 用 V1 跑默认流程 | Windows 原生 CUDA 流程完成 | PASS |
+| WIN-005 | P0 | 验证内置 FFmpeg | 不依赖系统 PATH 中的 FFmpeg | PASS |
+| WIN-006 | P1 | 从中文、空格、长路径运行 | 输入、工作、输出和复制均成功 | PASS |
+| WIN-007 | P1 | 移动整个绿色目录后再启动 | 相对路径和模型发现仍正常 | PASS |
 | WIN-008 | P1 | 在另一台兼容 NVIDIA 电脑解压测试 | 无开发机残留依赖 | NOT RUN |
-| WIN-009 | P1 | 检查压缩包清单和许可证 | 运行时、模型、FFmpeg、许可证和 notices 完整 | NOT RUN |
+| WIN-009 | P1 | 检查压缩包清单和许可证 | 运行时、模型、FFmpeg、许可证和 notices 完整 | PASS |
+| WIN-010 | P0 | 双击原生 EXE 并开始处理 | GUI 不依赖 CMD；主流水线及 FFmpeg/模型子进程不弹控制台窗口 | PASS |
+| WIN-011 | P1 | 显示/隐藏日志并重启 | 日志区域折叠后任务区扩展；选择被记忆；失败时自动展开 | PASS |
 
 ## 10. 推荐执行顺序
 
@@ -440,8 +443,52 @@ git diff --check
 | 结果 | PASS：Microsoft YaHei 正常加载；中文黄色 36 号、日文灰色 24 号及黑色描边正确；两行层级和底部边距正常，无重叠或越界 |
 | 边界 | 证明 ASS 文件可被标准 libass 正确渲染；Windows 目标播放器仍需原生环境验收 |
 
+### RUN-20260716-10：Windows 原生 CUDA 绿色目录
+
+| 项目 | 记录值 |
+|---|---|
+| 环境 | Windows x64 原生进程；绿色目录内置 Python 3.12.10 和 FFmpeg 8.1.2 |
+| GPU 基线 | RTX 5080；PyTorch 2.11.0+cu128 |
+| 设备检测 | PASS：PyTorch CUDA、WhisperSeg ONNX CUDA session、llama.cpp GPU offload 均通过真实负载检查 |
+| 素材 | V1，约 23 秒真实日语对白 |
+| 设置 | Anime + GalTransl，ASR 批大小 6，翻译批大小 4，双语 ASS 开启，复制关闭 |
+| 结果 | PASS：包内 FFmpeg 提取音频；Anime 生成 8 条日语并完成强制对齐；GalTransl 输出 8 条中文；最终 SRT 与双语 ASS 均生成 |
+| 时间 | 约 63 秒，包含三个模型阶段的首次加载 |
+| 重定位 | PASS：整个绿色目录移动到含中文和空格的新路径后，输出/工作路径随根目录更新，三个 CUDA 组件仍可用 |
+| 路径兼容 | PASS：中文、空格和较长名称的输入/输出/工作目录完成全流程，最终 ASS 成功复制到源视频旁边 |
+| 边界 | 尚未覆盖断开 WSL 后启动、其它 NVIDIA 电脑和 Qwen/Sakura 可选后端 |
+
+### RUN-20260716-11：Windows 发布候选归档
+
+| 项目 | 记录值 |
+|---|---|
+| 归档 | 程序包约 3.1 GB；默认模型包约 9.8 GB；分开发布 |
+| 完整性 | PASS：两个归档均通过 SHA-256；程序包含逐文件大小/哈希清单，模型包含独立清单 |
+| 首次解压缺陷 | 首版排除规则 `models/***` 误匹配 `transformers/models` 等第三方包目录，导致导入失败；改为根锚定 `/models/***` 并加入目录与实际 import 哨兵后修复 |
+| 干净启动 | PASS：全新删除目标目录后解压两个归档；不使用项目 Python/pip，内置 Python 启动 GUI 并自动退出 |
+| 设备检测 | PASS：RTX 5080 上 PyTorch CUDA、WhisperSeg 的真实 CUDA session、llama.cpp GPU offload 均为 true |
+| 默认流程 | PASS：约 23 秒 V1 使用内置 FFmpeg、Anime、forced aligner、GalTransl 生成 8 条日文、中文 SRT 和双语 ASS；约 29 秒完成 |
+| 断点续跑 | PASS：复用 WAV、日语 SRT 和中文 SRT，仅重建 ASS，不到 1 秒完成 |
+| final_only | PASS：成功后工作目录仅保留 `pipeline.log`，最终 SRT、ASS 和术语表保留 |
+| 运行中取消 | PASS：Anime 阶段创建取消文件后以退出码 130 结束；未生成最终字幕，无残留流水线子进程，WAV 和日志保留 |
+| 许可证 | PASS：程序包含 Python/Qt-PySide/FFmpeg notices 与许可材料；模型包含四个默认模型的上游 model card、许可文本和状态清单 |
+| 分发限制 | GalTransl 上游声明为 CC-BY-NC-SA-4.0 并明确禁止商业使用，因此默认模型包必须与程序包分离并保留非商业提示 |
+| 边界 | 测试由 WSL 发起 Windows 原生进程；尚未验证 WSL 完全断开、第二台 NVIDIA 电脑及 Qwen/Sakura 可选模型包 |
+
+### RUN-20260716-12：EXE、无黑框和细化总体进度
+
+| 项目 | 记录值 |
+|---|---|
+| 启动器 | PASS：44 KB 原生 Windows GUI 子系统 EXE，仅依赖 Windows 系统 DLL；成功启动包内 `pythonw.exe` |
+| 无控制台 | PASS：GUI 主流水线使用 `pythonw.exe`；流水线内部 subprocess 使用 `CREATE_NO_WINDOW`；原生完整流程完成 |
+| 日志折叠 | PASS：显示/隐藏即时生效并写入 GUI 设置；隐藏后任务区扩展；失败状态自动重新显示日志 |
+| 总体进度 | PASS：V1 实测依次显示场景分析、语音片段分析、模型加载、Anime 1/5 至 5/5、强制对齐 5/5、翻译 1/8 至 8/8，百分比从 0 单调增长到 100 |
+| 流程结果 | PASS：通过 GUI controller 与 `pythonw.exe` 完成 Anime + GalTransl，生成中文 SRT 和双语 ASS |
+| 自动测试 | `330 passed` |
+| 制品状态 | 仅同步到开发绿色目录，尚未重新生成耗时的发布 staging 和压缩归档 |
+
 ## 14. 当前剩余人工验收
 
 以下项目尚未用真实桌面手工操作逐项勾选，保留 `NOT RUN`：系统文件对话框、真实桌面
 拖放、窗口缩放、设置持久化、模型缺失提示、字幕播放器渲染、所有高级对话框按钮，以及
-Windows 绿色目录版验收。它们不应因上述自动或程序化 GUI 调用而标记为已通过。
+Windows 绿色目录版的 WIN-008。它们不应因上述自动或程序化 GUI 调用而标记为已通过。

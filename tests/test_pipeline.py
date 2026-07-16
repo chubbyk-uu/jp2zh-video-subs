@@ -212,6 +212,42 @@ def test_run_stage_command_emits_completed_event_sequence(tmp_path):
     assert all(payload["job_index"] == 1 and payload["job_total"] == 2 for payload in payloads)
 
 
+def test_run_stage_command_converts_child_output_to_progress_events(tmp_path):
+    event_path = tmp_path / "events.jsonl"
+    log = JobLog(tmp_path / "pipeline.log")
+    command = [
+        sys.executable,
+        "-c",
+        "print('anime ASR: clips=10', flush=True); "
+        "print('[anime-gen] 5/10 elapsed=1s eta=1s', flush=True); "
+        "print('[anime-align] 4/8 elapsed=1s collapsed=0', flush=True)",
+    ]
+    try:
+        with EventWriter(event_path) as events:
+            run_stage_command(
+                "asr",
+                command,
+                log,
+                events,
+                CancellationToken(),
+                tmp_path / "sample.mp4",
+                1,
+                1,
+            )
+    finally:
+        log.close()
+
+    payloads = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+    progress = [payload for payload in payloads if payload["event"] == "stage_progress"]
+    assert [payload["status"] for payload in progress] == [
+        "正在加载 Anime 模型",
+        "正在进行 Anime 识别（5/10）",
+        "正在进行强制对齐（4/8）",
+    ]
+    assert progress[1]["progress"] == pytest.approx(0.425)
+    assert progress[2]["progress"] == pytest.approx(0.835)
+
+
 def test_run_stage_command_emits_failed_event(tmp_path):
     event_path = tmp_path / "events.jsonl"
     log = JobLog(tmp_path / "pipeline.log")

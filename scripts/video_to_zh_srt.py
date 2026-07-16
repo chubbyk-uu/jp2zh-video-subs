@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -35,11 +36,12 @@ from pipeline_runtime import (
     VIDEO_EXTENSIONS,
     PipelineCancelled,
 )
+from portable_runtime import project_root, scripts_dir
 from srt_utils import wrap_srt_display_file
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
-SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+PROJECT_ROOT = project_root(Path(__file__))
+SCRIPTS_DIR = scripts_dir(Path(__file__))
 QWEN_TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt_qwen.py"
 SAKURA_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_sakura.py"
 GALTRANSL_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_galtransl.py"
@@ -95,6 +97,7 @@ def run(
     command: list[str],
     log: JobLog | None = None,
     cancel_token: CancellationToken | None = None,
+    output_line: Callable[[str], None] | None = None,
 ) -> None:
     """Run a stage command while keeping output live and cancellation responsive."""
     cancel_token = cancel_token or CancellationToken()
@@ -110,15 +113,33 @@ def run(
     env = dict(os.environ, PYTHONUNBUFFERED="1")
     stdout = subprocess.PIPE if log is not None else None
     stderr = subprocess.STDOUT if log is not None else None
-    with subprocess.Popen(command, stdout=stdout, stderr=stderr, env=env) as proc:
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    with subprocess.Popen(
+        command,
+        stdout=stdout,
+        stderr=stderr,
+        env=env,
+        creationflags=creationflags,
+    ) as proc:
         reader: threading.Thread | None = None
         if log is not None:
             assert proc.stdout is not None
 
             def stream_output() -> None:
                 assert proc.stdout is not None
+                pending = ""
                 while chunk := proc.stdout.read1(8192):
-                    log.write_raw(chunk.decode("utf-8", errors="replace"))
+                    text = chunk.decode("utf-8", errors="replace")
+                    log.write_raw(text)
+                    if output_line is not None:
+                        pending += text.replace("\r", "\n")
+                        lines = pending.split("\n")
+                        pending = lines.pop()
+                        for line in lines:
+                            if line.strip():
+                                output_line(line.strip())
+                if output_line is not None and pending.strip():
+                    output_line(pending.strip())
 
             reader = threading.Thread(target=stream_output, daemon=True)
             reader.start()
@@ -567,9 +588,57 @@ def run_stage_command(
     job_total: int,
 ) -> None:
     fields = _stage_fields(video, job_index, job_total, stage)
-    events.emit("stage_started", **fields)
+    initial_status = {
+        "asr": "正在准备日语识别",
+        "translate": "正在加载翻译模型",
+        "ass": "正在生成双语 ASS",
+        "quality": "正在生成质量报告",
+    }.get(stage)
+    events.emit("stage_started", status=initial_status, **fields)
+
+    translation_total = srt_cue_count(Path(command[2])) if stage == "translate" and len(command) > 2 else -1
+    translation_done = 0
+
+    def report_output(line: str) -> None:
+        nonlocal translation_done
+        status: str | None = None
+        progress: float | None = None
+        match = re.search(r"\[anime-gen\]\s+(\d+)/(\d+)", line)
+        if match:
+            current, total = map(int, match.groups())
+            status = f"正在进行 Anime 识别（{current}/{total}）"
+            progress = 0.15 + 0.55 * current / max(1, total)
+        match = re.search(r"\[anime-align\]\s+(\d+)/(\d+)", line)
+        if match:
+            current, total = map(int, match.groups())
+            status = f"正在进行强制对齐（{current}/{total}）"
+            progress = 0.72 + 0.23 * current / max(1, total)
+        match = re.search(r"\[(?:main|retry)\]\s+(\d+)/(\d+)", line)
+        if match:
+            current, total = map(int, match.groups())
+            status = f"正在进行 Qwen 识别（{current}/{total}）"
+            progress = 0.18 + 0.72 * current / max(1, total)
+        if line.startswith("semantic scenes:"):
+            status, progress = "正在分析语义场景", 0.04
+        elif line.startswith("WhisperSeg ready:"):
+            status, progress = "正在分析语音片段", 0.08
+        elif line.startswith("anime ASR:"):
+            status, progress = "正在加载 Anime 模型", 0.12
+        elif line.startswith("Qwen ASR:"):
+            status, progress = "正在运行 Qwen 日语识别", 0.15
+        elif line.startswith("anime done:"):
+            status, progress = "正在整理日语字幕", 0.97
+        elif stage == "translate" and translation_total > 0:
+            translated = re.match(r"(\d+):\s", line)
+            if translated:
+                translation_done = min(translation_total, translation_done + 1)
+                status = f"正在翻译字幕（{translation_done}/{translation_total}）"
+                progress = translation_done / translation_total
+        if status is not None:
+            events.emit("stage_progress", status=status, progress=progress, **fields)
+
     try:
-        run(command, log, cancel_token)
+        run(command, log, cancel_token, report_output)
     except PipelineCancelled:
         events.emit("stage_cancelled", **fields)
         raise

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 
+from portable_runtime import prepare_llama_cuda_dependencies, prepare_onnx_cuda_dependencies, project_root
+
 
 def probe_devices() -> dict[str, object]:
+    prepare_llama_cuda_dependencies()
     result: dict[str, object] = {
         "torch_cuda": False,
         "onnx_cuda": False,
@@ -25,11 +28,23 @@ def probe_devices() -> dict[str, object]:
         details.append(f"PyTorch: {type(exc).__name__}: {exc}")
 
     try:
+        prepare_onnx_cuda_dependencies()
         import onnxruntime as ort
 
         providers = ort.get_available_providers()
-        result["onnx_cuda"] = "CUDAExecutionProvider" in providers
-        details.append(f"ONNX Runtime providers: {', '.join(providers)}")
+        actual_providers: list[str] = []
+        if "CUDAExecutionProvider" in providers:
+            model = project_root() / "models" / "whisperseg" / "model.onnx"
+            session = ort.InferenceSession(
+                str(model),
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            )
+            actual_providers = list(session.get_providers())
+        result["onnx_cuda"] = bool(actual_providers and actual_providers[0] == "CUDAExecutionProvider")
+        details.append(
+            f"ONNX Runtime providers: {', '.join(providers)}; "
+            f"WhisperSeg session: {', '.join(actual_providers) if actual_providers else 'unavailable'}"
+        )
     except Exception as exc:  # pragma: no cover - depends on packaged runtime
         details.append(f"ONNX Runtime: {type(exc).__name__}: {exc}")
 

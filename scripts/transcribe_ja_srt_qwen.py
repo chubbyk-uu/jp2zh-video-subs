@@ -27,10 +27,11 @@ from asr_common import (
 )
 from cli_config import add_dataclass_arguments
 from pipeline_configs import QwenAsrConfig
+from portable_runtime import project_root
 from srt_utils import Interval
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
+PROJECT_ROOT = project_root(Path(__file__))
 DEFAULT_MODEL = PROJECT_ROOT / "models" / "Qwen3-ASR-1.7B"
 DEFAULT_ALIGNER = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 
@@ -1937,7 +1938,8 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
         raw = str(proc.batch_decode(ids, skip_special_tokens=True)[0]).strip()
         raw_texts.append(raw)
         clean_texts.append(anime_clean_text(raw))
-        if (i + 1) % 50 == 0 or i + 1 == len(jobs):
+        progress_interval = max(1, min(50, len(jobs) // 100 or 1))
+        if (i + 1) % progress_interval == 0 or i + 1 == len(jobs):
             el = time.time() - t0
             eta = el / (i + 1) * (len(jobs) - i - 1)
             print(

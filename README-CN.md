@@ -245,7 +245,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 
 更多用法（配置文件、完整默认行为、所有常用参数、单步运行、CUDA 验证、排障）见 [docs/USAGE.md](docs/USAGE.md)。
 
-## 桌面 GUI（开发版）
+## 桌面 GUI
 
 当前源码已经提供可选的 PySide6 桌面 GUI：
 
@@ -258,8 +258,22 @@ python scripts/run_gui.py
 参数、实时阶段进度和日志、安全取消、失败重试、设置记忆、模型文件检查，以及成功后的中间
 产物清理。GUI 会先把文件夹展开为视频列表，再逐个调用现有 CLI 流水线。
 
-这仍是源码开发版 GUI，不是已经完成的 Windows CUDA 绿色发布包。内置 Python、FFmpeg、
-Windows CUDA 依赖和最终压缩包尚未组装及验证。
+Windows x64 CUDA 绿色开发目录也已完成首次组装与原生验证：内置 Python 3.12、FFmpeg、
+PyTorch CUDA、ONNX Runtime CUDA 和 llama.cpp GPU 卸载均已实际运行，固定版本和组装脚本
+位于 `packaging/windows/`。开发目录整体移动到含中文和空格的新路径后也已通过重定位测试。
+程序包与默认模型包的发布候选归档已分开生成，并通过全新解压、SHA-256、内置 Python GUI
+启动、三项 CUDA 探测、默认完整流程、断点续跑、取消和清理策略验证。默认模型包包含
+GalTransl，其上游许可证明确限制非商业使用，因此必须与程序包分开发放并保留许可提示。
+完全关闭 WSL 后从 Windows 独立启动并跑完整体流程也已通过。目前仍不是正式公开发布版；
+发布前还需完成其它兼容 NVIDIA 显卡和 Qwen/Sakura 可选后端验收。
+原生默认流程也已通过中文、空格和较长名称的输入/输出/工作路径测试，并成功把最终 ASS
+复制到源视频旁边。
+
+开发绿色目录可直接双击 `jp2zh字幕工具.exe` 启动；这是一个轻量原生启动器，实际运行
+包内 `pythonw.exe`，不会依赖系统 Python。正常流水线子进程使用无控制台模式，调试时仍可
+运行 `启动字幕工具-调试.cmd` 查看命令行输出。GUI 只显示一根总体进度条，但 Anime/Qwen
+分块识别、强制对齐和逐条翻译会持续推动进度，并显示当前具体状态；日志区域可以折叠并
+记住上次选择，任务失败时会自动展开。
 
 ## 输出文件
 

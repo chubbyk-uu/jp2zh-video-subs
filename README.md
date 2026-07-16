@@ -265,7 +265,7 @@ Do not put private local paths in public documentation or issue reports.
 For config files, the full default-behavior reference, all common options, step-by-step
 per-script usage, the CUDA check, and troubleshooting, see [docs/USAGE.md](docs/USAGE.md) (Chinese).
 
-## Desktop GUI (Development Version)
+## Desktop GUI
 
 An optional PySide6 desktop GUI is available for the current source checkout:
 
@@ -279,9 +279,26 @@ GalTransl/Sakura selectors, common subtitle settings, live stage progress and lo
 cooperative cancellation, retry, remembered settings, model-file checks, and successful-job
 cleanup policies. The GUI currently runs each expanded video as one sequential CLI job.
 
-This is the source/development GUI, not the planned Windows CUDA portable release. The
-self-contained Windows runtime, bundled FFmpeg, CUDA dependency set, and release archive have
-not been assembled or validated yet.
+A self-contained Windows x64 CUDA development folder has also been assembled and validated
+with its embedded Python 3.12 runtime, bundled FFmpeg, PyTorch CUDA, ONNX Runtime CUDA, and
+llama.cpp GPU offload. The pinned build inputs and staging scripts live in
+`packaging/windows/`. The development folder has also passed an in-place relocation test to a
+path containing spaces and Chinese characters. The native default flow has also passed with
+Chinese, spaces, and long names in the input, output, and work paths, including copying the
+final ASS beside the source video. Separate program and default-model release-candidate
+archives now pass fresh extraction, SHA-256 verification, embedded-Python GUI startup, all
+three CUDA probes, the default end-to-end flow, resume, cancellation, and cleanup checks. The
+default model archive includes GalTransl, whose upstream license declaration restricts it to
+non-commercial use, so it remains separate from the program archive with its license notices.
+The full flow also passed after WSL was shut down and the folder was launched independently
+from Windows. This is not yet a public release: additional NVIDIA hardware and the optional
+Qwen/Sakura packages still require validation.
+
+The development portable folder can be launched with `jp2zh字幕工具.exe`. This small native
+Windows GUI launcher starts the bundled `pythonw.exe` and requires no system Python. Normal
+pipeline children run without console windows; `启动字幕工具-调试.cmd` remains available for
+diagnostics. The GUI keeps one overall progress bar, updated by ASR chunks, forced alignment,
+and translated cues, while the log panel can be collapsed and remembers its previous state.
 
 ## Outputs
 

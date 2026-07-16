@@ -3,6 +3,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from portable_runtime import prepare_llama_cuda_dependencies, project_root
+
+prepare_llama_cuda_dependencies(Path(__file__))
+
 from llama_cpp import Llama
 
 from cli_config import add_dataclass_arguments
@@ -25,7 +29,7 @@ from translation_common import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
+PROJECT_ROOT = project_root(Path(__file__))
 DEFAULT_MODEL = PROJECT_ROOT / "models" / "Sakura-14B-Qwen2.5-v1.0-GGUF" / "sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
 
 # Sakura v1.0 (Qwen2.5) was trained on this exact template. System prompt and the

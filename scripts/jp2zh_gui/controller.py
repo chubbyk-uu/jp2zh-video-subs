@@ -10,6 +10,7 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
 from .models import GuiConfig, GuiTask, PIPELINE_SCRIPT, PROJECT_ROOT, TaskStatus
+from .process_utils import hide_windows_console
 
 
 class PipelineController(QObject):
@@ -103,6 +104,7 @@ class PipelineController(QObject):
             pipeline_script=self.pipeline_script,
         )
         process = QProcess(self)
+        hide_windows_console(process)
         process.setWorkingDirectory(str(PROJECT_ROOT))
         process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         process.readyReadStandardOutput.connect(self._read_process_output)
@@ -153,11 +155,24 @@ class PipelineController(QObject):
             task.stage = payload.get("stage")
             task.stage_index = int(payload.get("stage_index", task.stage_index))
             task.stage_total = int(payload.get("stage_total", task.stage_total))
+            task.stage_progress = 0.0
+            task.detail = str(payload.get("status") or "")
+        elif event == "stage_progress":
+            task.stage = payload.get("stage", task.stage)
+            task.stage_index = int(payload.get("stage_index", task.stage_index))
+            task.stage_total = int(payload.get("stage_total", task.stage_total))
+            task.stage_progress = max(
+                task.stage_progress,
+                min(1.0, max(0.0, float(payload.get("progress", task.stage_progress)))),
+            )
+            task.detail = str(payload.get("status") or task.detail)
         elif event in ("stage_completed", "stage_skipped"):
             task.stage = payload.get("stage")
             task.stage_index = int(payload.get("stage_index", task.stage_index))
             task.stage_total = int(payload.get("stage_total", task.stage_total))
             task.completed_stages = max(task.completed_stages, task.stage_index)
+            task.stage_progress = 1.0
+            task.detail = str(payload.get("status") or "")
         elif event == "stage_failed":
             task.error = str(payload.get("error", "流水线阶段失败"))
         elif event == "stage_cancelled":
@@ -178,6 +193,7 @@ class PipelineController(QObject):
             if exit_code == 0:
                 task.status = TaskStatus.COMPLETED
                 task.completed_stages = task.stage_total
+                task.stage_progress = 1.0
             elif exit_code == 130 or self._stop_after_current:
                 task.status = TaskStatus.CANCELLED
             else:

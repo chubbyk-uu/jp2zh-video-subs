@@ -1,0 +1,23 @@
+Default model package license status
+====================================
+
+anime-whisper
+  Upstream: https://huggingface.co/litagin/anime-whisper
+  Declared license: MIT
+
+Whisper-Vad-EncDec-ASMR-onnx (WhisperSeg)
+  Upstream: https://huggingface.co/TransWithAI/Whisper-Vad-EncDec-ASMR-onnx
+  Declared license: MIT
+
+Qwen3-ForcedAligner-0.6B
+  Upstream: https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B
+  Declared license: Apache-2.0
+
+Sakura-GalTransl-7B-v3.7
+  Upstream: https://huggingface.co/SakuraLLM/Sakura-GalTransl-7B-v3.7
+  Declared license: CC-BY-NC-SA-4.0
+  Important: the upstream model card explicitly prohibits commercial use.
+
+The accompanying upstream model cards and license texts must remain with any
+redistributed model archive. This status file records upstream declarations;
+it is not legal advice and does not replace review of the full license terms.

@@ -11,10 +11,11 @@ from typing import Iterable
 from uuid import uuid4
 
 from pipeline_runtime import PIPELINE_STAGES, VIDEO_EXTENSIONS
+from portable_runtime import project_root, scripts_dir
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PIPELINE_SCRIPT = PROJECT_ROOT / "scripts" / "video_to_zh_srt.py"
+PROJECT_ROOT = project_root(Path(__file__))
+PIPELINE_SCRIPT = scripts_dir(Path(__file__)) / "video_to_zh_srt.py"
 
 
 class AsrPreset(StrEnum):
@@ -68,6 +69,14 @@ STAGE_LABELS = {
     "ass": "生成 ASS",
     "quality": "质量检查",
     "cleanup": "清理中间产物",
+}
+STAGE_PROGRESS_RANGES = {
+    "extract": (0.00, 0.05),
+    "asr": (0.05, 0.60),
+    "translate": (0.60, 0.92),
+    "ass": (0.92, 0.96),
+    "quality": (0.96, 0.99),
+    "cleanup": (0.99, 1.00),
 }
 
 
@@ -209,28 +218,36 @@ class GuiTask:
     stage_index: int = 0
     stage_total: int = len(PIPELINE_STAGES)
     completed_stages: int = 0
+    stage_progress: float = 0.0
+    detail: str = ""
     error: str = ""
     outputs: dict[str, Path] = field(default_factory=dict)
 
     @property
     def status_text(self) -> str:
         if self.status == TaskStatus.RUNNING and self.stage:
-            return STAGE_LABELS.get(self.stage, self.stage)
+            return self.detail or STAGE_LABELS.get(self.stage, self.stage)
         return STATUS_LABELS[self.status]
 
     @property
     def progress_percent(self) -> int:
         if self.status == TaskStatus.COMPLETED:
             return 100
+        if self.stage in STAGE_PROGRESS_RANGES:
+            start, end = STAGE_PROGRESS_RANGES[self.stage]
+            value = start + (end - start) * self.stage_progress
+            return max(0, min(99, round(100 * value)))
         if self.status in (TaskStatus.FAILED, TaskStatus.CANCELLED):
-            return max(0, round(100 * self.completed_stages / self.stage_total))
-        return max(0, min(100, round(100 * self.completed_stages / self.stage_total)))
+            return max(0, min(99, round(100 * self.completed_stages / self.stage_total)))
+        return 0
 
     def reset_for_retry(self) -> None:
         self.status = TaskStatus.WAITING
         self.stage = None
         self.stage_index = 0
         self.completed_stages = 0
+        self.stage_progress = 0.0
+        self.detail = ""
         self.error = ""
         self.outputs.clear()
 

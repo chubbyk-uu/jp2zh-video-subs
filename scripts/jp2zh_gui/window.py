@@ -7,7 +7,7 @@ import json
 import sys
 
 from PySide6.QtCore import QPoint, QProcess, QSettings, Qt, QUrl
-from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont, QFontDatabase
+from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont, QFontDatabase, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
+from portable_runtime import portable_config_path, rebase_portable_path
 from .controller import PipelineController
 from .models import (
     ASR_LABELS,
@@ -54,6 +55,7 @@ from .models import (
     discover_dropped_videos,
     missing_model_files,
 )
+from .process_utils import hide_windows_console
 
 
 class AutoCloseComboBox(QComboBox):
@@ -285,6 +287,7 @@ class MainWindow(QMainWindow):
         self.settings = settings or QSettings("jp2zh-video-subs", "jp2zh-video-subs")
         self._close_when_finished = False
         self._device_probe = QProcess(self)
+        hide_windows_console(self._device_probe)
         self.setWindowTitle("日语视频中文字幕工具")
         self.setMinimumSize(1120, 680)
         self.resize(1280, 720)
@@ -403,9 +406,17 @@ class MainWindow(QMainWindow):
         self.resume_check.setToolTip("复用已存在的完整 WAV、日语 SRT 和中文翻译；更换模型或参数后应关闭。")
         self.copy_check = QCheckBox("复制最终字幕到视频目录")
         self.speaker_check = QCheckBox("按说话人性别着色")
-        self.asr_batch_spin = QSpinBox()
-        self.asr_batch_spin.setRange(1, 128)
-        self.asr_batch_spin.setToolTip("影响 ASR 速度和显存占用；默认 24，显存不足时建议降到 16。")
+        self.asr_batch_combo = AutoCloseComboBox()
+        self.asr_batch_combo.setMinimumWidth(260)
+        self.asr_batch_combo.setMaximumWidth(275)
+        for label, value in (
+            ("性能优先（24，14GB以上显存推荐）", 24),
+            ("均衡（16）", 16),
+            ("低显存（8）", 8),
+            ("稳定优先（4）", 4),
+        ):
+            self.asr_batch_combo.addItem(label, value)
+        self.asr_batch_combo.setToolTip("影响 ASR 速度和显存占用；不同模型和显卡的实际占用不同。")
         self.advanced_dialog = AdvancedSettingsDialog(self)
         self.context_spin = self.advanced_dialog.context_spin
         self.batch_spin = self.advanced_dialog.batch_spin
@@ -424,22 +435,37 @@ class MainWindow(QMainWindow):
         common_layout.addWidget(self.resume_check, 1, 0)
         common_layout.addWidget(self.copy_check, 1, 1)
         common_layout.addWidget(self.speaker_check, 1, 2)
-        performance_form = QFormLayout()
-        performance_form.addRow("ASR 批大小", self.asr_batch_spin)
-        common_layout.addLayout(performance_form, 2, 0, 1, 3)
-        serial_note = QLabel("GPU 任务并行数：1（避免多个模型叠加占用显存）")
-        serial_note.setStyleSheet("color: #666;")
-        common_layout.addWidget(serial_note, 3, 0, 1, 3)
+        performance_row = QHBoxLayout()
+        performance_row.addWidget(QLabel("ASR 批大小"))
+        performance_row.addWidget(self.asr_batch_combo)
+        batch_note = QLabel("显存不足时逐档降低；不同模型和显卡的实际占用不同。")
+        batch_note.setStyleSheet("color: #666;")
+        performance_row.addWidget(batch_note)
+        performance_row.addStretch(1)
+        common_layout.addLayout(performance_row, 2, 0, 1, 3)
 
         self.advanced_button = QPushButton("高级字幕与翻译设置…")
-        common_layout.addWidget(self.advanced_button, 4, 0, 1, 3)
+        common_layout.addWidget(self.advanced_button, 3, 0, 1, 3)
+
+        guidance_group = QGroupBox("使用提示")
+        self.guidance_group = guidance_group
+        guidance_layout = QVBoxLayout(guidance_group)
+        self.guidance_label = QLabel(
+            "可将视频或文件夹直接拖入左侧\n\n"
+            "工作目录保存中间产物，输出目录保存最终字幕\n\n"
+            "更换模型或关键参数后，请勿复用已完成阶段"
+        )
+        self.guidance_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.guidance_label.setWordWrap(True)
+        self.guidance_label.setStyleSheet("color: #666;")
+        guidance_layout.addWidget(self.guidance_label, 1)
 
         settings_container = QWidget()
         settings_container_layout = QVBoxLayout(settings_container)
         settings_container_layout.setContentsMargins(0, 0, 0, 0)
         settings_container_layout.addWidget(settings_group)
         settings_container_layout.addWidget(common_group)
-        settings_container_layout.addStretch()
+        settings_container_layout.addWidget(guidance_group, 1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(input_group)
@@ -453,13 +479,18 @@ class MainWindow(QMainWindow):
         self.current_label = QLabel("等待任务")
         self.overall_progress = QProgressBar()
         self.overall_progress.setRange(0, 100)
+        self.log_toggle = QCheckBox("显示日志")
+        self.log_toggle.setChecked(True)
         progress_row.addWidget(self.current_label)
         progress_row.addWidget(self.overall_progress, 1)
+        progress_row.addWidget(self.log_toggle)
         outer.addLayout(progress_row)
         self.log_edit = QPlainTextEdit()
         self.log_edit.setReadOnly(True)
         self.log_edit.setMaximumBlockCount(5000)
-        outer.addWidget(self.log_edit, 1)
+        self.log_edit.setMinimumHeight(100)
+        self.log_edit.setMaximumHeight(130)
+        outer.addWidget(self.log_edit)
 
         action_row = QHBoxLayout()
         self.start_button = QPushButton("开始处理")
@@ -490,6 +521,7 @@ class MainWindow(QMainWindow):
         self.speaker_check.toggled.connect(self._update_model_status)
         self.advanced_button.clicked.connect(self._show_advanced_settings)
         self.refresh_device_button.clicked.connect(self._start_device_probe)
+        self.log_toggle.toggled.connect(self.log_edit.setVisible)
         for edit in (self.output_edit, self.work_edit):
             edit.textChanged.connect(edit.setToolTip)
         self._device_probe.finished.connect(self._device_probe_finished)
@@ -528,8 +560,12 @@ class MainWindow(QMainWindow):
         row = self.task_table.rowCount()
         self.task_table.insertRow(row)
         self._rows_by_id[task.task_id] = row
-        self.task_table.setItem(row, 0, QTableWidgetItem(str(task.video)))
-        self.task_table.setItem(row, 1, QTableWidgetItem(task.status_text))
+        video_item = QTableWidgetItem(str(task.video))
+        video_item.setToolTip(str(task.video))
+        status_item = QTableWidgetItem(task.status_text)
+        status_item.setToolTip(task.status_text)
+        self.task_table.setItem(row, 0, video_item)
+        self.task_table.setItem(row, 1, status_item)
         self.task_table.setItem(row, 2, QTableWidgetItem(f"{task.progress_percent}%"))
         self.task_table.setItem(row, 3, QTableWidgetItem(""))
 
@@ -537,12 +573,18 @@ class MainWindow(QMainWindow):
         row = self._rows_by_id.get(task.task_id)
         if row is None:
             return
-        self.task_table.item(row, 1).setText(task.status_text if not task.error else f"{task.status_text}：{task.error}")
+        status_text = task.status_text if not task.error else f"{task.status_text}：{task.error}"
+        self.task_table.item(row, 1).setText(status_text)
+        self.task_table.item(row, 1).setToolTip(status_text)
         self.task_table.item(row, 2).setText(f"{task.progress_percent}%")
         output = task.outputs.get("ass") or task.outputs.get("srt")
-        self.task_table.item(row, 3).setText(str(output) if output else "")
+        output_text = str(output) if output else ""
+        self.task_table.item(row, 3).setText(output_text)
+        self.task_table.item(row, 3).setToolTip(output_text)
         if task.status == TaskStatus.RUNNING:
             self.current_label.setText(f"{task.video.name} — {task.status_text}")
+        elif task.status == TaskStatus.FAILED:
+            self.log_toggle.setChecked(True)
 
     def _choose_files(self) -> None:
         names, _ = QFileDialog.getOpenFileNames(self, "选择视频", "", "视频文件 (*.mp4 *.mkv *.mov *.avi *.wmv *.flv *.webm *.m4v *.ts)")
@@ -636,7 +678,7 @@ class MainWindow(QMainWindow):
             resume=self.resume_check.isChecked(),
             copy_to_video_dir=self.copy_check.isChecked(),
             cleanup_policy=CleanupPolicy(self.cleanup_combo.currentData()),
-            asr_batch_size=self.asr_batch_spin.value(),
+            asr_batch_size=int(self.asr_batch_combo.currentData()),
             context_size=self.context_spin.value(),
             translate_batch_size=self.batch_spin.value(),
             display_wrap_max_chars=self.wrap_spin.value() if self.advanced_dialog.wrap_check.isChecked() else 0,
@@ -710,8 +752,26 @@ class MainWindow(QMainWindow):
         defaults = GuiConfig()
         previous_version = self.settings.value("ui_settings_version", 0, int)
         migrate_common_defaults = previous_version < self.UI_SETTINGS_VERSION
-        self.output_edit.setText(self.settings.value("output_dir", str(defaults.output_dir), str))
-        self.work_edit.setText(self.settings.value("work_dir", str(defaults.work_dir), str))
+        output_dir = self.settings.value("output_dir", str(defaults.output_dir), str)
+        work_dir = self.settings.value("work_dir", str(defaults.work_dir), str)
+        if portable_config_path() is not None:
+            current_root = defaults.output_dir.parent
+            previous_root = self.settings.value("portable_root", "", str)
+            if previous_root:
+                output_dir = str(rebase_portable_path(output_dir, previous_root, current_root))
+                work_dir = str(rebase_portable_path(work_dir, previous_root, current_root))
+            else:
+                output_path = Path(output_dir)
+                work_path = Path(work_dir)
+                if (
+                    output_path.parent == work_path.parent
+                    and output_path.name == "outputs"
+                    and work_path.name == "work"
+                ):
+                    output_dir = str(defaults.output_dir)
+                    work_dir = str(defaults.work_dir)
+        self.output_edit.setText(output_dir)
+        self.work_edit.setText(work_dir)
         self._set_combo_value(self.asr_combo, self.settings.value("asr", defaults.asr.value, str))
         self._set_combo_value(self.translator_combo, self.settings.value("translator", defaults.translator.value, str))
         self._set_combo_value(self.cleanup_combo, self.settings.value("cleanup", defaults.cleanup_policy.value, str))
@@ -721,7 +781,8 @@ class MainWindow(QMainWindow):
         self.resume_check.setChecked(defaults.resume if migrate_common_defaults else self.settings.value("resume", defaults.resume, bool))
         self.copy_check.setChecked(defaults.copy_to_video_dir if migrate_common_defaults else self.settings.value("copy", defaults.copy_to_video_dir, bool))
         self.speaker_check.setChecked(self.settings.value("speaker", defaults.colour_by_speaker, bool))
-        self.asr_batch_spin.setValue(self.settings.value("asr_batch", defaults.asr_batch_size, int))
+        self.log_toggle.setChecked(self.settings.value("show_log", True, bool))
+        self._set_asr_batch_value(self.settings.value("asr_batch", defaults.asr_batch_size, int))
         self.context_spin.setValue(self.settings.value("context", defaults.context_size, int))
         self.batch_spin.setValue(self.settings.value("batch", defaults.translate_batch_size, int))
         wrap_value = self.settings.value("wrap", defaults.display_wrap_max_chars, int)
@@ -745,6 +806,19 @@ class MainWindow(QMainWindow):
         geometry = self.settings.value("geometry")
         if geometry is not None and self.settings.value("ui_settings_version", 0, int) == self.UI_SETTINGS_VERSION:
             self.restoreGeometry(geometry)
+        elif sys.platform == "win32":
+            self._centre_on_primary_screen()
+        self.log_edit.setVisible(self.settings.value("show_log", True, bool))
+
+    def _centre_on_primary_screen(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        self.move(
+            available.x() + max(0, (available.width() - self.width()) // 2),
+            available.y() + max(0, (available.height() - self.height()) // 2),
+        )
 
     def _save_settings(self) -> None:
         config = self._config_from_ui()
@@ -761,17 +835,27 @@ class MainWindow(QMainWindow):
             "ja_size": config.bilingual_ja_font_size,
             "zh_colour": config.bilingual_zh_colour, "ja_colour": config.bilingual_ja_colour,
             "male_colour": config.bilingual_male_colour, "female_colour": config.bilingual_female_colour,
+            "show_log": self.log_toggle.isChecked(),
         }
         for key, value in values.items():
             self.settings.setValue(key, value)
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("ui_settings_version", self.UI_SETTINGS_VERSION)
+        if portable_config_path() is not None:
+            self.settings.setValue("portable_root", str(GuiConfig().output_dir.parent))
 
     @staticmethod
     def _set_combo_value(combo: QComboBox, value: str) -> None:
         index = combo.findData(value)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+    def _set_asr_batch_value(self, value: int) -> None:
+        index = self.asr_batch_combo.findData(value)
+        if index < 0:
+            self.asr_batch_combo.addItem(f"自定义（批大小 {value}）", value)
+            index = self.asr_batch_combo.count() - 1
+        self.asr_batch_combo.setCurrentIndex(index)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.controller.is_running:

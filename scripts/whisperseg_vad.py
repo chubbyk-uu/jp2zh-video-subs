@@ -19,6 +19,10 @@ from typing import List, Optional
 
 import numpy as np
 
+from portable_runtime import prepare_onnx_cuda_dependencies, project_root
+
+prepare_onnx_cuda_dependencies(Path(__file__))
+
 _SAMPLE_RATE = 16000
 _FRAME_MS = 20
 _CHUNK_MS = 30000
@@ -32,7 +36,7 @@ _CHUNK_MS = 30000
 _HF_REPO = "TransWithAI/Whisper-Vad-EncDec-ASMR-onnx"
 _HF_REVISION = "6ac29e2cbf2f4f8e9b639861766a8639dd666e9c"
 _ONNX_FILENAME = "model.onnx"
-DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "whisperseg" / _ONNX_FILENAME
+DEFAULT_MODEL_PATH = project_root(Path(__file__)) / "models" / "whisperseg" / _ONNX_FILENAME
 
 
 def resolve_model_path(explicit: str = "") -> str:
