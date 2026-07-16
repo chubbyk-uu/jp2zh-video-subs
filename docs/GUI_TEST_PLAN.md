@@ -485,7 +485,25 @@ git diff --check
 | 总体进度 | PASS：V1 实测依次显示场景分析、语音片段分析、模型加载、Anime 1/5 至 5/5、强制对齐 5/5、翻译 1/8 至 8/8，百分比从 0 单调增长到 100 |
 | 流程结果 | PASS：通过 GUI controller 与 `pythonw.exe` 完成 Anime + GalTransl，生成中文 SRT 和双语 ASS |
 | 自动测试 | `330 passed` |
-| 制品状态 | 仅同步到开发绿色目录，尚未重新生成耗时的发布 staging 和压缩归档 |
+| 制品状态 | 已由后续 RUN-20260716-13 重新生成最终 staging、程序包和四个模型包 |
+
+### RUN-20260716-13：Windows CUDA 测试版候选与模型分包
+
+| 项目 | 记录值 |
+|---|---|
+| 归档 | 程序 3,282,810,909 B；默认模型 10,422,393,080 B；Qwen ASR 3,471,565,149 B；Sakura 14B 8,050,332,879 B；性别模型 56,684,987 B |
+| 分包结构 | PASS：默认包只含 Anime/WhisperSeg/Forced Aligner/GalTransl；三个可选包各自只含 Qwen ASR、Sakura 14B 或性别模型 |
+| 许可 | PASS：Qwen ASR 附 Apache-2.0；性别模型附 MIT；默认翻译和 Sakura 14B 附 CC-BY-NC-SA-4.0 与非商业提示；各包保留对应上游模型卡 |
+| 文件清单 | PASS：默认 31 项、Qwen 15 项、Sakura 4 项、性别 10 项逐文件 SHA-256 复核通过 |
+| 归档完整性 | PASS：五个最终归档均通过总 `SHA256SUMS`；四个模型归档额外通过 `7z t` |
+| 全新解压 | PASS：程序与四个模型包从零合并解压；七个模型目录、四份模型清单、空 GUI 配置和空输出/工作目录符合预期；实际 Transformers 导入成功 |
+| CUDA 探测 | PASS：解压候选在 RTX 5080 上 PyTorch、WhisperSeg ONNX、llama.cpp 三项 CUDA 均为 true |
+| 默认流程 | PASS：解压候选使用 Anime + GalTransl 完成约 23 秒样例，生成 8 条日文、中文 SRT 和双语 ASS，约 30 秒 |
+| Qwen 可选包 | PASS：Windows 包内 Qwen ASR 加载两个 shard，WhisperSeg 使用 CUDA，完成 6 条识别；GalTransl 生成最终 ASS，约 20 秒 |
+| Sakura 可选包 | PASS：Anime 生成 8 条日文，Sakura 14B GGUF 完成翻译并生成最终 ASS，约 29 秒 |
+| 性别可选包 | PASS：包内 ECAPA 模型完成真实推理，8/8 cue 着色，male/female 各 4 条 |
+| 原生 EXE | PASS：`jp2zh字幕工具.exe` 返回 0 并启动包内 `pythonw.exe`；GUI 进程有有效窗口句柄且可正常关闭 |
+| 当前边界 | 仅 RTX 5080 一台 Windows 电脑；无第二块 NVIDIA 显卡的原生兼容性数据，因此定位为测试版候选 |
 
 ## 14. 当前剩余人工验收
 

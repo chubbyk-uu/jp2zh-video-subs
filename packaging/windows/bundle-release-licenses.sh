@@ -53,6 +53,12 @@ download https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/raw/main/README.md
     "$model_licenses/qwen-forced-aligner-README.md"
 download https://huggingface.co/SakuraLLM/Sakura-GalTransl-7B-v3.7/raw/main/README.md \
     "$model_licenses/sakura-galtransl-README.md"
+download https://huggingface.co/Qwen/Qwen3-ASR-1.7B/raw/main/README.md \
+    "$model_licenses/qwen-asr-README.md"
+download https://huggingface.co/SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF/raw/main/README.md \
+    "$model_licenses/sakura-14b-README.md"
+download https://huggingface.co/JaesungHuh/voice-gender-classifier/raw/main/README.md \
+    "$model_licenses/voice-gender-classifier-README.md"
 install -m 0644 \
     "$(dirname "$0")/MODEL_LICENSE_STATUS.txt" \
     "$model_licenses/MODEL_LICENSE_STATUS.txt"

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 4 ]]; then
-    echo "Usage: $0 SOURCE_MODELS PACKAGE_ROOT default|all MANIFEST_PATH" >&2
+    echo "Usage: $0 SOURCE_MODELS PACKAGE_ROOT default|qwen-asr|sakura-14b|speaker-gender|all MANIFEST_PATH" >&2
     exit 2
 fi
 
@@ -41,6 +41,9 @@ optional_models=(
 
 case "$model_set" in
     default) selected=("${default_models[@]}") ;;
+    qwen-asr) selected=(Qwen3-ASR-1.7B) ;;
+    sakura-14b) selected=(Sakura-14B-Qwen2.5-v1.0-GGUF) ;;
+    speaker-gender) selected=(voice-gender-classifier) ;;
     all) selected=("${default_models[@]}" "${optional_models[@]}") ;;
     *)
         echo "Unknown model set: $model_set" >&2

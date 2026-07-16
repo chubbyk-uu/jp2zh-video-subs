@@ -30,10 +30,22 @@ mkdir -p "$extract_root"
     "$(wslpath -w "$archives/jp2zh-video-subs-windows-x64-cuda-program.7z")"
 7z.exe x -y -o"$(wslpath -w "$extract_root")" \
     "$(wslpath -w "$archives/jp2zh-video-subs-default-models.7z")"
+for archive in \
+    jp2zh-video-subs-qwen-asr-model.7z \
+    jp2zh-video-subs-sakura-14b-model.7z \
+    jp2zh-video-subs-speaker-gender-model.7z; do
+    if [[ -f "$archives/$archive" ]]; then
+        7z.exe x -y -o"$(wslpath -w "$extract_root")" \
+            "$(wslpath -w "$archives/$archive")"
+    fi
+done
 
 test -x "$extract_root/jp2zh-video-subs/runtime/python.exe"
 test -x "$extract_root/jp2zh-video-subs/bin/ffmpeg.exe"
 test -f "$extract_root/jp2zh-video-subs/models/anime-whisper/model.safetensors"
+test -f "$extract_root/jp2zh-video-subs/models/Qwen3-ASR-1.7B/config.json"
+test -f "$extract_root/jp2zh-video-subs/models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
+test -f "$extract_root/jp2zh-video-subs/models/voice-gender-classifier/model.safetensors"
 test -d "$extract_root/jp2zh-video-subs/runtime/Lib/site-packages/transformers/models"
 test ! -e "$extract_root/jp2zh-video-subs/config/gui.ini"
 test -z "$(find "$extract_root/jp2zh-video-subs/outputs" "$extract_root/jp2zh-video-subs/work" -type f -print -quit)"

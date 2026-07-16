@@ -261,11 +261,13 @@ python scripts/run_gui.py
 Windows x64 CUDA 绿色开发目录也已完成首次组装与原生验证：内置 Python 3.12、FFmpeg、
 PyTorch CUDA、ONNX Runtime CUDA 和 llama.cpp GPU 卸载均已实际运行，固定版本和组装脚本
 位于 `packaging/windows/`。开发目录整体移动到含中文和空格的新路径后也已通过重定位测试。
-程序包与默认模型包的发布候选归档已分开生成，并通过全新解压、SHA-256、内置 Python GUI
-启动、三项 CUDA 探测、默认完整流程、断点续跑、取消和清理策略验证。默认模型包包含
-GalTransl，其上游许可证明确限制非商业使用，因此必须与程序包分开发放并保留许可提示。
-完全关闭 WSL 后从 Windows 独立启动并跑完整体流程也已通过。目前仍不是正式公开发布版；
-发布前还需完成其它兼容 NVIDIA 显卡和 Qwen/Sakura 可选后端验收。
+测试版候选已拆成程序、默认模型、Qwen ASR、Sakura 14B 和说话人性别模型五个归档，并通过
+全新合并解压、SHA-256、内置 Python GUI 启动、三项 CUDA 探测和默认完整流程验证。
+Qwen + GalTransl、Anime + Sakura 14B 以及说话人性别着色也都已用 Windows 包内运行时和
+模型真实运行。默认模型包和 Sakura 14B 包包含上游声明为 CC-BY-NC-SA-4.0 的翻译模型，
+必须与程序包分开发放并保留非商业许可提示。完全关闭 WSL 后从 Windows 独立启动并跑完整体
+流程也已通过。目前仍是测试版候选；只在 RTX 5080 上完成原生 CUDA 验证，尚无第二台
+NVIDIA 电脑的兼容性证据。
 原生默认流程也已通过中文、空格和较长名称的输入/输出/工作路径测试，并成功把最终 ASS
 复制到源视频旁边。
 
@@ -274,6 +276,20 @@ GalTransl，其上游许可证明确限制非商业使用，因此必须与程�
 运行 `启动字幕工具-调试.cmd` 查看命令行输出。GUI 只显示一根总体进度条，但 Anime/Qwen
 分块识别、强制对齐和逐条翻译会持续推动进度，并显示当前具体状态；日志区域可以折叠并
 记住上次选择，任务失败时会自动展开。
+
+测试版归档按以下顺序解压到同一目录；每个归档内部都使用相同的
+`jp2zh-video-subs/` 根目录：
+
+1. 解压 `jp2zh-video-subs-windows-x64-cuda-program.7z`。
+2. 解压必需的 `jp2zh-video-subs-default-models.7z`。
+3. 按需叠加 `jp2zh-video-subs-qwen-asr-model.7z`、
+   `jp2zh-video-subs-sakura-14b-model.7z` 和
+   `jp2zh-video-subs-speaker-gender-model.7z`。
+4. 双击 `jp2zh字幕工具.exe`。系统无需另装 Python、FFmpeg 或 CUDA Toolkit，但仍需
+   正常的 NVIDIA 显卡驱动。
+
+程序包加默认模型解压后约需 20 GB；安装全部可选模型约需 33 GB。发布归档旁的
+`SHA256SUMS` 用于下载后完整性校验。
 
 ## 输出文件
 

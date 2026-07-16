@@ -1,5 +1,5 @@
-Default model package license status
-====================================
+Model package license status
+============================
 
 anime-whisper
   Upstream: https://huggingface.co/litagin/anime-whisper
@@ -17,6 +17,21 @@ Sakura-GalTransl-7B-v3.7
   Upstream: https://huggingface.co/SakuraLLM/Sakura-GalTransl-7B-v3.7
   Declared license: CC-BY-NC-SA-4.0
   Important: the upstream model card explicitly prohibits commercial use.
+
+Qwen3-ASR-1.7B
+  Upstream: https://huggingface.co/Qwen/Qwen3-ASR-1.7B
+  Declared license: Apache-2.0
+
+Sakura-14B-Qwen2.5-v1.0-GGUF
+  Upstream: https://huggingface.co/SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF
+  Declared license: CC-BY-NC-SA-4.0
+  Important: this optional model package is non-commercial.
+
+voice-gender-classifier
+  Upstream: https://huggingface.co/JaesungHuh/voice-gender-classifier
+  Declared license: MIT
+  Important: the upstream model card warns that the training dataset may not
+  represent the global human population and that predictions may contain bias.
 
 The accompanying upstream model cards and license texts must remain with any
 redistributed model archive. This status file records upstream declarations;

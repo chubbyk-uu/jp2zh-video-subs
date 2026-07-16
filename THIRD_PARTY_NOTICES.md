@@ -71,7 +71,13 @@ SOFTWARE.
   upstream declares Apache-2.0.
 - **Sakura-GalTransl-7B-v3.7** (`SakuraLLM/...`) — default translation model; upstream declares
   CC-BY-NC-SA-4.0 and explicitly prohibits commercial use.
+- **Qwen3-ASR-1.7B** (`Qwen/...`) — optional ASR model; upstream declares Apache-2.0.
+- **Sakura-14B-Qwen2.5-v1.0-GGUF** (`SakuraLLM/...`) — optional translation model; upstream
+  declares CC-BY-NC-SA-4.0 and is distributed as a non-commercial package.
+- **voice-gender-classifier** (`JaesungHuh/...`) — optional ECAPA speaker-colouring model;
+  upstream declares MIT and warns that its training data may introduce demographic bias.
 
-The default model archive is therefore distributed separately from the program archive and
-must retain `licenses/models/`, which contains upstream model cards, license texts, and
-`MODEL_LICENSE_STATUS.txt`. These entries record upstream declarations and are not legal advice.
+Model archives are distributed separately from the program archive and must retain their
+package-specific `licenses/models/` directory, containing the relevant upstream model cards,
+license texts, and `MODEL_LICENSE_STATUS.txt`. These entries record upstream declarations and
+are not legal advice.

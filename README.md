@@ -285,20 +285,36 @@ llama.cpp GPU offload. The pinned build inputs and staging scripts live in
 `packaging/windows/`. The development folder has also passed an in-place relocation test to a
 path containing spaces and Chinese characters. The native default flow has also passed with
 Chinese, spaces, and long names in the input, output, and work paths, including copying the
-final ASS beside the source video. Separate program and default-model release-candidate
-archives now pass fresh extraction, SHA-256 verification, embedded-Python GUI startup, all
-three CUDA probes, the default end-to-end flow, resume, cancellation, and cleanup checks. The
-default model archive includes GalTransl, whose upstream license declaration restricts it to
-non-commercial use, so it remains separate from the program archive with its license notices.
-The full flow also passed after WSL was shut down and the folder was launched independently
-from Windows. This is not yet a public release: additional NVIDIA hardware and the optional
-Qwen/Sakura packages still require validation.
+final ASS beside the source video. The test-release candidate is split into program, default
+models, Qwen ASR, Sakura 14B, and speaker-gender archives. They pass fresh merged extraction,
+SHA-256 verification, embedded-Python GUI startup, all three CUDA probes, and the default
+end-to-end flow. Qwen + GalTransl, Anime + Sakura 14B, and speaker colouring have also run with
+the bundled Windows runtime and packaged models. The default and Sakura 14B model archives
+contain translation models declared upstream as CC-BY-NC-SA-4.0, so they remain separate with
+their non-commercial license notices. The full default flow also passed after WSL was shut
+down and the folder was launched independently from Windows. This remains a test candidate:
+native CUDA validation currently covers an RTX 5080 only, with no second NVIDIA system yet.
 
 The development portable folder can be launched with `jp2zh字幕工具.exe`. This small native
 Windows GUI launcher starts the bundled `pythonw.exe` and requires no system Python. Normal
 pipeline children run without console windows; `启动字幕工具-调试.cmd` remains available for
 diagnostics. The GUI keeps one overall progress bar, updated by ASR chunks, forced alignment,
 and translated cues, while the log panel can be collapsed and remembers its previous state.
+
+Extract the test-release archives into the same destination in this order:
+
+1. `jp2zh-video-subs-windows-x64-cuda-program.7z`
+2. required `jp2zh-video-subs-default-models.7z`
+3. any desired optional package:
+   `jp2zh-video-subs-qwen-asr-model.7z`,
+   `jp2zh-video-subs-sakura-14b-model.7z`, or
+   `jp2zh-video-subs-speaker-gender-model.7z`
+
+Every archive contains the same `jp2zh-video-subs/` root, so optional packages merge into the
+program folder. Launch `jp2zh字幕工具.exe`; no system Python, FFmpeg, or CUDA Toolkit is required,
+but a working NVIDIA display driver remains a prerequisite. Program plus default models needs
+about 20 GB extracted; all optional models bring the total to about 33 GB. Verify downloads
+against the accompanying `SHA256SUMS`.
 
 ## Outputs
 
