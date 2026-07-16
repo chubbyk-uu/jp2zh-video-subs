@@ -1,14 +1,16 @@
 import os
+from pathlib import Path
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication, QListWidget
+from PySide6.QtCore import QSettings, QUrl
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QListWidget, QMessageBox
 
-from jp2zh_gui.models import CleanupPolicy
+from jp2zh_gui.models import CleanupPolicy, GuiTask, TaskStatus
+import jp2zh_gui.window as window_module
 from jp2zh_gui.window import MainWindow
 
 
@@ -121,5 +123,137 @@ def test_device_refresh_keeps_focus_off_output_path(tmp_path):
         assert window.refresh_device_button.hasFocus()
         assert not window.output_edit.hasFocus()
         assert window.refresh_device_button.text() == "检测中…"
+    finally:
+        window.close()
+
+
+def test_drop_event_adds_local_video_and_accepts_action(tmp_path):
+    application()
+    video = tmp_path / "拖放 测试.mp4"
+    video.touch()
+
+    class MimeData:
+        @staticmethod
+        def urls():
+            return [QUrl.fromLocalFile(str(video))]
+
+    class DropEvent:
+        accepted = False
+
+        @staticmethod
+        def mimeData():
+            return MimeData()
+
+        def acceptProposedAction(self):
+            self.accepted = True
+
+    window = MainWindow(settings=window_settings(tmp_path))
+    event = DropEvent()
+    try:
+        window.dropEvent(event)
+        assert event.accepted
+        assert [task.video for task in window.tasks] == [video.resolve()]
+    finally:
+        window.close()
+
+
+def test_choose_files_uses_dialog_result_and_adds_video(tmp_path, monkeypatch):
+    application()
+    video = tmp_path / "dialog.mp4"
+    video.touch()
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", lambda *_args: ([str(video)], ""))
+    window = MainWindow(settings=window_settings(tmp_path))
+    try:
+        window._choose_files()
+        assert [task.video for task in window.tasks] == [video.resolve()]
+    finally:
+        window.close()
+
+
+def test_saved_settings_restore_in_new_window(tmp_path):
+    application()
+    settings = window_settings(tmp_path)
+    first = MainWindow(settings=settings)
+    try:
+        first.asr_batch_spin.setValue(13)
+        first.quality_check.setChecked(True)
+        first.resume_check.setChecked(True)
+        first.cleanup_combo.setCurrentIndex(first.cleanup_combo.findData(CleanupPolicy.FINAL_ONLY.value))
+        first.context_spin.setValue(9)
+        first.zh_size_spin.setValue(41)
+        first._save_settings()
+        settings.sync()
+    finally:
+        first.close()
+
+    second = MainWindow(settings=settings)
+    try:
+        assert second.asr_batch_spin.value() == 13
+        assert second.quality_check.isChecked()
+        assert second.resume_check.isChecked()
+        assert second.cleanup_combo.currentData() == CleanupPolicy.FINAL_ONLY.value
+        assert second.context_spin.value() == 9
+        assert second.zh_size_spin.value() == 41
+    finally:
+        second.close()
+
+
+def test_advanced_dialog_cancel_restores_snapshot(tmp_path, monkeypatch):
+    application()
+    window = MainWindow(settings=window_settings(tmp_path))
+    original_context = window.context_spin.value()
+
+    def reject_after_change():
+        window.context_spin.setValue(original_context + 5)
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(window.advanced_dialog, "exec", reject_after_change)
+    try:
+        window._show_advanced_settings()
+        assert window.context_spin.value() == original_context
+    finally:
+        window.close()
+
+
+def test_retry_failed_and_cancelled_tasks_resets_only_those_tasks(tmp_path):
+    application()
+    window = MainWindow(settings=window_settings(tmp_path))
+    failed = GuiTask(Path("failed.mp4"), status=TaskStatus.FAILED, error="test failure")
+    cancelled = GuiTask(Path("cancelled.mp4"), status=TaskStatus.CANCELLED)
+    completed = GuiTask(Path("completed.mp4"), status=TaskStatus.COMPLETED)
+    window.tasks = [failed, cancelled, completed]
+    for task in window.tasks:
+        window._append_task_row(task)
+    try:
+        window._retry_failed()
+        assert failed.status == TaskStatus.WAITING
+        assert failed.error == ""
+        assert cancelled.status == TaskStatus.WAITING
+        assert completed.status == TaskStatus.COMPLETED
+    finally:
+        window.close()
+
+
+def test_missing_model_files_blocks_start_and_shows_paths(tmp_path, monkeypatch):
+    application()
+    video = tmp_path / "input.mp4"
+    video.touch()
+    missing = tmp_path / "models" / "missing.gguf"
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(window_module, "missing_model_files", lambda _config: [missing])
+    monkeypatch.setattr(QMessageBox, "warning", lambda _parent, title, text: shown.append((title, text)))
+    window = MainWindow(settings=window_settings(tmp_path))
+    window.add_paths([video])
+    started = False
+
+    def record_start(*_args):
+        nonlocal started
+        started = True
+
+    monkeypatch.setattr(window.controller, "start", record_start)
+    try:
+        window._start()
+        assert not started
+        assert shown == [("模型不完整", f"所选模型缺少文件：\n{missing}")]
     finally:
         window.close()
