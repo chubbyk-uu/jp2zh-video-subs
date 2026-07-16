@@ -160,6 +160,27 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --reuse-existing-audio
 python scripts/video_to_zh_srt.py path/to/videos/ --bilingual --resume
 ```
 
+### GUI 集成事件与取消
+
+主流水线可以额外写出逐行刷新、UTF-8 编码的 JSONL 事件，供桌面 GUI 实时读取。该功能
+不改变默认终端输出；`--event-log` 和 `--cancel-file` 是单次运行控制参数，也不会出现在
+`--print-config` 生成的可复用配置中：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/videos/ \
+  --event-log work/gui-events.jsonl \
+  --cancel-file work/gui-cancel.requested
+```
+
+事件覆盖批任务、单视频以及 `extract`、`asr`、`translate`、`ass`、`quality`、`cleanup`
+阶段的开始、完成、跳过、失败和取消状态，并带任务/阶段序号。模型内部没有可靠百分比时，
+事件不会伪造百分比。
+
+调用方创建 `--cancel-file` 指定的文件即可请求取消。流水线会终止当前 FFmpeg、ASR 或翻译
+子进程，停止后续阶段和任务，以退出码 130 结束，并保留日志和可用于续跑的中间产物；取消
+音频抽取时产生的不完整 `.part` 文件会删除。调用方应为每次运行使用新的取消文件路径，且
+在启动前保证该路径不存在。
+
 ### 双语 ASS 与样式
 
 默认输出双语字幕（中文在上，日文在下）。若只想要中文 SRT，用 `--no-bilingual`：

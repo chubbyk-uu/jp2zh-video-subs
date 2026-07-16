@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ from pipeline_configs import (
     QwenAsrConfig,
     SakuraTranslateConfig,
 )
+from pipeline_runtime import CancellationToken, EventWriter, PIPELINE_STAGES, PipelineCancelled
 from srt_utils import wrap_srt_display_file
 
 
@@ -82,23 +84,64 @@ class JobLog:
         self.file.close()
 
 
-def run(command: list[str], log: JobLog | None = None) -> None:
+def _terminate_process(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    """Stop a direct child, escalating only when graceful termination stalls."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def run(
+    command: list[str],
+    log: JobLog | None = None,
+    cancel_token: CancellationToken | None = None,
+) -> None:
+    """Run a stage command while keeping output live and cancellation responsive."""
+    cancel_token = cancel_token or CancellationToken()
+    cancel_token.raise_if_cancelled()
     if log is None:
         print("+ " + " ".join(command), flush=True)
-        subprocess.run(command, check=True)
-        return
-    log.print("+ " + " ".join(command))
-    # Child Python processes block-buffer stdout once it is a pipe; force line
-    # buffering so the console and log stay live. stderr is merged so tracebacks
-    # land in the log too.
+    else:
+        log.print("+ " + " ".join(command))
+
+    # Child Python processes block-buffer stdout once it is a pipe; force unbuffered
+    # output so the terminal/job log remains live.  A reader thread is used instead of
+    # blocking in read1(), letting the controlling thread observe an external cancel file.
     env = dict(os.environ, PYTHONUNBUFFERED="1")
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env) as proc:
-        assert proc.stdout is not None
-        # Chunked rather than line-based so \r progress (ffmpeg) still streams live.
-        while chunk := proc.stdout.read1(8192):
-            log.write_raw(chunk.decode("utf-8", errors="replace"))
-    if proc.returncode:
-        raise subprocess.CalledProcessError(proc.returncode, command)
+    stdout = subprocess.PIPE if log is not None else None
+    stderr = subprocess.STDOUT if log is not None else None
+    with subprocess.Popen(command, stdout=stdout, stderr=stderr, env=env) as proc:
+        reader: threading.Thread | None = None
+        if log is not None:
+            assert proc.stdout is not None
+
+            def stream_output() -> None:
+                assert proc.stdout is not None
+                while chunk := proc.stdout.read1(8192):
+                    log.write_raw(chunk.decode("utf-8", errors="replace"))
+
+            reader = threading.Thread(target=stream_output, daemon=True)
+            reader.start()
+
+        cancelled = False
+        while proc.poll() is None:
+            if cancel_token.is_cancelled():
+                cancelled = True
+                _terminate_process(proc)
+                break
+            time.sleep(0.1)
+
+        if reader is not None:
+            reader.join()
+        if cancelled:
+            raise PipelineCancelled("Pipeline cancellation requested")
+        if proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, command)
 
 
 def require_file(path: Path, label: str) -> None:
@@ -140,7 +183,14 @@ class VideoJob:
     audio: Path
 
 
-def extract_audio(video: Path, audio: Path, reuse_existing: bool = False, log: JobLog | None = None) -> None:
+def extract_audio(
+    video: Path,
+    audio: Path,
+    reuse_existing: bool = False,
+    log: JobLog | None = None,
+    cancel_token: CancellationToken | None = None,
+) -> bool:
+    """Extract audio and return True, or return False when an existing WAV was reused."""
     audio.parent.mkdir(parents=True, exist_ok=True)
     if reuse_existing and audio.exists() and audio.stat().st_size > 0:
         message = f"Reusing existing audio: {audio}"
@@ -148,13 +198,22 @@ def extract_audio(video: Path, audio: Path, reuse_existing: bool = False, log: J
             log.print(message)
         else:
             print(message, flush=True)
-        return
+        return False
     # Extract to a temp name and rename atomically: an interrupted ffmpeg must not
     # leave a truncated WAV at the final path, where a later --resume /
     # --reuse-existing-audio run would reuse it and silently transcribe short.
     partial = audio.with_name(audio.name + ".part")
-    run(["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", str(partial)], log)
+    try:
+        run(
+            ["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", str(partial)],
+            log,
+            cancel_token,
+        )
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     partial.replace(audio)
+    return True
 
 
 def run_pipeline(
@@ -162,6 +221,7 @@ def run_pipeline(
     extract: Callable[[VideoJob], None],
     process: Callable[[VideoJob], None],
     continue_on_error: bool,
+    cancel_token: CancellationToken | None = None,
 ) -> list[tuple[VideoJob, Exception]]:
     """Extract audio one video ahead in a background thread while the GPU stages run.
 
@@ -171,45 +231,71 @@ def run_pipeline(
     backpressure: the extractor runs at most one unprocessed video ahead (it blocks
     on put once the slot is full). It does not delete WAVs; whether they accumulate
     on disk depends on the caller's --delete-audio handling."""
+    cancel_token = cancel_token or CancellationToken()
     work_queue: queue.Queue = queue.Queue(maxsize=1)
     done = object()
+    stop_producer = threading.Event()
+
+    def queue_put(item: object) -> bool:
+        while not stop_producer.is_set() and not cancel_token.is_cancelled():
+            try:
+                work_queue.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                pass
+        return False
 
     def producer() -> None:
         try:
             for job in jobs:
+                if stop_producer.is_set() or cancel_token.is_cancelled():
+                    break
                 try:
                     extract(job)
-                    work_queue.put((job, None))
+                    if not queue_put((job, None)):
+                        break
                 except BaseException as exc:
-                    work_queue.put((job, exc))
+                    if not queue_put((job, exc)):
+                        break
                     if not isinstance(exc, Exception):
                         break
         finally:
-            work_queue.put(done)
+            queue_put(done)
 
     thread = threading.Thread(target=producer, daemon=True)
     thread.start()
 
     failures: list[tuple[VideoJob, Exception]] = []
-    while True:
-        item = work_queue.get()
-        if item is done:
-            break
-        job, exc = item
-        if exc is not None:
-            if not isinstance(exc, Exception):
-                raise exc
-            if not continue_on_error:
-                raise exc
-            failures.append((job, exc))
-            continue
-        try:
-            process(job)
-        except Exception as exc:  # noqa: BLE001
-            if not continue_on_error:
+    try:
+        while True:
+            cancel_token.raise_if_cancelled()
+            try:
+                item = work_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is done:
+                break
+            job, exc = item
+            if exc is not None:
+                if isinstance(exc, PipelineCancelled):
+                    raise exc
+                if not isinstance(exc, Exception):
+                    raise exc
+                if not continue_on_error:
+                    raise exc
+                failures.append((job, exc))
+                continue
+            try:
+                process(job)
+            except PipelineCancelled:
                 raise
-            failures.append((job, exc))
-    thread.join()
+            except Exception as exc:  # noqa: BLE001
+                if not continue_on_error:
+                    raise
+                failures.append((job, exc))
+    finally:
+        stop_producer.set()
+        thread.join(timeout=10.0)
     return failures
 
 
@@ -436,13 +522,75 @@ def build_quality_command(
     return command
 
 
-def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: Path, audio: Path) -> None:
+def _stage_fields(video: Path, job_index: int, job_total: int, stage: str) -> dict:
+    stage_index = PIPELINE_STAGES.index(stage) + 1
+    return {
+        "stage": stage,
+        "stage_index": stage_index,
+        "stage_total": len(PIPELINE_STAGES),
+        "video": video,
+        "job_index": job_index,
+        "job_total": job_total,
+    }
+
+
+def run_stage_command(
+    stage: str,
+    command: list[str],
+    log: JobLog,
+    events: EventWriter,
+    cancel_token: CancellationToken,
+    video: Path,
+    job_index: int,
+    job_total: int,
+) -> None:
+    fields = _stage_fields(video, job_index, job_total, stage)
+    events.emit("stage_started", **fields)
+    try:
+        run(command, log, cancel_token)
+    except PipelineCancelled:
+        events.emit("stage_cancelled", **fields)
+        raise
+    except Exception as exc:
+        events.emit("stage_failed", error=str(exc), **fields)
+        raise
+    events.emit("stage_completed", **fields)
+
+
+def process_video(
+    args: argparse.Namespace,
+    video: Path,
+    output: Path,
+    job_dir: Path,
+    audio: Path,
+    *,
+    events: EventWriter | None = None,
+    cancel_token: CancellationToken | None = None,
+    job_index: int = 1,
+    job_total: int = 1,
+) -> None:
+    events = events or EventWriter()
+    cancel_token = cancel_token or CancellationToken()
     job_dir.mkdir(parents=True, exist_ok=True)
     log = JobLog(job_dir / "pipeline.log")
     try:
         log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} start {video.name} ===")
-        process_video_stages(args, video, output, job_dir, audio, log)
+        process_video_stages(
+            args,
+            video,
+            output,
+            job_dir,
+            audio,
+            log,
+            events=events,
+            cancel_token=cancel_token,
+            job_index=job_index,
+            job_total=job_total,
+        )
         log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} done {video.name} ===")
+    except PipelineCancelled:
+        log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} CANCELLED {video.name} ===")
+        raise
     except BaseException as exc:
         log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} FAILED {video.name}: {exc!r} ===")
         raise
@@ -451,22 +599,42 @@ def process_video(args: argparse.Namespace, video: Path, output: Path, job_dir: 
 
 
 def process_video_stages(
-    args: argparse.Namespace, video: Path, output: Path, job_dir: Path, audio: Path, log: JobLog
+    args: argparse.Namespace,
+    video: Path,
+    output: Path,
+    job_dir: Path,
+    audio: Path,
+    log: JobLog,
+    *,
+    events: EventWriter | None = None,
+    cancel_token: CancellationToken | None = None,
+    job_index: int = 1,
+    job_total: int = 1,
 ) -> None:
+    events = events or EventWriter()
+    cancel_token = cancel_token or CancellationToken()
+    cancel_token.raise_if_cancelled()
     log.print(f"\n==> Processing {video}")
     output.parent.mkdir(parents=True, exist_ok=True)
     ja_srt = job_dir / f"{video.stem}.ja.srt"
     translate_input_srt = ja_srt
 
     transcribe_command = build_qwen_command(args, audio, ja_srt)
-    if not resume_skip(args, ja_srt, log, "transcription"):
-        run(transcribe_command, log)
+    if resume_skip(args, ja_srt, log, "transcription"):
+        events.emit("stage_skipped", reason="resume", **_stage_fields(video, job_index, job_total, "asr"))
+    else:
+        run_stage_command(
+            "asr", transcribe_command, log, events, cancel_token, video, job_index, job_total
+        )
 
     translate_command = build_translate_command(args, translate_input_srt, output)
     if args.resume and translation_is_complete(output, translate_input_srt):
         log.print(f"Resume: skipping translation, reusing {output}")
+        events.emit("stage_skipped", reason="resume", **_stage_fields(video, job_index, job_total, "translate"))
     else:
-        run(translate_command, log)
+        run_stage_command(
+            "translate", translate_command, log, events, cancel_token, video, job_index, job_total
+        )
 
     wrapped = wrap_srt_display_file(output, args.display_wrap_max_chars)
     if wrapped:
@@ -479,7 +647,11 @@ def process_video_stages(
     if args.bilingual:
         bilingual_output = output.with_suffix(".ass")
         bilingual_command = build_bilingual_command(args, output, translate_input_srt, bilingual_output, audio)
-        run(bilingual_command, log)
+        run_stage_command(
+            "ass", bilingual_command, log, events, cancel_token, video, job_index, job_total
+        )
+    else:
+        events.emit("stage_skipped", reason="disabled", **_stage_fields(video, job_index, job_total, "ass"))
 
     if args.quality_report and not args.skip_quality_report:
         report_path = job_dir / f"{video.stem}.quality.txt"
@@ -494,11 +666,21 @@ def process_video_stages(
             video.stem,
             qwen_metadata,
         )
-        run(quality_command, log)
+        run_stage_command(
+            "quality", quality_command, log, events, cancel_token, video, job_index, job_total
+        )
         log.print(f"Quality report: {report_path}")
+    else:
+        events.emit("stage_skipped", reason="disabled", **_stage_fields(video, job_index, job_total, "quality"))
 
     if args.delete_audio:
+        cancel_token.raise_if_cancelled()
+        cleanup_fields = _stage_fields(video, job_index, job_total, "cleanup")
+        events.emit("stage_started", **cleanup_fields)
         audio.unlink(missing_ok=True)
+        events.emit("stage_completed", **cleanup_fields)
+    else:
+        events.emit("stage_skipped", reason="keep_all", **_stage_fields(video, job_index, job_total, "cleanup"))
 
     # In bilingual mode only the ASS is placed next to the video; otherwise the SRT is.
     copied_to_video: Path | None = None
@@ -552,6 +734,16 @@ def main() -> None:
     parser.add_argument("--output", type=Path, help="Output Chinese SRT path for a single input video")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "outputs", help="Output directory")
     parser.add_argument("--work-dir", type=Path, default=PROJECT_ROOT / "work")
+    parser.add_argument(
+        "--event-log",
+        type=Path,
+        help="Write GUI-facing pipeline events as flushed JSON Lines (runtime control; not saved in --print-config)",
+    )
+    parser.add_argument(
+        "--cancel-file",
+        type=Path,
+        help="Cancel cooperatively when this caller-owned control file exists (runtime control; not saved in --print-config)",
+    )
     parser.add_argument("--recursive", action="store_true", help="Process videos in subdirectories")
     parser.add_argument("--continue-on-error", action="store_true", help="Continue batch processing after a video fails")
     parser.add_argument("--keep-audio", action="store_true", help="Deprecated: audio is kept by default")
@@ -761,7 +953,8 @@ def main() -> None:
     if args.print_config:
         # input/output are per-run IO arguments, not reusable configuration; a config
         # file cannot set the input positional anyway, so emitting them would mislead.
-        values = {k: v for k, v in vars(args).items() if k not in ("config", "print_config", "input", "output")}
+        runtime_keys = {"config", "print_config", "input", "output", "event_log", "cancel_file"}
+        values = {k: v for k, v in vars(args).items() if k not in runtime_keys}
         sys.stdout.write(format_config_toml(values))
         return
 
@@ -832,31 +1025,103 @@ def main() -> None:
                 )
 
     total = len(jobs)
+    cancel_token = CancellationToken(args.cancel_file)
 
-    def extract(job: VideoJob) -> None:
-        log = JobLog(job.job_dir / "pipeline.log")
+    with EventWriter(args.event_log) as events:
+        events.emit(
+            "batch_started",
+            job_total=total,
+            input=input_path,
+            asr=args.asr,
+            translator=args.translator,
+        )
+
+        def extract(job: VideoJob) -> None:
+            job_fields = {"video": job.video, "job_index": job.index, "job_total": total}
+            stage_fields = _stage_fields(job.video, job.index, total, "extract")
+            events.emit("job_started", **job_fields)
+            events.emit("stage_started", **stage_fields)
+            log = JobLog(job.job_dir / "pipeline.log")
+            try:
+                extracted = extract_audio(
+                    job.video,
+                    job.audio,
+                    reuse_existing=args.reuse_existing_audio,
+                    log=log,
+                    cancel_token=cancel_token,
+                )
+            except PipelineCancelled:
+                events.emit("stage_cancelled", **stage_fields)
+                events.emit("job_cancelled", **job_fields)
+                log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} CANCELLED extracting {job.video.name} ===")
+                raise
+            except BaseException as exc:
+                events.emit("stage_failed", error=str(exc), **stage_fields)
+                events.emit("job_failed", error=str(exc), **job_fields)
+                log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} FAILED extracting {job.video.name}: {exc!r} ===")
+                raise
+            else:
+                event = "stage_completed" if extracted else "stage_skipped"
+                reason = None if extracted else "resume"
+                events.emit(event, reason=reason, **stage_fields)
+            finally:
+                log.close()
+
+        def process(job: VideoJob) -> None:
+            job_fields = {"video": job.video, "job_index": job.index, "job_total": total}
+            print(f"\n[{job.index}/{total}]", flush=True)
+            try:
+                process_video(
+                    args,
+                    job.video,
+                    job.output,
+                    job.job_dir,
+                    job.audio,
+                    events=events,
+                    cancel_token=cancel_token,
+                    job_index=job.index,
+                    job_total=total,
+                )
+            except PipelineCancelled:
+                events.emit("job_cancelled", **job_fields)
+                raise
+            except Exception as exc:
+                events.emit("job_failed", error=str(exc), **job_fields)
+                raise
+            else:
+                outputs = {"srt": job.output}
+                if args.bilingual:
+                    outputs["ass"] = job.output.with_suffix(".ass")
+                events.emit("job_completed", outputs=outputs, **job_fields)
+
         try:
-            extract_audio(job.video, job.audio, reuse_existing=args.reuse_existing_audio, log=log)
+            failures = run_pipeline(
+                jobs,
+                extract,
+                process,
+                args.continue_on_error,
+                cancel_token=cancel_token,
+            )
+        except PipelineCancelled:
+            events.emit("batch_cancelled", job_total=total)
+            print("Pipeline cancelled.", flush=True)
+            raise SystemExit(130)
         except BaseException as exc:
-            log.print(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} FAILED extracting {job.video.name}: {exc!r} ===")
+            events.emit("batch_failed", job_total=total, error=str(exc))
             raise
-        finally:
-            log.close()
 
-    def process(job: VideoJob) -> None:
-        print(f"\n[{job.index}/{total}]", flush=True)
-        process_video(args, job.video, job.output, job.job_dir, job.audio)
-
-    failures = run_pipeline(jobs, extract, process, args.continue_on_error)
-    failed = [(job.video, str(exc)) for job, exc in failures]
-    for video, error in failed:
-        print(f"Failed {video}: {error}", flush=True)
-
-    if failed:
-        print("\nFailed videos:")
+        failed = [(job.video, str(exc)) for job, exc in failures]
         for video, error in failed:
-            print(f"- {video}: {error}")
-        raise SystemExit(1)
+            print(f"Failed {video}: {error}", flush=True)
+
+        if failed:
+            events.emit("batch_failed", job_total=total, failed_count=len(failed))
+            print("\nFailed videos:")
+            for video, error in failed:
+                print(f"- {video}: {error}")
+            raise SystemExit(1)
+
+        events.emit("batch_completed", job_total=total, completed_count=total)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,22 @@
+import json
 import threading
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
-from video_to_zh_srt import output_path_for, run_pipeline, srt_cue_count, translation_is_complete
+from pipeline_runtime import CancellationToken, EventWriter, PipelineCancelled
+from video_to_zh_srt import (
+    JobLog,
+    output_path_for,
+    run,
+    run_pipeline,
+    run_stage_command,
+    srt_cue_count,
+    translation_is_complete,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +109,211 @@ def test_run_pipeline_raises_without_continue_on_error():
 
     with pytest.raises(RuntimeError):
         run_pipeline([0, 1, 2], lambda job: None, process, continue_on_error=False)
+
+
+def test_run_pipeline_cancellation_stops_prefetch_without_deadlock():
+    token = CancellationToken()
+    processed = []
+
+    def process(job):
+        processed.append(job)
+        token.request()
+        token.raise_if_cancelled()
+
+    started = time.monotonic()
+    with pytest.raises(PipelineCancelled):
+        run_pipeline(
+            list(range(20)),
+            extract=lambda job: None,
+            process=process,
+            continue_on_error=True,
+            cancel_token=token,
+        )
+
+    assert processed == [0]
+    assert time.monotonic() - started < 2
+
+
+def test_run_terminates_a_running_child_when_cancelled():
+    token = CancellationToken()
+    timer = threading.Timer(0.2, token.request)
+    timer.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(PipelineCancelled):
+            run([sys.executable, "-c", "import time; time.sleep(30)"], cancel_token=token)
+    finally:
+        timer.cancel()
+
+    assert time.monotonic() - started < 3
+
+
+def test_run_observes_external_cancel_file_while_child_is_running(tmp_path):
+    cancel_file = tmp_path / "cancel.requested"
+    token = CancellationToken(cancel_file)
+    timer = threading.Timer(0.2, cancel_file.touch)
+    timer.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(PipelineCancelled):
+            run([sys.executable, "-c", "import time; time.sleep(30)"], cancel_token=token)
+    finally:
+        timer.cancel()
+
+    assert time.monotonic() - started < 3
+
+
+def test_extract_audio_removes_partial_file_when_cancelled(tmp_path, monkeypatch):
+    import video_to_zh_srt as pipeline
+
+    audio = tmp_path / "sample.wav"
+    partial = tmp_path / "sample.wav.part"
+
+    def cancelled_run(command, _log, _cancel_token):
+        Path(command[-1]).write_bytes(b"incomplete")
+        raise PipelineCancelled("cancelled")
+
+    monkeypatch.setattr(pipeline, "run", cancelled_run)
+    with pytest.raises(PipelineCancelled):
+        pipeline.extract_audio(
+            tmp_path / "sample.mp4",
+            audio,
+            cancel_token=CancellationToken(),
+        )
+
+    assert not partial.exists()
+    assert not audio.exists()
+
+
+def test_run_stage_command_emits_completed_event_sequence(tmp_path):
+    event_path = tmp_path / "events.jsonl"
+    log = JobLog(tmp_path / "pipeline.log")
+    try:
+        with EventWriter(event_path) as events:
+            run_stage_command(
+                "asr",
+                [sys.executable, "-c", "print('ok')"],
+                log,
+                events,
+                CancellationToken(),
+                tmp_path / "sample.mp4",
+                1,
+                2,
+            )
+    finally:
+        log.close()
+
+    payloads = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+    assert [payload["event"] for payload in payloads] == ["stage_started", "stage_completed"]
+    assert all(payload["stage"] == "asr" for payload in payloads)
+    assert all(payload["stage_index"] == 2 and payload["stage_total"] == 6 for payload in payloads)
+    assert all(payload["job_index"] == 1 and payload["job_total"] == 2 for payload in payloads)
+
+
+def test_run_stage_command_emits_failed_event(tmp_path):
+    event_path = tmp_path / "events.jsonl"
+    log = JobLog(tmp_path / "pipeline.log")
+    try:
+        with EventWriter(event_path) as events:
+            with pytest.raises(subprocess.CalledProcessError):
+                run_stage_command(
+                    "translate",
+                    [sys.executable, "-c", "raise SystemExit(4)"],
+                    log,
+                    events,
+                    CancellationToken(),
+                    tmp_path / "sample.mp4",
+                    1,
+                    1,
+                )
+    finally:
+        log.close()
+
+    payloads = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+    assert [payload["event"] for payload in payloads] == ["stage_started", "stage_failed"]
+    assert payloads[-1]["stage"] == "translate"
+    assert "returned non-zero exit status 4" in payloads[-1]["error"]
+
+
+def test_run_stage_command_emits_cancelled_event(tmp_path):
+    event_path = tmp_path / "events.jsonl"
+    log = JobLog(tmp_path / "pipeline.log")
+    token = CancellationToken()
+    token.request()
+    try:
+        with EventWriter(event_path) as events:
+            with pytest.raises(PipelineCancelled):
+                run_stage_command(
+                    "quality",
+                    [sys.executable, "-c", "pass"],
+                    log,
+                    events,
+                    token,
+                    tmp_path / "sample.mp4",
+                    1,
+                    1,
+                )
+    finally:
+        log.close()
+
+    payloads = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+    assert [payload["event"] for payload in payloads] == ["stage_started", "stage_cancelled"]
+
+
+def test_process_video_stages_emits_skips_for_resumed_and_disabled_stages(tmp_path, monkeypatch):
+    import argparse
+    import video_to_zh_srt as pipeline
+
+    video = tmp_path / "sample.mp4"
+    job_dir = tmp_path / "work"
+    job_dir.mkdir()
+    audio = job_dir / "sample.wav"
+    output = tmp_path / "sample.zh.srt"
+    ja_srt = job_dir / "sample.ja.srt"
+    ja_srt.write_text(SRT_TWO_CUES, encoding="utf-8")
+    output.write_text(SRT_TWO_CUES, encoding="utf-8")
+    monkeypatch.setattr(pipeline, "build_qwen_command", lambda *_args: ["unused-asr"])
+    monkeypatch.setattr(pipeline, "build_translate_command", lambda *_args: ["unused-translate"])
+
+    args = argparse.Namespace(
+        resume=True,
+        bilingual=False,
+        quality_report=False,
+        skip_quality_report=False,
+        delete_audio=False,
+        no_copy_to_video_dir=True,
+        display_wrap_max_chars=0,
+    )
+    event_path = tmp_path / "events.jsonl"
+    log = JobLog(job_dir / "pipeline.log")
+    try:
+        with EventWriter(event_path) as events:
+            pipeline.process_video_stages(
+                args,
+                video,
+                output,
+                job_dir,
+                audio,
+                log,
+                events=events,
+                cancel_token=CancellationToken(),
+                job_index=2,
+                job_total=3,
+            )
+    finally:
+        log.close()
+
+    payloads = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+    skipped = [(payload["stage"], payload["reason"]) for payload in payloads]
+    assert skipped == [
+        ("asr", "resume"),
+        ("translate", "resume"),
+        ("ass", "disabled"),
+        ("quality", "disabled"),
+        ("cleanup", "keep_all"),
+    ]
+    assert all(payload["event"] == "stage_skipped" for payload in payloads)
+    assert all(payload["job_index"] == 2 and payload["job_total"] == 3 for payload in payloads)
 
 
 SRT_TWO_CUES = """1
@@ -387,6 +603,8 @@ def test_quality_report_is_opt_in_by_default():
     assert "quality_report = false" in default
     assert "skip_quality_report = false" in default
     assert "display_wrap_max_chars = 20" in default
+    assert "event_log" not in default
+    assert "cancel_file" not in default
 
     enabled = printed_config("--quality-report")
     assert "quality_report = true" in enabled
