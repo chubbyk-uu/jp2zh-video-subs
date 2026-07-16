@@ -2,6 +2,13 @@
 
 This project incorporates code adapted from third-party open-source projects.
 
+## Optional GUI dependency
+
+The optional desktop GUI uses PySide6. The locally verified PySide6 6.11.1 package metadata
+declares `LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only`. A future Windows portable
+distribution must include the applicable Qt/PySide license texts and satisfy the selected
+license's redistribution requirements; that distribution has not been assembled yet.
+
 ## WhisperJAV
 
 `scripts/anime_text_clean.py` and `scripts/alignment_recovery.py` are adapted from

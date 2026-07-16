@@ -265,6 +265,24 @@ Do not put private local paths in public documentation or issue reports.
 For config files, the full default-behavior reference, all common options, step-by-step
 per-script usage, the CUDA check, and troubleshooting, see [docs/USAGE.md](docs/USAGE.md) (Chinese).
 
+## Desktop GUI (Development Version)
+
+An optional PySide6 desktop GUI is available for the current source checkout:
+
+```bash
+python -m pip install -r requirements-gui.txt
+python scripts/run_gui.py
+```
+
+It supports video/folder drag-and-drop, a visible task queue, Anime/Qwen and
+GalTransl/Sakura selectors, common subtitle settings, live stage progress and logs,
+cooperative cancellation, retry, remembered settings, model-file checks, and successful-job
+cleanup policies. The GUI currently runs each expanded video as one sequential CLI job.
+
+This is the source/development GUI, not the planned Windows CUDA portable release. The
+self-contained Windows runtime, bundled FFmpeg, CUDA dependency set, and release archive have
+not been assembled or validated yet.
+
 ## Outputs
 
 For `path/to/input.mp4`, the default outputs are:

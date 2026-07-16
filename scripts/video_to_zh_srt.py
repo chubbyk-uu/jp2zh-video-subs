@@ -28,7 +28,13 @@ from pipeline_configs import (
     QwenAsrConfig,
     SakuraTranslateConfig,
 )
-from pipeline_runtime import CancellationToken, EventWriter, PIPELINE_STAGES, PipelineCancelled
+from pipeline_runtime import (
+    CancellationToken,
+    EventWriter,
+    PIPELINE_STAGES,
+    VIDEO_EXTENSIONS,
+    PipelineCancelled,
+)
 from srt_utils import wrap_srt_display_file
 
 
@@ -46,19 +52,8 @@ QWEN_ALIGNER_MODEL = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 ANIME_ASR_MODEL = PROJECT_ROOT / "models" / "anime-whisper"
 SAKURA_MODEL = PROJECT_ROOT / "models" / "Sakura-14B-Qwen2.5-v1.0-GGUF" / "sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
 GALTRANSL_MODEL = PROJECT_ROOT / "models" / "Sakura-GalTransl-7B-v3.7-GGUF" / "Sakura-Galtransl-7B-v3.7.gguf"
-VIDEO_EXTENSIONS = {
-    ".mp4",
-    ".mkv",
-    ".mov",
-    ".avi",
-    ".wmv",
-    ".flv",
-    ".webm",
-    ".m4v",
-    ".ts",
-}
-
 ANIME_PREFIX_SKIP = {"language", "min_cue_seconds", "text_backend"}
+CLEANUP_POLICIES = ("keep_all", "delete_audio", "final_only")
 
 
 class JobLog:
@@ -163,6 +158,33 @@ def translation_is_complete(zh_srt: Path, ja_srt: Path) -> bool:
     bare existence is not enough to resume past it."""
     count = srt_cue_count(zh_srt)
     return count > 0 and count == srt_cue_count(ja_srt)
+
+
+def effective_cleanup_policy(args: argparse.Namespace) -> str:
+    """Resolve the new policy flag while preserving the old --delete-audio switch."""
+    policy = getattr(args, "cleanup_policy", None)
+    delete_audio = bool(getattr(args, "delete_audio", False))
+    if policy is not None and delete_audio and policy != "delete_audio":
+        raise SystemExit("--delete-audio conflicts with --cleanup-policy unless it is 'delete_audio'")
+    return policy or ("delete_audio" if delete_audio else "keep_all")
+
+
+def cleanup_intermediate_files(policy: str, audio: Path, ja_srt: Path) -> list[Path]:
+    """Delete only known pipeline intermediates and return the paths actually removed."""
+    if policy not in CLEANUP_POLICIES:
+        raise ValueError(f"Unknown cleanup policy: {policy}")
+    candidates: list[Path] = []
+    if policy in ("delete_audio", "final_only"):
+        candidates.append(audio)
+    if policy == "final_only":
+        candidates.extend((ja_srt, ja_srt.with_suffix(ja_srt.suffix + ".meta.json")))
+
+    removed: list[Path] = []
+    for path in candidates:
+        if path.exists():
+            path.unlink()
+            removed.append(path)
+    return removed
 
 
 def resume_skip(args: argparse.Namespace, path: Path, log: JobLog, label: str) -> bool:
@@ -673,15 +695,6 @@ def process_video_stages(
     else:
         events.emit("stage_skipped", reason="disabled", **_stage_fields(video, job_index, job_total, "quality"))
 
-    if args.delete_audio:
-        cancel_token.raise_if_cancelled()
-        cleanup_fields = _stage_fields(video, job_index, job_total, "cleanup")
-        events.emit("stage_started", **cleanup_fields)
-        audio.unlink(missing_ok=True)
-        events.emit("stage_completed", **cleanup_fields)
-    else:
-        events.emit("stage_skipped", reason="keep_all", **_stage_fields(video, job_index, job_total, "cleanup"))
-
     # In bilingual mode only the ASS is placed next to the video; otherwise the SRT is.
     copied_to_video: Path | None = None
     if not args.no_copy_to_video_dir:
@@ -691,13 +704,30 @@ def process_video_stages(
             shutil.copy2(source, destination)
         copied_to_video = destination
 
+    cleanup_policy = effective_cleanup_policy(args)
+    cleanup_fields = _stage_fields(video, job_index, job_total, "cleanup")
+    if cleanup_policy == "keep_all":
+        events.emit("stage_skipped", reason="keep_all", **cleanup_fields)
+    else:
+        cancel_token.raise_if_cancelled()
+        events.emit("stage_started", policy=cleanup_policy, **cleanup_fields)
+        try:
+            removed = cleanup_intermediate_files(cleanup_policy, audio, ja_srt)
+        except Exception as exc:
+            events.emit("stage_failed", policy=cleanup_policy, error=str(exc), **cleanup_fields)
+            raise
+        events.emit("stage_completed", policy=cleanup_policy, removed=removed, **cleanup_fields)
+
     log.print(f"Wrote {output}")
     if bilingual_output is not None:
         log.print(f"Bilingual ASS: {bilingual_output}")
     if copied_to_video is not None:
         label = "Bilingual ASS" if bilingual_output is not None else "Chinese SRT"
         log.print(f"{label} next to video: {copied_to_video}")
-    log.print(f"Intermediate Japanese SRT: {ja_srt}")
+    if ja_srt.exists():
+        log.print(f"Intermediate Japanese SRT: {ja_srt}")
+    else:
+        log.print(f"Cleaned intermediate Japanese SRT: {ja_srt}")
 
 
 def _early_config_path(argv: list[str]) -> Path | None:
@@ -748,6 +778,12 @@ def main() -> None:
     parser.add_argument("--continue-on-error", action="store_true", help="Continue batch processing after a video fails")
     parser.add_argument("--keep-audio", action="store_true", help="Deprecated: audio is kept by default")
     parser.add_argument("--delete-audio", action="store_true", help="Delete extracted WAV audio after processing")
+    parser.add_argument(
+        "--cleanup-policy",
+        choices=CLEANUP_POLICIES,
+        default=None,
+        help="Successful-job cleanup: keep_all, delete_audio, or final_only (keeps final subtitles, quality report, and pipeline.log)",
+    )
     parser.add_argument("--reuse-existing-audio", action="store_true", help="Skip ffmpeg extraction when the WAV already exists (reuse it)")
     parser.add_argument(
         "--resume",
@@ -971,6 +1007,7 @@ def main() -> None:
         raise SystemExit("--display-wrap-max-chars must be >= 0")
     if args.context_size is not None and args.context_size < 0:
         raise SystemExit("--context-size must be >= 0")
+    effective_cleanup_policy(args)
     if shutil.which("ffmpeg") is None:
         raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")
 

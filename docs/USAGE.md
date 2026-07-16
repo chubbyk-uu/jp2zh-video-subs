@@ -146,6 +146,18 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --quality-report
 python scripts/video_to_zh_srt.py path/to/input.mp4 --delete-audio
 ```
 
+也可以使用 GUI 共用的显式清理策略。清理只在任务成功后执行；失败或取消时保留全部可续跑
+产物。`final_only` 只删除已知的 WAV、日语 SRT 和对应 ASR metadata，不会直接删除工作目录，
+质量报告和 `pipeline.log` 会保留：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --cleanup-policy keep_all
+python scripts/video_to_zh_srt.py path/to/input.mp4 --cleanup-policy delete_audio
+python scripts/video_to_zh_srt.py path/to/input.mp4 --cleanup-policy final_only
+```
+
+旧的 `--delete-audio` 等价于 `--cleanup-policy delete_audio`；不要同时传入冲突策略。
+
 复用已抽取的 WAV、跳过重新 `ffmpeg`（在同一视频上反复跑流程调 ASR/翻译时很方便）：
 
 ```bash
@@ -180,6 +192,38 @@ python scripts/video_to_zh_srt.py path/to/videos/ \
 子进程，停止后续阶段和任务，以退出码 130 结束，并保留日志和可用于续跑的中间产物；取消
 音频抽取时产生的不完整 `.part` 文件会删除。调用方应为每次运行使用新的取消文件路径，且
 在启动前保证该路径不存在。
+
+### 桌面 GUI（源码开发版）
+
+GUI 依赖独立于基础命令行环境：
+
+```bash
+python -m pip install -r requirements-gui.txt
+python scripts/run_gui.py
+```
+
+主窗口支持：
+
+- 拖入一个或多个视频、拖入文件夹并可选递归扫描；
+- 任务去重、移除、清空，以及失败/取消任务重试；
+- Anime/Qwen ASR 和 GalTransl/Sakura 翻译模型选择及本地文件完整性提示；
+- 输出/工作目录、双语 ASS、质量报告、断点续跑、字幕复制，以及直接影响 ASR 显存与速度的
+  批大小（默认 24，显存不足时建议降到 16）；
+- 后台检测并显示 PyTorch ASR、ONNX Runtime 语音切分和 llama.cpp 翻译的 CUDA 支持状态；
+- 翻译上下文/批大小、自动换行、系统字体下拉框、中文/日文字号和调色板颜色集中在独立的
+  双标签高级设置窗口；
+- 三档成功后清理策略、实时阶段进度、完整日志和取消；
+- 自动记忆窗口、模型和常用参数设置。
+
+文件夹会先展开成 GUI 队列，当前版本固定逐个视频启动现有 CLI，避免并行模型实例叠加显存。
+阶段百分比来自版本化 JSONL
+事件；后端没有可靠内部百分比时只显示已完成阶段，不推测模型内部进度。该界面尚未打成
+Windows 绿色包，不能据此宣称 Windows CUDA 发布已经验证。
+
+“复用已完成阶段（断点续跑）”会跳过完整存在的 WAV、日语 SRT 和条数匹配的中文字幕。
+更换模型或识别参数后应关闭它，以免继续复用旧的识别结果。长字幕自动换行的默认阈值 20
+表示超过 20 个可见字符时尝试在靠近中间的句末标点处分成两行；没有合适标点时不会硬拆，
+关闭该开关等价于 `--display-wrap-max-chars 0`。
 
 ### 双语 ASS 与样式
 

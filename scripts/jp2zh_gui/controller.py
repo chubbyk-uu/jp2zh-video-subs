@@ -1,0 +1,224 @@
+"""QProcess controller bridging the GUI queue to the existing pipeline CLI."""
+from __future__ import annotations
+
+import json
+import sys
+from dataclasses import replace
+from pathlib import Path
+from uuid import uuid4
+
+from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+
+from .models import GuiConfig, GuiTask, PIPELINE_SCRIPT, PROJECT_ROOT, TaskStatus
+
+
+class PipelineController(QObject):
+    task_updated = Signal(object)
+    log_received = Signal(str)
+    overall_progress_changed = Signal(int)
+    running_changed = Signal(bool)
+    queue_finished = Signal()
+
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        *,
+        pipeline_script: Path = PIPELINE_SCRIPT,
+        python_executable: Path | str = sys.executable,
+    ) -> None:
+        super().__init__(parent)
+        self.pipeline_script = pipeline_script
+        self.python_executable = python_executable
+        self.tasks: list[GuiTask] = []
+        self.config = GuiConfig()
+        self.process: QProcess | None = None
+        self.current_task: GuiTask | None = None
+        self.event_path: Path | None = None
+        self.cancel_path: Path | None = None
+        self._event_offset = 0
+        self._event_buffer = b""
+        self._stop_after_current = False
+        self._runtime_dir: Path | None = None
+        self._event_timer = QTimer(self)
+        self._event_timer.setInterval(100)
+        self._event_timer.timeout.connect(self._read_events)
+
+    @property
+    def is_running(self) -> bool:
+        return self.process is not None and self.process.state() != QProcess.ProcessState.NotRunning
+
+    def start(self, tasks: list[GuiTask], config: GuiConfig) -> None:
+        if self.is_running:
+            raise RuntimeError("Pipeline queue is already running")
+        self.tasks = tasks
+        self.config = replace(config)
+        self._stop_after_current = False
+        self._runtime_dir = config.work_dir / ".gui" / uuid4().hex
+        self._runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.running_changed.emit(True)
+        self._start_next_task()
+
+    def cancel(self) -> None:
+        if not self.is_running or self.cancel_path is None:
+            return
+        self._stop_after_current = True
+        try:
+            self.cancel_path.parent.mkdir(parents=True, exist_ok=True)
+            self.cancel_path.touch(exist_ok=True)
+        except OSError as exc:
+            self.log_received.emit(f"\n无法写入取消文件：{exc}\n")
+            return
+        self.log_received.emit("\n已请求取消，正在等待当前阶段安全退出……\n")
+
+    def _start_next_task(self) -> None:
+        if self._stop_after_current:
+            self._finish_queue()
+            return
+        task = next((item for item in self.tasks if item.status == TaskStatus.WAITING), None)
+        if task is None:
+            self._finish_queue()
+            return
+
+        assert self._runtime_dir is not None
+        self.current_task = task
+        task.status = TaskStatus.RUNNING
+        task.error = ""
+        task.stage = None
+        task.stage_index = 0
+        task.completed_stages = 0
+        self.event_path = self._runtime_dir / f"{task.task_id}.events.jsonl"
+        self.cancel_path = self._runtime_dir / f"{task.task_id}.cancel.requested"
+        self.event_path.unlink(missing_ok=True)
+        self.cancel_path.unlink(missing_ok=True)
+        self._event_offset = 0
+        self._event_buffer = b""
+        self.task_updated.emit(task)
+        self._emit_overall_progress()
+
+        command = self.config.build_command(
+            task.video,
+            self.event_path,
+            self.cancel_path,
+            python_executable=self.python_executable,
+            pipeline_script=self.pipeline_script,
+        )
+        process = QProcess(self)
+        process.setWorkingDirectory(str(PROJECT_ROOT))
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        process.readyReadStandardOutput.connect(self._read_process_output)
+        process.finished.connect(self._process_finished)
+        process.errorOccurred.connect(self._process_error)
+        self.process = process
+        self._event_timer.start()
+        self.log_received.emit(f"\n▶ 开始处理：{task.video}\n")
+        process.start(command[0], command[1:])
+
+    def _read_process_output(self) -> None:
+        if self.process is None:
+            return
+        data = bytes(self.process.readAllStandardOutput())
+        if data:
+            self.log_received.emit(data.decode("utf-8", errors="replace"))
+
+    def _read_events(self) -> None:
+        if self.event_path is None or not self.event_path.exists():
+            return
+        try:
+            with self.event_path.open("rb") as handle:
+                handle.seek(self._event_offset)
+                data = handle.read()
+                self._event_offset = handle.tell()
+        except OSError:
+            return
+        if not data:
+            return
+        chunks = (self._event_buffer + data).split(b"\n")
+        self._event_buffer = chunks.pop()
+        for raw_line in chunks:
+            if not raw_line:
+                continue
+            try:
+                payload = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self.log_received.emit(f"\n事件解析失败：{exc}\n")
+                continue
+            self._apply_event(payload)
+
+    def _apply_event(self, payload: dict) -> None:
+        task = self.current_task
+        if task is None:
+            return
+        event = payload.get("event")
+        if event == "stage_started":
+            task.stage = payload.get("stage")
+            task.stage_index = int(payload.get("stage_index", task.stage_index))
+            task.stage_total = int(payload.get("stage_total", task.stage_total))
+        elif event in ("stage_completed", "stage_skipped"):
+            task.stage = payload.get("stage")
+            task.stage_index = int(payload.get("stage_index", task.stage_index))
+            task.stage_total = int(payload.get("stage_total", task.stage_total))
+            task.completed_stages = max(task.completed_stages, task.stage_index)
+        elif event == "stage_failed":
+            task.error = str(payload.get("error", "流水线阶段失败"))
+        elif event == "stage_cancelled":
+            task.status = TaskStatus.CANCELLED
+        elif event == "job_completed":
+            task.outputs = {key: Path(value) for key, value in payload.get("outputs", {}).items()}
+        elif event == "job_failed":
+            task.error = str(payload.get("error", "任务失败"))
+        self.task_updated.emit(task)
+        self._emit_overall_progress()
+
+    def _process_finished(self, exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
+        self._read_process_output()
+        self._read_events()
+        self._event_timer.stop()
+        task = self.current_task
+        if task is not None:
+            if exit_code == 0:
+                task.status = TaskStatus.COMPLETED
+                task.completed_stages = task.stage_total
+            elif exit_code == 130 or self._stop_after_current:
+                task.status = TaskStatus.CANCELLED
+            else:
+                task.status = TaskStatus.FAILED
+                if not task.error:
+                    task.error = f"流水线退出码：{exit_code}"
+            self.task_updated.emit(task)
+        self.process = None
+        process = self.sender()
+        if isinstance(process, QProcess):
+            process.deleteLater()
+        self.current_task = None
+        self._emit_overall_progress()
+        QTimer.singleShot(0, self._start_next_task)
+
+    def _process_error(self, error: QProcess.ProcessError) -> None:
+        if error != QProcess.ProcessError.FailedToStart or self.current_task is None:
+            return
+        task = self.current_task
+        task.status = TaskStatus.FAILED
+        task.error = "无法启动流水线进程"
+        self.task_updated.emit(task)
+        self._event_timer.stop()
+        if self.process is not None:
+            self.process.deleteLater()
+        self.process = None
+        self.current_task = None
+        self._emit_overall_progress()
+        QTimer.singleShot(0, self._start_next_task)
+
+    def _emit_overall_progress(self) -> None:
+        if not self.tasks:
+            self.overall_progress_changed.emit(0)
+            return
+        total = sum(task.progress_percent for task in self.tasks)
+        self.overall_progress_changed.emit(round(total / len(self.tasks)))
+
+    def _finish_queue(self) -> None:
+        self._event_timer.stop()
+        self.process = None
+        self.current_task = None
+        self.running_changed.emit(False)
+        self._emit_overall_progress()
+        self.queue_finished.emit()

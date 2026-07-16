@@ -245,6 +245,22 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 
 更多用法（配置文件、完整默认行为、所有常用参数、单步运行、CUDA 验证、排障）见 [docs/USAGE.md](docs/USAGE.md)。
 
+## 桌面 GUI（开发版）
+
+当前源码已经提供可选的 PySide6 桌面 GUI：
+
+```bash
+python -m pip install -r requirements-gui.txt
+python scripts/run_gui.py
+```
+
+支持拖入视频或文件夹、可见任务队列、Anime/Qwen 与 GalTransl/Sakura 下拉选择、常用字幕
+参数、实时阶段进度和日志、安全取消、失败重试、设置记忆、模型文件检查，以及成功后的中间
+产物清理。GUI 会先把文件夹展开为视频列表，再逐个调用现有 CLI 流水线。
+
+这仍是源码开发版 GUI，不是已经完成的 Windows CUDA 绿色发布包。内置 Python、FFmpeg、
+Windows CUDA 依赖和最终压缩包尚未组装及验证。
+
 ## 输出文件
 
 以 `path/to/input.mp4` 为例，默认输出：

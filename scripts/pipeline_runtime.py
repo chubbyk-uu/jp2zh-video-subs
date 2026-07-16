@@ -14,6 +14,7 @@ from typing import Any
 
 EVENT_SCHEMA_VERSION = 1
 PIPELINE_STAGES = ("extract", "asr", "translate", "ass", "quality", "cleanup")
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".webm", ".m4v", ".ts"}
 
 
 class PipelineCancelled(Exception):

@@ -10,6 +10,8 @@ import pytest
 from pipeline_runtime import CancellationToken, EventWriter, PipelineCancelled
 from video_to_zh_srt import (
     JobLog,
+    cleanup_intermediate_files,
+    effective_cleanup_policy,
     output_path_for,
     run,
     run_pipeline,
@@ -350,6 +352,35 @@ def test_translation_is_complete_requires_matching_cue_counts(tmp_path):
     # One cue per source cue: complete.
     zh.write_text(SRT_TWO_CUES.replace("こんにちは", "你好").replace("さようなら", "再见"), encoding="utf-8")
     assert translation_is_complete(zh, ja)
+
+
+@pytest.mark.parametrize(
+    ("policy", "remaining"),
+    [
+        ("keep_all", {"sample.wav", "sample.ja.srt", "sample.ja.srt.meta.json", "pipeline.log", "sample.quality.txt"}),
+        ("delete_audio", {"sample.ja.srt", "sample.ja.srt.meta.json", "pipeline.log", "sample.quality.txt"}),
+        ("final_only", {"pipeline.log", "sample.quality.txt"}),
+    ],
+)
+def test_cleanup_intermediate_files_deletes_only_known_files(tmp_path, policy, remaining):
+    audio = tmp_path / "sample.wav"
+    ja_srt = tmp_path / "sample.ja.srt"
+    for name in ("sample.wav", "sample.ja.srt", "sample.ja.srt.meta.json", "pipeline.log", "sample.quality.txt"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+
+    cleanup_intermediate_files(policy, audio, ja_srt)
+
+    assert {path.name for path in tmp_path.iterdir()} == remaining
+
+
+def test_effective_cleanup_policy_preserves_delete_audio_compatibility():
+    import argparse
+
+    assert effective_cleanup_policy(argparse.Namespace(cleanup_policy=None, delete_audio=False)) == "keep_all"
+    assert effective_cleanup_policy(argparse.Namespace(cleanup_policy=None, delete_audio=True)) == "delete_audio"
+    assert effective_cleanup_policy(argparse.Namespace(cleanup_policy="final_only", delete_audio=False)) == "final_only"
+    with pytest.raises(SystemExit, match="conflicts"):
+        effective_cleanup_policy(argparse.Namespace(cleanup_policy="final_only", delete_audio=True))
 
 
 def test_output_path_for_includes_relative_parent_when_present(tmp_path):
