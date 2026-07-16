@@ -315,6 +315,7 @@ The detailed reference docs are maintained in Chinese only:
 
 - [docs/BACKENDS.md](docs/BACKENDS.md) — ASR (Anime vs Qwen) and translation (GalTransl vs Sakura) backend comparisons, how each line works, and when to prefer which.
 - [docs/USAGE.md](docs/USAGE.md) — config files, full default behavior, all common options, step-by-step per-script usage, the CUDA check, and troubleshooting.
+- [docs/GUI_TEST_PLAN.md](docs/GUI_TEST_PLAN.md) — executable GUI test matrix, Windows portable acceptance cases, and run/defect record templates (Chinese).
 
 ## Testing
 
