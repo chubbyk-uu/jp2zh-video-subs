@@ -48,6 +48,7 @@ test -f "$extract_root/jp2zh-video-subs/models/Sakura-14B-Qwen2.5-v1.0-GGUF/saku
 test -f "$extract_root/jp2zh-video-subs/models/voice-gender-classifier/model.safetensors"
 test -d "$extract_root/jp2zh-video-subs/runtime/Lib/site-packages/transformers/models"
 test ! -e "$extract_root/jp2zh-video-subs/config/gui.ini"
+test ! -e "$extract_root/jp2zh-video-subs/config/jp2zh-video-subs.lock"
 test -z "$(find "$extract_root/jp2zh-video-subs/outputs" "$extract_root/jp2zh-video-subs/work" -type f -print -quit)"
 "$extract_root/jp2zh-video-subs/runtime/python.exe" -c \
     "from transformers import WhisperForConditionalGeneration, WhisperProcessor; print('Extracted Transformers runtime OK')"

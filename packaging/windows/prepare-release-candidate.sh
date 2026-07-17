@@ -39,7 +39,7 @@ if [[ "$target" == all ]]; then
     rm -rf "$release_root/staging"
 else
     case "$target" in
-        program) rm -rf "$(dirname "$program_stage")" ;;
+        program) ;;
         default) rm -rf "$(dirname "$models_stage")" ;;
         qwen-asr) rm -rf "$(dirname "$qwen_stage")" ;;
         sakura-14b) rm -rf "$(dirname "$sakura_stage")" ;;
@@ -125,12 +125,16 @@ copy_license_file() {
 
 if [[ "$target" == all || "$target" == program ]]; then
     mkdir -p "$program_stage"
-    rsync -a --delete \
+    # Keep an existing program stage so small application updates do not recreate
+    # tens of thousands of NTFS hard links. --delete-excluded still enforces the
+    # release boundary when new local-only files appear in the package.
+    rsync -a --delete --delete-excluded \
         --link-dest="$source_root" \
         --exclude '__pycache__/' \
         --exclude '*.pyc' \
         --exclude '/cache/***' \
         --exclude '/config/gui.ini' \
+        --exclude '/config/*.lock' \
         --exclude '/config/models-*.sha256' \
         --exclude '/config/python-runtime.sha256' \
         --exclude '/models/***' \
