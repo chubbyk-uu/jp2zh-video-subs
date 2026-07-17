@@ -20,6 +20,7 @@ models_archive="$archives/jp2zh-video-subs-default-models.7z"
 qwen_archive="$archives/jp2zh-video-subs-qwen-asr-model.7z"
 sakura_archive="$archives/jp2zh-video-subs-sakura-14b-model.7z"
 speaker_archive="$archives/jp2zh-video-subs-speaker-gender-model.7z"
+changed_archives=()
 
 case "$target" in
     all|program|default|qwen-asr|sakura-14b|speaker-gender|models) ;;
@@ -51,6 +52,7 @@ if [[ "$target" == all || "$target" == program ]]; then
         cd "$program_stage"
         7z.exe a -t7z -mx=1 -mmt=on "$(wslpath -w "$program_archive")" jp2zh-video-subs
     )
+    changed_archives+=("$program_archive")
 fi
 
 archive_model_stage() {
@@ -70,6 +72,7 @@ archive_model_stage() {
         cd "$stage"
         7z.exe a -t7z -mx=0 -mmt=on "$(wslpath -w "$archive")" jp2zh-video-subs
     )
+    changed_archives+=("$archive")
 }
 
 archive_model_stage default "$models_stage" "$models_archive" anime-whisper
@@ -77,10 +80,21 @@ archive_model_stage qwen-asr "$qwen_stage" "$qwen_archive" Qwen3-ASR-1.7B
 archive_model_stage sakura-14b "$sakura_stage" "$sakura_archive" Sakura-14B-Qwen2.5-v1.0-GGUF
 archive_model_stage speaker-gender "$speaker_stage" "$speaker_archive" voice-gender-classifier
 
-(
-    cd "$archives"
-    find . -maxdepth 1 -type f -name 'jp2zh-video-subs-*.7z' -printf '%f\n' |
-        sort |
-        xargs -r sha256sum > SHA256SUMS
-)
+checksum_file="$archives/SHA256SUMS"
+checksum_temp="$(mktemp "$archives/.SHA256SUMS.XXXXXX")"
+trap 'rm -f "$checksum_temp"' EXIT
+if [[ -f "$checksum_file" ]]; then
+    cp "$checksum_file" "$checksum_temp"
+fi
+for archive in "${changed_archives[@]}"; do
+    name="$(basename "$archive")"
+    sed -i "\\|  $name\$|d" "$checksum_temp"
+    (
+        cd "$archives"
+        sha256sum "$name"
+    ) >> "$checksum_temp"
+done
+sort -k2,2 "$checksum_temp" > "$checksum_file"
+rm -f "$checksum_temp"
+trap - EXIT
 printf 'Archives written to %s\n' "$archives"
