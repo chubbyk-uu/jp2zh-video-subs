@@ -266,8 +266,8 @@ Windows 上最直接的入口是
 
 不需要安装系统 Python、FFmpeg 或 CUDA Toolkit，但必须有正常的 NVIDIA 显卡驱动。
 Release 不包含模型权重、示例视频或其他媒体文件。第一次启动时，模型完整性提示会列出尚未下载的文件。
-`models\whisperseg\model.onnx` 缺失时，设备栏可能会把语音切分显示为 CPU，因为此时还无法创建真实的
-ONNX CUDA 会话；下载该模型后点击“刷新”重新检测。
+`models\whisperseg\model.onnx` 缺失时，设备栏会显示“语音切分 未检测（缺少模型）”，不再猜测为
+CPU。模型存在时才通过真实 ONNX Runtime 会话显示 CUDA、CPU 或检测失败；更改模型文件后点击“刷新”重新检测。
 
 GUI 支持拖入视频或文件夹、可见任务队列、Anime/Qwen 与 GalTransl/Sakura 选择、
 常用字幕参数、总体进度与详细阶段状态、可折叠日志、取消、失败重试、设置记忆、模型文件检查，

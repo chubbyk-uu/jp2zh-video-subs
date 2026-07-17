@@ -289,9 +289,10 @@ The easiest Windows entry point is the portable
 No system Python, FFmpeg, or CUDA Toolkit installation is required. A working NVIDIA driver
 is still required. The release contains no model weights, sample videos, or other media files.
 On first launch, missing-model checks list the files that must be downloaded. Until
-`models\whisperseg\model.onnx` exists, the device panel may label speech segmentation as CPU
-because it cannot create the real ONNX CUDA session yet; refresh the panel after downloading
-the model.
+`models\whisperseg\model.onnx` exists, the device panel reports speech segmentation as
+"not checked (model missing)" instead of guessing CPU. With the model installed, it reports
+CUDA, CPU, or a probe failure from a real ONNX Runtime session; use **Refresh** after changing
+model files.
 
 The GUI supports video/folder drag-and-drop, a visible task queue, Anime/Qwen and
 GalTransl/Sakura selectors, common subtitle settings, live overall progress with detailed stage

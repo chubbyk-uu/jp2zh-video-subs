@@ -516,7 +516,18 @@ git diff --check
 | 图标 | PASS：EXE 内置 16–256 px 九档图标；Windows 成功从最终启动器提取 32 px 图标；Qt 窗口图标加载成功 |
 | 隐私边界 | PASS：最终归档不包含 `config/gui.ini`、模型权重、示例视频或其他媒体文件 |
 | 用户解压启动 | PASS：用户已解压最终程序包并启动 GUI；缺少模型时正确列出 6 个必需文件 |
-| 已知提示问题 | 缺少 WhisperSeg ONNX 时设备栏显示“语音切分 CPU”；实际是因缺模型无法验证 ONNX CUDA 会话，需在模型下载后刷新复测 |
+| 已知提示问题 | 缺少 WhisperSeg ONNX 时设备栏显示“语音切分 CPU”；该问题已由后续 RUN-20260717-15 修复和复测 |
+
+### RUN-20260717-15：GUI 进程与设备状态加固
+
+| 项目 | 记录值 |
+|---|---|
+| 源码版本 | `6974e93` (`Harden GUI process and device handling`) |
+| 自动测试 | PASS：`336 passed`；包括 CrashExit + 退出码 0 仍标记失败、单实例锁、运行时目录清理和 VAD 四态文案 |
+| Windows launcher | PASS：MinGW `-Wall -Wextra -Werror` 完整链接成功；`SystemRoot`、环境变量和路径截断均有失败检查 |
+| package 刷新 | PASS：仅同步程序脚本并重编译原生 EXE；源码与 package 的 5 个变更脚本 SHA-256 逐一一致 |
+| Windows 用户验收 | PASS（人工）：重复启动第二个 GUI 时出现单实例提示；临时移走 models 后显示“语音切分 未检测（缺少模型）” |
+| 完整流程 | PASS（人工）：Windows GUI 正常完成一次实际任务；结束后 `work/.gui` 未留下本次 UUID 运行目录 |
 
 ## 14. 当前剩余人工验收
 
