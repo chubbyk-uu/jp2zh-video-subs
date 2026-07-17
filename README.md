@@ -7,7 +7,7 @@ a bilingual Chinese/Japanese ASS by default. The default pipeline is tuned for J
 audio and runs fully offline after the required models are downloaded.
 
 Windows users can start with the portable desktop GUI in the
-[`v0.1.0 Beta 1` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.1).
+[`v0.1.0 Beta 2` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.2).
 It bundles the application runtime and FFmpeg, but not third-party model weights; follow
 `INSTALL-EN.txt` or `INSTALL-CN.txt` on the release page to download models with the bundled
 Hugging Face CLI. The command-line workflow remains fully supported for source installations
@@ -277,7 +277,7 @@ per-script usage, the CUDA check, and troubleshooting, see [docs/USAGE.md](docs/
 ### Windows portable beta
 
 The easiest Windows entry point is the portable
-[`v0.1.0 Beta 1` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.1):
+[`v0.1.0 Beta 2` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.2):
 
 1. Download every `jp2zh-video-subs-windows-x64-cuda-program.7z.*` volume.
 2. Put all volumes in one directory and extract `.7z.001` with 7-Zip or NanaZip.
@@ -287,7 +287,8 @@ The easiest Windows entry point is the portable
 4. Double-click `jp2zh字幕工具.exe`.
 
 No system Python, FFmpeg, or CUDA Toolkit installation is required. A working NVIDIA driver
-is still required. The release contains no model weights, sample videos, or other media files.
+is still required. The release contains no model weights, user or sample videos, subtitles, or
+similar content.
 On first launch, missing-model checks list the files that must be downloaded. Until
 `models\whisperseg\model.onnx` exists, the device panel reports speech segmentation as
 "not checked (model missing)" instead of guessing CPU. With the model installed, it reports

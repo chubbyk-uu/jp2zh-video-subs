@@ -529,6 +529,16 @@ git diff --check
 | Windows 用户验收 | PASS（人工）：重复启动第二个 GUI 时出现单实例提示；临时移走 models 后显示“语音切分 未检测（缺少模型）” |
 | 完整流程 | PASS（人工）：Windows GUI 正常完成一次实际任务；结束后 `work/.gui` 未留下本次 UUID 运行目录 |
 
+### RUN-20260717-16：Windows CUDA Beta 2 发布
+
+| 项目 | 记录值 |
+|---|---|
+| Release | `v0.1.0-beta.2` 已作为 GitHub prerelease 发布，tag 指向 `b1d4e5f` |
+| 程序分卷 | `.001` 1,992,294,400 B；`.002` 1,290,993,726 B；重组 SHA-256 为 `ff8aed50b5310995c3bc30c80c048a1b3da5b1b57371601f1ec510d5cd01f085` |
+| 完整性 | PASS：原始程序归档和直接从 `.001` 识别的两分卷均通过 `7z t`；流式重组 SHA-256 与原归档一致 |
+| 隐私边界 | PASS：归档不包含模型、`config/gui.ini`、运行锁、work、outputs、用户/示例视频或字幕 |
+| 远端资产 | PASS：2 个程序分卷、2 个中英文安装说明和 2 个 SHA-256 文件均为 `uploaded`；release 非 draft 且为 prerelease |
+
 ## 14. 当前剩余人工验收
 
 以下项目尚未用真实桌面手工操作逐项勾选，保留 `NOT RUN`：系统文件对话框、真实桌面
