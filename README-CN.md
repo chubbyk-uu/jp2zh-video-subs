@@ -4,6 +4,12 @@
 
 这个项目用于从本地视频生成简体中文字幕 SRT，并默认生成中日双语 ASS。当前默认流程面向日语语音，下载好模型后，推理过程全部在本地完成。
 
+Windows 用户建议直接使用
+[`v0.1.0 Beta 1` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.1)。
+它已内置程序运行时和 FFmpeg，但不附带第三方模型权重；按 Release 里的
+`INSTALL-CN.txt` 使用包内 Hugging Face CLI 下载模型即可。CLI 仍是完整支持的
+源码安装与高级用法入口。
+
 项目提供两套识别后端，用 `--asr` 选择：
 
 - **`anime`（默认）**——用 `litagin/anime-whisper` 出文本，WhisperSeg 做弱语音切分，semantic scene 做场景边界，默认使用 Qwen forced aligner 定时，并在整段或局部对齐坍缩时自动回退 VAD 时间。它是当前 JAV/anime 风格素材的推荐主线。
@@ -247,49 +253,42 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 
 ## 桌面 GUI
 
-当前源码已经提供可选的 PySide6 桌面 GUI：
+### Windows 绿色测试版
+
+Windows 上最直接的入口是
+[`v0.1.0 Beta 1` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.1)：
+
+1. 下载全部 `jp2zh-video-subs-windows-x64-cuda-program.7z.*` 分卷。
+2. 把所有分卷放在同一目录，用 7-Zip 或 NanaZip 从 `.7z.001` 开始解压。
+3. 在解压后的 `jp2zh-video-subs` 目录打开命令提示符，按 Release 中的
+   `INSTALL-CN.txt` 使用包内 `runtime\Scripts\hf.exe` 下载必需模型。
+4. 双击 `jp2zh字幕工具.exe`。
+
+不需要安装系统 Python、FFmpeg 或 CUDA Toolkit，但必须有正常的 NVIDIA 显卡驱动。
+Release 不包含模型权重、示例视频或其他媒体文件。第一次启动时，模型完整性提示会列出尚未下载的文件。
+`models\whisperseg\model.onnx` 缺失时，设备栏可能会把语音切分显示为 CPU，因为此时还无法创建真实的
+ONNX CUDA 会话；下载该模型后点击“刷新”重新检测。
+
+GUI 支持拖入视频或文件夹、可见任务队列、Anime/Qwen 与 GalTransl/Sakura 选择、
+常用字幕参数、总体进度与详细阶段状态、可折叠日志、取消、失败重试、设置记忆、模型文件检查，
+以及成功后的中间产物清理。文件夹会展开为视频列表并逐个处理，避免多个模型实例叠加显存。
+
+Windows 包内置 Python 3.12、FFmpeg、PyTorch CUDA、ONNX Runtime CUDA 和启用 CUDA 的
+llama.cpp。已通过含中文/空格路径重定位、不依赖 WSL 的原生 EXE 启动、安装模型后的三项 CUDA 探测，
+以及 Anime + GalTransl 完整流程。发布前还验证了 Qwen + GalTransl、Anime + Sakura 14B 和说话人性别着色。
+目前原生 CUDA 证据仅来自一台 RTX 5080，其他 NVIDIA 显卡/驱动组合仍属于 Beta 反馈范围，
+不作广泛兼容性保证。
+
+### 从源码启动 GUI
+
+同一套 PySide6 GUI 也可以从源码运行：
 
 ```bash
 python -m pip install -r requirements-gui.txt
 python scripts/run_gui.py
 ```
 
-支持拖入视频或文件夹、可见任务队列、Anime/Qwen 与 GalTransl/Sakura 下拉选择、常用字幕
-参数、实时阶段进度和日志、安全取消、失败重试、设置记忆、模型文件检查，以及成功后的中间
-产物清理。GUI 会先把文件夹展开为视频列表，再逐个调用现有 CLI 流水线。
-
-Windows x64 CUDA 绿色开发目录也已完成首次组装与原生验证：内置 Python 3.12、FFmpeg、
-PyTorch CUDA、ONNX Runtime CUDA 和 llama.cpp GPU 卸载均已实际运行，固定版本和组装脚本
-位于 `packaging/windows/`。开发目录整体移动到含中文和空格的新路径后也已通过重定位测试。
-测试版候选已拆成程序、默认模型、Qwen ASR、Sakura 14B 和说话人性别模型五个归档，并通过
-全新合并解压、SHA-256、内置 Python GUI 启动、三项 CUDA 探测和默认完整流程验证。
-Qwen + GalTransl、Anime + Sakura 14B 以及说话人性别着色也都已用 Windows 包内运行时和
-模型真实运行。默认模型包和 Sakura 14B 包包含上游声明为 CC-BY-NC-SA-4.0 的翻译模型，
-必须与程序包分开发放并保留非商业许可提示。完全关闭 WSL 后从 Windows 独立启动并跑完整体
-流程也已通过。目前仍是测试版候选；只在 RTX 5080 上完成原生 CUDA 验证，尚无第二台
-NVIDIA 电脑的兼容性证据。
-原生默认流程也已通过中文、空格和较长名称的输入/输出/工作路径测试，并成功把最终 ASS
-复制到源视频旁边。
-
-开发绿色目录可直接双击 `jp2zh字幕工具.exe` 启动；这是一个轻量原生启动器，实际运行
-包内 `pythonw.exe`，不会依赖系统 Python。正常流水线子进程使用无控制台模式，调试时仍可
-运行 `启动字幕工具-调试.cmd` 查看命令行输出。GUI 只显示一根总体进度条，但 Anime/Qwen
-分块识别、强制对齐和逐条翻译会持续推动进度，并显示当前具体状态；日志区域可以折叠并
-记住上次选择，任务失败时会自动展开。
-
-测试版归档按以下顺序解压到同一目录；每个归档内部都使用相同的
-`jp2zh-video-subs/` 根目录：
-
-1. 解压 `jp2zh-video-subs-windows-x64-cuda-program.7z`。
-2. 解压必需的 `jp2zh-video-subs-default-models.7z`。
-3. 按需叠加 `jp2zh-video-subs-qwen-asr-model.7z`、
-   `jp2zh-video-subs-sakura-14b-model.7z` 和
-   `jp2zh-video-subs-speaker-gender-model.7z`。
-4. 双击 `jp2zh字幕工具.exe`。系统无需另装 Python、FFmpeg 或 CUDA Toolkit，但仍需
-   正常的 NVIDIA 显卡驱动。
-
-程序包加默认模型解压后约需 20 GB；安装全部可选模型约需 33 GB。发布归档旁的
-`SHA256SUMS` 用于下载后完整性校验。
+GUI 复用现有 CLI 流水线，不维护另一套推理逻辑。`packaging/windows/` 保留了固定版本的运行时输入和可复现的 Windows 组装脚本。
 
 ## 输出文件
 

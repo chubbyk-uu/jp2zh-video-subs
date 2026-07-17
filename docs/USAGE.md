@@ -193,9 +193,17 @@ python scripts/video_to_zh_srt.py path/to/videos/ \
 音频抽取时产生的不完整 `.part` 文件会删除。调用方应为每次运行使用新的取消文件路径，且
 在启动前保证该路径不存在。
 
-### 桌面 GUI（源码开发版）
+### 桌面 GUI
 
-GUI 依赖独立于基础命令行环境：
+Windows 用户可从
+[`v0.1.0 Beta 1`](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.1)
+下载绿色版。下载全部 `jp2zh-video-subs-windows-x64-cuda-program.7z.*`
+分卷，放在同一目录并从 `.7z.001` 解压，然后按 Release 内的
+`INSTALL-CN.txt` 使用包内 `runtime\Scripts\hf.exe` 下载模型。双击
+`jp2zh字幕工具.exe` 即可启动；系统无需另装 Python、FFmpeg 或 CUDA Toolkit，
+但仍需可用的 NVIDIA 驱动。发布包只包含程序，不包含模型权重或示例视频。
+
+从源码运行 GUI 时，图形依赖独立于基础命令行环境：
 
 ```bash
 python -m pip install -r requirements-gui.txt
@@ -219,8 +227,10 @@ python scripts/run_gui.py
 文件夹会先展开成 GUI 队列，当前版本固定逐个视频启动现有 CLI，避免并行模型实例叠加显存。
 阶段百分比来自版本化 JSONL
 事件；后端没有可靠内部百分比时只显示已完成阶段，不推测模型内部进度。Windows x64 CUDA
-测试版候选已经完成绿色目录组装、分包、全新解压和 RTX 5080 原生验证；其它 NVIDIA 显卡
-仍缺少实机兼容性证据。
+绿色版已完成程序分卷、全新解压和 RTX 5080 原生验证；其它
+NVIDIA 显卡仍缺少实机兼容性证据。缺少 `models\whisperseg\model.onnx`
+时，设备栏无法建立真实 ONNX CUDA 会话，因此可能暂时显示“语音切分 CPU”；
+下载模型后点击“刷新”再判断语音切分的实际运行设备。
 
 “复用已完成阶段（断点续跑）”会跳过完整存在的 WAV、日语 SRT 和条数匹配的中文字幕。
 更换模型或识别参数后应关闭它，以免继续复用旧的识别结果。长字幕自动换行的默认阈值 20
