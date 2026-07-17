@@ -6,7 +6,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QProcess, QTimer
 from PySide6.QtWidgets import QApplication
 
 from jp2zh_gui.controller import PipelineController
@@ -170,3 +170,35 @@ def test_controller_cancel_stops_after_current_and_leaves_rest_waiting(tmp_path)
     assert tasks[0].status == TaskStatus.CANCELLED
     assert tasks[1].status == TaskStatus.WAITING
     assert not controller.is_running
+
+
+def test_controller_treats_crash_exit_as_failure_even_with_zero_exit_code(tmp_path):
+    application()
+    task = GuiTask(tmp_path / "one.mp4")
+    controller = PipelineController()
+    controller.tasks = [task]
+    controller.current_task = task
+    task.status = TaskStatus.RUNNING
+
+    controller._process_finished(0, QProcess.ExitStatus.CrashExit)
+
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "流水线进程异常崩溃"
+
+
+def test_controller_removes_its_runtime_directory_after_queue(tmp_path):
+    application()
+    fake_pipeline = tmp_path / "fake_pipeline.py"
+    write_success_pipeline(fake_pipeline)
+    controller = PipelineController(pipeline_script=fake_pipeline)
+
+    controller.start(
+        [GuiTask(tmp_path / "one.mp4")],
+        GuiConfig(output_dir=tmp_path / "out", work_dir=tmp_path / "work"),
+    )
+    runtime_dir = controller._runtime_dir
+
+    assert runtime_dir is not None and runtime_dir.is_dir()
+    assert wait_for_queue(controller)
+    assert not runtime_dir.exists()
+    assert controller._runtime_dir is None

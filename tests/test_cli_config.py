@@ -212,6 +212,8 @@ def test_pipeline_translate_command_uses_backend_configs():
     ]
     for translator, parser, cls, expected_context in cases:
         cmd = build_translate_command(_pipeline_args(translator), Path("in.ja.srt"), Path("out.zh.srt"))
+        # run_stage_command uses argv[2] to count cues for translation progress.
+        assert cmd[2] == "in.ja.srt"
         ns = parser.parse_args(cmd[2:])
         cfg = config_from_namespace(ns, cls)
         assert cfg.context_size == expected_context

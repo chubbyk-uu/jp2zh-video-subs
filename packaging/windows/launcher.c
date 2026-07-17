@@ -3,41 +3,54 @@
 
 static int join_path(wchar_t *output, size_t capacity, const wchar_t *root, const wchar_t *relative) {
     int written = swprintf(output, capacity, L"%ls\\%ls", root, relative);
-    return written > 0 && (size_t)written < capacity;
+    return written >= 0 && (size_t)written < capacity;
 }
 
-static void set_root_environment(const wchar_t *root) {
+static int set_root_environment(const wchar_t *root) {
     wchar_t value[32768];
     wchar_t system_root[MAX_PATH];
-    GetEnvironmentVariableW(L"SystemRoot", system_root, MAX_PATH);
+    DWORD system_root_length;
+    int written;
 
-    SetEnvironmentVariableW(L"JP2ZH_PORTABLE_ROOT", root);
-    SetEnvironmentVariableW(L"PYTHONNOUSERSITE", L"1");
-    SetEnvironmentVariableW(L"PYTHONDONTWRITEBYTECODE", L"1");
-    SetEnvironmentVariableW(L"PYTHONUTF8", L"1");
-    SetEnvironmentVariableW(L"HF_HUB_OFFLINE", L"1");
-    SetEnvironmentVariableW(L"TRANSFORMERS_OFFLINE", L"1");
+    system_root_length = GetEnvironmentVariableW(L"SystemRoot", system_root, MAX_PATH);
+    if (system_root_length == 0 || system_root_length >= MAX_PATH) {
+        return 0;
+    }
 
-    swprintf(value, 32768, L"%ls\\cache\\huggingface", root);
-    SetEnvironmentVariableW(L"HF_HOME", value);
-    swprintf(value, 32768, L"%ls\\cache\\huggingface\\hub", root);
-    SetEnvironmentVariableW(L"HF_HUB_CACHE", value);
-    swprintf(value, 32768, L"%ls\\cache\\huggingface\\transformers", root);
-    SetEnvironmentVariableW(L"TRANSFORMERS_CACHE", value);
-    swprintf(value, 32768, L"%ls\\cache\\numba", root);
-    SetEnvironmentVariableW(L"NUMBA_CACHE_DIR", value);
-    swprintf(value, 32768, L"%ls\\cache\\torch", root);
-    SetEnvironmentVariableW(L"TORCH_HOME", value);
-    swprintf(value, 32768, L"%ls\\cache\\temp", root);
-    SetEnvironmentVariableW(L"TEMP", value);
-    SetEnvironmentVariableW(L"TMP", value);
-    swprintf(
+    if (!SetEnvironmentVariableW(L"JP2ZH_PORTABLE_ROOT", root) ||
+        !SetEnvironmentVariableW(L"PYTHONNOUSERSITE", L"1") ||
+        !SetEnvironmentVariableW(L"PYTHONDONTWRITEBYTECODE", L"1") ||
+        !SetEnvironmentVariableW(L"PYTHONUTF8", L"1") ||
+        !SetEnvironmentVariableW(L"HF_HUB_OFFLINE", L"1") ||
+        !SetEnvironmentVariableW(L"TRANSFORMERS_OFFLINE", L"1")) {
+        return 0;
+    }
+
+    if (!join_path(value, 32768, root, L"cache\\huggingface") ||
+        !SetEnvironmentVariableW(L"HF_HOME", value) ||
+        !join_path(value, 32768, root, L"cache\\huggingface\\hub") ||
+        !SetEnvironmentVariableW(L"HF_HUB_CACHE", value) ||
+        !join_path(value, 32768, root, L"cache\\huggingface\\transformers") ||
+        !SetEnvironmentVariableW(L"TRANSFORMERS_CACHE", value) ||
+        !join_path(value, 32768, root, L"cache\\numba") ||
+        !SetEnvironmentVariableW(L"NUMBA_CACHE_DIR", value) ||
+        !join_path(value, 32768, root, L"cache\\torch") ||
+        !SetEnvironmentVariableW(L"TORCH_HOME", value) ||
+        !join_path(value, 32768, root, L"cache\\temp") ||
+        !SetEnvironmentVariableW(L"TEMP", value) ||
+        !SetEnvironmentVariableW(L"TMP", value)) {
+        return 0;
+    }
+    written = swprintf(
         value,
         32768,
         L"%ls\\bin;%ls\\runtime;%ls\\runtime\\Scripts;%ls\\runtime\\Lib\\site-packages\\torch\\lib;%ls\\System32;%ls",
         root, root, root, root, system_root, system_root
     );
-    SetEnvironmentVariableW(L"PATH", value);
+    if (written < 0 || written >= 32768 || !SetEnvironmentVariableW(L"PATH", value)) {
+        return 0;
+    }
+    return 1;
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, int show_command) {
@@ -49,6 +62,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     STARTUPINFOW startup = {0};
     PROCESS_INFORMATION process = {0};
     DWORD length;
+    int written;
     wchar_t *separator;
 
     (void)instance;
@@ -85,8 +99,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
         return 2;
     }
 
-    set_root_environment(root);
-    swprintf(command, 65536, L"\"%ls\" \"%ls\"", pythonw, script);
+    if (!set_root_environment(root)) {
+        MessageBoxW(NULL, L"无法初始化绿色版运行环境。", L"jp2zh 字幕工具", MB_ICONERROR);
+        return 2;
+    }
+    written = swprintf(command, 65536, L"\"%ls\" \"%ls\"", pythonw, script);
+    if (written < 0 || written >= 65536) {
+        MessageBoxW(NULL, L"绿色目录路径过长。", L"jp2zh 字幕工具", MB_ICONERROR);
+        return 2;
+    }
     startup.cb = sizeof(startup);
     if (!CreateProcessW(
             pythonw,
@@ -100,7 +121,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
             &startup,
             &process)) {
         wchar_t message[512];
-        swprintf(message, 512, L"无法启动 GUI（Windows 错误 %lu）。", GetLastError());
+        written = swprintf(message, 512, L"无法启动 GUI（Windows 错误 %lu）。", GetLastError());
+        if (written < 0 || written >= 512) {
+            wcscpy(message, L"无法启动 GUI。");
+        }
         MessageBoxW(NULL, message, L"jp2zh 字幕工具", MB_ICONERROR);
         return 3;
     }

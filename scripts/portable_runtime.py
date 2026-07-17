@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import ctypes
+import tempfile
 from pathlib import Path
 
 
@@ -41,6 +42,14 @@ def portable_config_path(anchor: Path | None = None) -> Path | None:
     if not os.environ.get(PORTABLE_ROOT_ENV, "").strip():
         return None
     return project_root(anchor) / "config" / "gui.ini"
+
+
+def single_instance_lock_path(anchor: Path | None = None) -> Path:
+    """Return a per-bundle lock path, or a per-user temporary path for source runs."""
+    config_path = portable_config_path(anchor)
+    if config_path is not None:
+        return config_path.with_name("jp2zh-video-subs.lock")
+    return Path(tempfile.gettempdir()) / "jp2zh-video-subs-gui.lock"
 
 
 def rebase_portable_path(path: str | Path, previous_root: str | Path, current_root: str | Path) -> Path:

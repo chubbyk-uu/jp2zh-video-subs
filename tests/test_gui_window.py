@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QListWidget, Q
 
 from jp2zh_gui.models import CleanupPolicy, GuiTask, TaskStatus
 import jp2zh_gui.window as window_module
-from jp2zh_gui.window import MainWindow
+from jp2zh_gui.window import MainWindow, format_device_status
 
 
 def application():
@@ -154,6 +154,36 @@ def test_device_refresh_keeps_focus_off_output_path(tmp_path):
         assert window.refresh_device_button.text() == "检测中…"
     finally:
         window.close()
+
+
+def test_device_status_does_not_report_cpu_when_whisperseg_model_is_missing():
+    text, colour = format_device_status(
+        {
+            "torch_cuda": True,
+            "onnx_cuda": False,
+            "onnx_status": "missing_model",
+            "llama_cuda": True,
+            "gpu_name": "NVIDIA GeForce RTX 5080",
+        }
+    )
+
+    assert "语音切分 未检测（缺少模型）" in text
+    assert "语音切分 CPU" not in text
+    assert colour == "#a56500"
+
+
+def test_device_status_still_reports_cpu_after_a_real_cpu_probe():
+    text, _colour = format_device_status(
+        {
+            "torch_cuda": True,
+            "onnx_cuda": False,
+            "onnx_status": "cpu",
+            "llama_cuda": True,
+            "gpu_name": "GPU",
+        }
+    )
+
+    assert "语音切分 CPU" in text
 
 
 def test_drop_event_adds_local_video_and_accepts_action(tmp_path):

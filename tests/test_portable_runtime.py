@@ -6,6 +6,7 @@ from portable_runtime import (
     portable_config_path,
     project_root,
     rebase_portable_path,
+    single_instance_lock_path,
     scripts_dir,
 )
 
@@ -18,6 +19,7 @@ def test_source_checkout_paths_resolve_from_nested_script(monkeypatch):
     assert app_root(anchor) == Path(__file__).resolve().parents[1]
     assert scripts_dir(anchor) == Path(__file__).resolve().parents[1] / "scripts"
     assert portable_config_path(anchor) is None
+    assert single_instance_lock_path(anchor).name == "jp2zh-video-subs-gui.lock"
 
 
 def test_portable_paths_use_explicit_bundle_root(tmp_path, monkeypatch):
@@ -29,6 +31,7 @@ def test_portable_paths_use_explicit_bundle_root(tmp_path, monkeypatch):
     assert app_root() == (root / "app").resolve()
     assert scripts_dir() == (root / "app" / "scripts").resolve()
     assert portable_config_path() == (root / "config" / "gui.ini").resolve()
+    assert single_instance_lock_path() == (root / "config" / "jp2zh-video-subs.lock").resolve()
 
 
 def test_portable_root_is_detected_from_bundled_app_without_environment(tmp_path, monkeypatch):

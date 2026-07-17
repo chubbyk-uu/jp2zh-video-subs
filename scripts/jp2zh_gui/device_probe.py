@@ -3,8 +3,35 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from portable_runtime import prepare_llama_cuda_dependencies, prepare_onnx_cuda_dependencies, project_root
+
+
+def probe_onnx_device(model: Path) -> tuple[bool, str, str]:
+    if not model.is_file():
+        return False, "missing_model", f"WhisperSeg model missing: {model}"
+    try:
+        prepare_onnx_cuda_dependencies()
+        import onnxruntime as ort
+
+        providers = ort.get_available_providers()
+        actual_providers: list[str] = []
+        if "CUDAExecutionProvider" in providers:
+            session = ort.InferenceSession(
+                str(model),
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            )
+            actual_providers = list(session.get_providers())
+        onnx_cuda = bool(actual_providers and actual_providers[0] == "CUDAExecutionProvider")
+        status = "cuda" if onnx_cuda else "cpu"
+        detail = (
+            f"ONNX Runtime providers: {', '.join(providers)}; "
+            f"WhisperSeg session: {', '.join(actual_providers) if actual_providers else 'CUDA unavailable'}"
+        )
+        return onnx_cuda, status, detail
+    except Exception as exc:  # pragma: no cover - depends on packaged runtime
+        return False, "unavailable", f"ONNX Runtime: {type(exc).__name__}: {exc}"
 
 
 def probe_devices() -> dict[str, object]:
@@ -12,6 +39,7 @@ def probe_devices() -> dict[str, object]:
     result: dict[str, object] = {
         "torch_cuda": False,
         "onnx_cuda": False,
+        "onnx_status": "unavailable",
         "llama_cuda": False,
         "gpu_name": "",
     }
@@ -27,26 +55,12 @@ def probe_devices() -> dict[str, object]:
     except Exception as exc:  # pragma: no cover - depends on packaged runtime
         details.append(f"PyTorch: {type(exc).__name__}: {exc}")
 
-    try:
-        prepare_onnx_cuda_dependencies()
-        import onnxruntime as ort
-
-        providers = ort.get_available_providers()
-        actual_providers: list[str] = []
-        if "CUDAExecutionProvider" in providers:
-            model = project_root() / "models" / "whisperseg" / "model.onnx"
-            session = ort.InferenceSession(
-                str(model),
-                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-            )
-            actual_providers = list(session.get_providers())
-        result["onnx_cuda"] = bool(actual_providers and actual_providers[0] == "CUDAExecutionProvider")
-        details.append(
-            f"ONNX Runtime providers: {', '.join(providers)}; "
-            f"WhisperSeg session: {', '.join(actual_providers) if actual_providers else 'unavailable'}"
-        )
-    except Exception as exc:  # pragma: no cover - depends on packaged runtime
-        details.append(f"ONNX Runtime: {type(exc).__name__}: {exc}")
+    onnx_cuda, onnx_status, onnx_detail = probe_onnx_device(
+        project_root() / "models" / "whisperseg" / "model.onnx"
+    )
+    result["onnx_cuda"] = onnx_cuda
+    result["onnx_status"] = onnx_status
+    details.append(onnx_detail)
 
     try:
         from llama_cpp import llama_cpp

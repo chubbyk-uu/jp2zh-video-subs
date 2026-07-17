@@ -58,6 +58,31 @@ from .models import (
 from .process_utils import hide_windows_console
 
 
+def format_device_status(data: dict[str, object]) -> tuple[str, str]:
+    torch_cuda = bool(data.get("torch_cuda"))
+    onnx_cuda = bool(data.get("onnx_cuda"))
+    llama_cuda = bool(data.get("llama_cuda"))
+    onnx_status = str(data.get("onnx_status") or ("cuda" if onnx_cuda else "cpu"))
+    vad_label = {
+        "cuda": "✓",
+        "cpu": "CPU",
+        "missing_model": "未检测（缺少模型）",
+        "unavailable": "检测失败",
+    }.get(onnx_status, "未知")
+    parts = [
+        f"ASR {'✓' if torch_cuda else '✗'}",
+        f"语音切分 {vad_label}",
+        f"翻译 {'✓' if llama_cuda else 'CPU'}",
+    ]
+    gpu_name = str(data.get("gpu_name") or "CUDA GPU")
+    display_gpu_name = gpu_name.removeprefix("NVIDIA GeForce ")
+    if torch_cuda and onnx_cuda and llama_cuda:
+        return f"运行设备：CUDA · {display_gpu_name}（ASR ✓ / VAD ✓ / 翻译 ✓）", "#18864b"
+    if torch_cuda:
+        return f"运行设备：部分 CUDA · {display_gpu_name}（{' / '.join(parts)}）", "#a56500"
+    return f"运行设备：CUDA 不可用，ASR 无法启动（{' / '.join(parts)}）", "#c0392b"
+
+
 class AutoCloseComboBox(QComboBox):
     """Combo-box facade backed by QMenu instead of WSLg's sticky Qt popup."""
 
@@ -629,18 +654,7 @@ class MainWindow(QMainWindow):
             self.device_status_label.setText("运行设备：检测结果无法解析")
             self.device_status_label.setStyleSheet("color: #c0392b;")
             return
-        torch_cuda = bool(data.get("torch_cuda"))
-        onnx_cuda = bool(data.get("onnx_cuda"))
-        llama_cuda = bool(data.get("llama_cuda"))
-        parts = [f"ASR {'✓' if torch_cuda else '✗'}", f"语音切分 {'✓' if onnx_cuda else 'CPU'}", f"翻译 {'✓' if llama_cuda else 'CPU'}"]
-        gpu_name = str(data.get("gpu_name") or "CUDA GPU")
-        display_gpu_name = gpu_name.removeprefix("NVIDIA GeForce ")
-        if torch_cuda and onnx_cuda and llama_cuda:
-            text, colour = f"运行设备：CUDA · {display_gpu_name}（ASR ✓ / VAD ✓ / 翻译 ✓）", "#18864b"
-        elif torch_cuda:
-            text, colour = f"运行设备：部分 CUDA · {display_gpu_name}（{' / '.join(parts)}）", "#a56500"
-        else:
-            text, colour = f"运行设备：CUDA 不可用，ASR 无法启动（{' / '.join(parts)}）", "#c0392b"
+        text, colour = format_device_status(data)
         self.device_status_label.setText(text)
         self.device_status_label.setStyleSheet(f"color: {colour};")
         self.device_status_label.setToolTip(str(data.get("details") or ""))

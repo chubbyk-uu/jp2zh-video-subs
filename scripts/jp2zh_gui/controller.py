@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -184,13 +185,17 @@ class PipelineController(QObject):
         self.task_updated.emit(task)
         self._emit_overall_progress()
 
-    def _process_finished(self, exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
+    def _process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         self._read_process_output()
         self._read_events()
         self._event_timer.stop()
         task = self.current_task
         if task is not None:
-            if exit_code == 0:
+            if exit_status == QProcess.ExitStatus.CrashExit:
+                task.status = TaskStatus.FAILED
+                if not task.error:
+                    task.error = "流水线进程异常崩溃"
+            elif exit_code == 0:
                 task.status = TaskStatus.COMPLETED
                 task.completed_stages = task.stage_total
                 task.stage_progress = 1.0
@@ -235,6 +240,21 @@ class PipelineController(QObject):
         self._event_timer.stop()
         self.process = None
         self.current_task = None
+        self._cleanup_runtime_dir()
         self.running_changed.emit(False)
         self._emit_overall_progress()
         self.queue_finished.emit()
+
+    def _cleanup_runtime_dir(self) -> None:
+        runtime_dir = self._runtime_dir
+        self._runtime_dir = None
+        self.event_path = None
+        self.cancel_path = None
+        if runtime_dir is None:
+            return
+        try:
+            shutil.rmtree(runtime_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            self.log_received.emit(f"\n无法清理 GUI 运行时文件：{exc}\n")
