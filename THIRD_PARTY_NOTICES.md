@@ -18,6 +18,12 @@ gyan.dev. That build identifies itself as GPLv3. The packaging script copies its
 Published archives must continue to include them and comply with
 the build's corresponding source and license obligations.
 
+## OpenCC
+
+Traditional-Chinese subtitle output uses OpenCC 1.4.1 and its bundled dictionaries. OpenCC is
+distributed under the Apache License 2.0. The Windows portable program archive includes the
+upstream `LICENSE` and `AUTHORS` files under `licenses/opencc/`.
+
 ## WhisperJAV
 
 `scripts/anime_text_clean.py` and `scripts/alignment_recovery.py` are adapted from
@@ -76,6 +82,9 @@ SOFTWARE.
   declares CC-BY-NC-SA-4.0 and is distributed as a non-commercial package.
 - **voice-gender-classifier** (`JaesungHuh/...`) — optional ECAPA speaker-colouring model;
   upstream declares MIT and warns that its training data may introduce demographic bias.
+- **Sugoi-14B-Ultra-GGUF** (`sugoitoolkit/...`) — optional Japanese-to-English
+  translation model; its model card declares Apache-2.0. Model redistribution remains separate
+  from the program archive and requires retaining its upstream model card and license material.
 
 Model archives are distributed separately from the program archive and must retain their
 package-specific `licenses/models/` directory, containing the relevant upstream model cards,

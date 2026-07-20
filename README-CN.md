@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文说明
 
-这个项目用于从本地视频生成简体中文字幕 SRT，并默认生成中日双语 ASS。当前默认流程面向日语语音，下载好模型后，推理过程全部在本地完成。
+这个项目用于从本地日语视频生成简体中文、繁体中文或英文 SRT，并默认生成“译文在上、日文在下”的双语 ASS。下载好模型后，推理过程全部在本地完成。
 
 Windows 用户建议直接使用
 [`v0.1.0 Beta 2` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.2)。
@@ -15,10 +15,14 @@ Windows 用户建议直接使用
 - **`anime`（默认）**——用 `litagin/anime-whisper` 出文本，WhisperSeg 做弱语音切分，semantic scene 做场景边界，默认使用 Qwen forced aligner 定时，并在整段或局部对齐坍缩时自动回退 VAD 时间。它是当前 JAV/anime 风格素材的推荐主线。
 - **`qwen`**——用 `Qwen3-ASR-1.7B` 出文本内容，配 `Qwen3-ForcedAligner-0.6B` 出时间轴，默认在 WhisperSeg 语音 frame 上识别，并带 aligner fallback recovery。适合作为更干净的文本/时间轴对比线。
 
-以及两套翻译后端，用 `--translator` 选择：
+以及三套翻译后端，由 `--target-language` 和 `--translator` 兼容选择：
 
 - **`galtransl`（默认）**——`Sakura-GalTransl-7B-v3.7`，针对视觉小说台词做了 GRPO 强化训练的日译中模型。比 Sakura-14B 更小更快、译文更口语，原生支持 `src->dst #备注` 格式的术语表。
 - **`sakura`**——`Sakura-14B-Qwen2.5-v1.0`，更大的轻小说/galgame 模型，更重，但在长难句上可作第二意见。
+- **`sugoi`**——`Sugoi-14B-Ultra`，日译英后端。默认按带编号的 10 条批量翻译，严格校验编号，并带拆分重试和逐条兜底。
+
+`galtransl`/`sakura` 先生成简体中文；繁体中文随后使用包内 OpenCC 的通用 `s2t`
+转换。英文只使用 `sugoi`。GUI 会自动限制为兼容组合。
 
 逐项对比与选型建议见 [docs/BACKENDS.md](docs/BACKENDS.md)。
 
@@ -30,9 +34,9 @@ Windows 用户建议直接使用
 
 1. 用 `ffmpeg` 从视频抽取 16 kHz 单声道 WAV 音频。
 2. 用所选识别后端（默认 `anime`）识别日语并生成日语 SRT。
-3. 用所选翻译后端（默认 `galtransl`）把日语 SRT 翻译成简体中文字幕 SRT。
-4. 默认生成中日双语 ASS（中文在上、日文在下），并复制到输入视频同目录。
-5. 调参/测试时可加 `--quality-report` 输出质量报告，用于检查覆盖率、可能漏识别的语音、疑似重复字幕，以及中文字幕里的日文或非简体残留。
+3. 翻译为所选目标语言（默认 `zh-Hans`）；`zh-Hant` 会追加 OpenCC `s2t` 转换。
+4. 默认生成双语 ASS（译文在上、日文在下），并复制到输入视频同目录。
+5. 调参/测试时可加 `--quality-report` 输出按目标语言检查的质量报告。
 
 默认的 anime 后端采用 WJ-style 识别框架（semantic scene + WhisperSeg 短语音 frame + `litagin/anime-whisper` 文本 + forced alignment，并在局部/整段坍缩时回退 VAD）；`--asr qwen` 是更干净的文本/时间轴对比线。两条线各自怎么工作、字幕怎么切分详见 [docs/BACKENDS.md](docs/BACKENDS.md)。翻译阶段是独立进程，识别模型和翻译模型不会同时占用显存。所有生成的 SRT 都会排序并消除时间重叠，字幕不会互相重叠或乱序。
 
@@ -51,14 +55,17 @@ Windows 用户建议直接使用
 │   ├── Qwen3-ForcedAligner-0.6B/    # 默认 Anime/Qwen 定时模型
 │   ├── Sakura-GalTransl-7B-v3.7-GGUF/ # 默认翻译模型
 │   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # 备选（更大）翻译模型
+│   ├── Sugoi-14B-Ultra-GGUF/           # 可选日译英模型
 │   └── voice-gender-classifier/     # 可选 ECAPA 性别模型（双语上色用）
-├── outputs/                         # 最终中文字幕输出
+├── outputs/                         # 最终译文字幕输出
 ├── scripts/
 │   ├── video_to_zh_srt.py           # 一键视频到中文字幕
 │   ├── transcribe_ja_srt_qwen.py    # 音频到日语 SRT（Qwen/anime 共用后端）
 │   ├── quality_report.py            # 字幕质量报告
 │   ├── translate_srt_galtransl.py   # 日语 SRT 到中文字幕（默认 Sakura-GalTransl）
 │   ├── translate_srt_sakura.py      # 日语 SRT 到中文字幕（Sakura-14B）
+│   ├── translate_srt_sugoi.py       # 日语 SRT 到英文字幕（Sugoi）
+│   ├── convert_srt_opencc.py        # 简体到繁体 SRT 转换
 │   ├── retime_existing_subtitles.py # 基于已有产物批量重定时并刷新 ASS
 │   ├── make_bilingual_ass.py        # 双语 ASS（中文在上，日文在下）+ 说话人性别上色
 │   ├── ecapa_gender.py              # vendoring 的 ECAPA-TDNN 声纹性别分类器
@@ -81,6 +88,7 @@ Windows 用户建议直接使用
 - `llama-cpp-python`：0.3.33（翻译使用 GPU 时需安装 CUDA 构建）
 - `numpy`：2.4.6（semantic scene 所用的 `numba` 要求 `<2.5`）
 - `huggingface-hub`：0.36.2
+- `opencc`：1.4.1（Windows 绿色包运行时内置）
 
 推荐硬件：
 
@@ -130,6 +138,7 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 可选对比模型：
 
 - Qwen 对比线：[`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
+- 英文翻译：[`sugoitoolkit/Sugoi-14B-Ultra-GGUF`](https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF)
 
 `hf` 命令由 `requirements.txt` 里的 `huggingface-hub` 提供。下载到脚本默认目录：
 
@@ -188,6 +197,14 @@ hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
   --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
+英文输出（`--target-language en`）需要 Sugoi 14B Ultra：
+
+```bash
+hf download sugoitoolkit/Sugoi-14B-Ultra-GGUF \
+  Sugoi-14B-Ultra-Q4_K_M.gguf \
+  --local-dir models/Sugoi-14B-Ultra-GGUF
+```
+
 双语字幕的说话人性别上色（加 `--colour-by-speaker` 开启）需要 ECAPA 声纹性别模型
 [`JaesungHuh/voice-gender-classifier`](https://huggingface.co/JaesungHuh/voice-gender-classifier)（约 60 MB，仅依赖 torch）。它是可选的——不下载也能正常输出双语 ASS，只是不上色：
 
@@ -225,6 +242,12 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen
 
 # 保持默认 anime 识别，只切换翻译模型
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
+
+# 繁体中文（中文模型输出后使用通用 OpenCC s2t）
+python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language zh-Hant
+
+# 英文（兼容后端为 Sugoi）
+python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language en --translator sugoi
 ```
 
 批量处理目录下的常见视频文件：
@@ -272,7 +295,7 @@ Release 不包含模型权重、用户或示例视频、字幕等内容。第一
 `models\whisperseg\model.onnx` 缺失时，设备栏会显示“语音切分 未检测（缺少模型）”，不再猜测为
 CPU。模型存在时才通过真实 ONNX Runtime 会话显示 CUDA、CPU 或检测失败；更改模型文件后点击“刷新”重新检测。
 
-GUI 支持拖入视频或文件夹、可见任务队列、Anime/Qwen 与 GalTransl/Sakura 选择、
+GUI 支持拖入视频或文件夹、可见任务队列、Anime/Qwen 识别、独立的简体中文/繁体中文/英文字幕目标、兼容的 GalTransl/Sakura/Sugoi 模型选择、
 常用字幕参数、总体进度与详细阶段状态、可折叠日志、取消、失败重试、设置记忆、模型文件检查，
 以及成功后的中间产物清理。文件夹会展开为视频列表并逐个处理，避免多个模型实例叠加显存。
 
@@ -302,20 +325,23 @@ GUI 复用现有 CLI 流水线，不维护另一套推理逻辑。`packaging/win
 - `work/input/pipeline.log`：完整流水线日志，记录每个子进程的时间戳、stdout 和 stderr。追加模式，终端断连或系统重启也不会丢。
 - `work/input/input.quality.txt`：质量报告，仅在加 `--quality-report` 时生成。
 - `work/metrics.jsonl`：仅在加 `--quality-report` 时，每处理一个视频追加一行 JSON 关键质量指标（条数、VAD 覆盖率、假名残留、相邻重复）。跨视频跨运行共用一个文件，方便对比调参前后的变化。
-- `outputs/input.zh.srt`：最终中文字幕。
-- `path/to/input.zh.ass`：拷贝到输入视频同目录的双语 ASS。双语输出默认开启，所以放到视频同目录的是 ASS 而**不是** SRT（中文 SRT 仍保留在 `outputs/`）。加 `--no-bilingual` 时，改为把中文 SRT 拷到视频同目录。
+- `outputs/input.zh-s.srt`：最终简体中文字幕；繁体和英文分别使用 `.zh-t.srt`、`.en.srt`。
+- `path/to/input.zh-s.ass`：拷贝到输入视频同目录的双语 ASS；另外两种目标使用对应的 `.zh-t.ass`、`.en.ass`。双语输出默认开启，所以放到视频同目录的是 ASS 而**不是** SRT。加 `--no-bilingual` 时改为复制译文 SRT。
 
 日语 SRT 保持识别到的真实语音时间，用于 VAD 覆盖率和质量报告。
-中文字幕 SRT 是最终显示字幕：一键流程会轻微延长每条字幕的结束时间，
-避免短句在语音结束瞬间立刻消失。双语 ASS 的时间轴来自中文字幕 SRT；
+译文 SRT 是最终显示字幕：一键流程会轻微延长每条字幕的结束时间，
+避免短句在语音结束瞬间立刻消失。双语 ASS 的时间轴来自译文 SRT；
 ASS 里的日文只按字幕序号对齐贡献文本。
 默认当一条中文字幕超过 20 个可见字符（标点也计数）时，会在最接近中点的
 `。？！.!?` 后分为两行显示，但仍是一条 SRT/ASS cue、时间轴不变；没有可用标点时不硬拆。
 用 `--display-wrap-max-chars 0` 可关闭，或传入其他阈值调整。
+英文默认以 60 个字符作为单行换行触发值，只在单词边界换行，并保持最多两行。此前基于两份、
+合计 200 条英文评测字幕，较保守的 42 档已确认处于 1280×720 ASS 安全宽度内；60 的新默认值
+用于减少过早换行，仍需在正式发布前完成播放器渲染验收。
 
 ## 文档 / 延伸阅读
 
-- [docs/BACKENDS.md](docs/BACKENDS.md) — 识别后端（Anime vs Qwen）与翻译后端（GalTransl vs Sakura）逐项对比、工作方式、选型建议。
+- [docs/BACKENDS.md](docs/BACKENDS.md) — 识别后端及中英翻译后端逐项对比、工作方式、选型建议。
 - [docs/USAGE.md](docs/USAGE.md) — 配置文件、完整默认行为、所有常用参数、单步运行、CUDA 验证、常见问题排障。
 - [docs/GUI_TEST_PLAN.md](docs/GUI_TEST_PLAN.md) — GUI 可执行测试矩阵、Windows 绿色版验收用例，以及运行/缺陷记录模板。
 
@@ -351,5 +377,5 @@ python -m pytest tests/ -q
 - 继续对比默认 anime 主线和当前 Qwen 对比线，重点看弱语音召回、局部误听和可读性切分。
 - 继续优化 Qwen 文本准确率；除非人工复核证明幻觉和尾部漂移不会回退，否则不把长 merge 上下文重新设为默认。
 - Qwen 空窗补捞 / recapture 已移除；后续继续通过 WhisperSeg/scene framing 和文本识别质量来提升 Qwen 召回，而不是再跑二次 ASR。
-- HY-MT 翻译后端和旧版 Whisper ASR 后端已移除；现在流水线提供两套 ASR 后端（`anime`/`qwen`）和两套翻译后端（`galtransl`/`sakura`）。
+- HY-MT 翻译后端和旧版 Whisper ASR 后端已移除；现在流水线提供两套 ASR 后端（`anime`/`qwen`）和三套翻译后端（`galtransl`/`sakura`/`sugoi`），并校验目标语言兼容性。
 - 继续改进 ASR 后处理，减少孤立符号、无意义短字幕、乱码和片尾噪声词。

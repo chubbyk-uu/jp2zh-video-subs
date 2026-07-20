@@ -21,3 +21,5 @@ pykakasi==2.3.0
 #   CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 #     pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.33
 llama-cpp-python==0.3.33
+# Generic Simplified-to-Traditional subtitle conversion (s2t).
+opencc==1.4.1

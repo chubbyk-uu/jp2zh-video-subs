@@ -9,6 +9,7 @@ from jp2zh_gui.models import (
     GuiTask,
     TaskStatus,
     TranslatorPreset,
+    TargetLanguage,
     discover_dropped_videos,
     missing_model_files,
 )
@@ -20,6 +21,7 @@ def test_gui_config_builds_pipeline_command(tmp_path):
         work_dir=tmp_path / "work",
         asr=AsrPreset.QWEN,
         translator=TranslatorPreset.SAKURA,
+        target_language=TargetLanguage.TRADITIONAL_CHINESE,
         bilingual=False,
         quality_report=True,
         resume=True,
@@ -43,6 +45,8 @@ def test_gui_config_builds_pipeline_command(tmp_path):
     assert command[:3] == ["python-test", "pipeline.py", str(tmp_path / "input.mp4")]
     assert command[command.index("--asr") + 1] == "qwen"
     assert command[command.index("--translator") + 1] == "sakura"
+    assert command[command.index("--target-language") + 1] == "zh-Hant"
+    assert command[command.index("--bilingual-ja-font") + 1] == "Microsoft YaHei"
     assert command[command.index("--cleanup-policy") + 1] == "final_only"
     assert command[command.index("--qwen-batch-size") + 1] == "12"
     assert command[command.index("--context-size") + 1] == "9"
@@ -69,6 +73,24 @@ def test_gui_config_uses_selected_anime_batch_flag():
     )
     assert command[command.index("--anime-batch-size") + 1] == "16"
     assert "--qwen-batch-size" not in command
+
+
+def test_sugoi_gui_command_omits_unsupported_context_and_normalizes_batch_zero():
+    command = GuiConfig(
+        translator=TranslatorPreset.SUGOI,
+        target_language=TargetLanguage.ENGLISH,
+        translate_batch_size=0,
+    ).build_command(Path("a.mp4"), Path("events"), Path("cancel"))
+    assert "--context-size" not in command
+    assert command[command.index("--translate-batch-size") + 1] == "0"
+
+
+def test_gui_config_rejects_incompatible_translator_target():
+    issues = GuiConfig(
+        translator=TranslatorPreset.SUGOI,
+        target_language=TargetLanguage.SIMPLIFIED_CHINESE,
+    ).validate()
+    assert [issue.code for issue in issues] == ["translator_target_incompatible"]
 
 
 def test_discover_dropped_videos_expands_directories_and_deduplicates(tmp_path):

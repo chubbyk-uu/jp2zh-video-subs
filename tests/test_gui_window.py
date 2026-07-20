@@ -6,11 +6,11 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QProcess, QSettings, QUrl
+from PySide6.QtCore import QProcess, QSettings, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QListWidget, QMessageBox
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QFileDialog, QListWidget, QMessageBox
 
-from jp2zh_gui.models import CleanupPolicy, GuiTask, TaskStatus, TranslatorPreset
+from jp2zh_gui.models import CleanupPolicy, GuiConfig, GuiTask, TargetLanguage, TaskStatus, TranslatorPreset
 import jp2zh_gui.window as window_module
 from jp2zh_gui.window import MainWindow, format_device_status
 
@@ -32,6 +32,7 @@ def test_main_window_has_model_and_cleanup_choices(tmp_path):
     try:
         assert window.asr_combo.count() == 2
         assert window.translator_combo.count() == 2
+        assert window.target_language_combo.count() == 3
         assert window.cleanup_combo.count() == 3
         assert window.cleanup_combo.findData(CleanupPolicy.FINAL_ONLY.value) >= 0
         assert window.minimumSize().toTuple() == (1280, 720)
@@ -128,18 +129,25 @@ def test_main_window_add_paths_expands_folder_and_deduplicates(tmp_path):
         window.close()
 
 
-def test_auto_close_combo_hides_popup_after_activation(tmp_path):
-    app = application()
+def test_native_model_combos_keep_target_language_enabled(tmp_path):
+    application()
     window = MainWindow(settings=window_settings(tmp_path))
     try:
-        window.show()
-        window.asr_combo.showPopup()
-        menu = window.asr_combo._popup_menu
-        assert menu is not None
-        menu.actions()[1].trigger()
-        app.processEvents()
-        assert window.asr_combo.currentIndex() == 1
-        assert window.asr_combo._popup_menu is None
+        assert type(window.asr_combo) is QComboBox
+        assert type(window.target_language_combo) is QComboBox
+        assert type(window.translator_combo) is QComboBox
+        for _ in range(3):
+            window.asr_combo.setCurrentIndex(1 - window.asr_combo.currentIndex())
+            window.target_language_combo.setCurrentIndex(
+                window.target_language_combo.findData(TargetLanguage.ENGLISH.value)
+            )
+            assert window.target_language_combo.isEnabled()
+            assert not window.translator_combo.isEnabled()
+            window.target_language_combo.setCurrentIndex(
+                window.target_language_combo.findData(TargetLanguage.SIMPLIFIED_CHINESE.value)
+            )
+            assert window.target_language_combo.isEnabled()
+            assert window.translator_combo.isEnabled()
     finally:
         window.close()
 
@@ -163,7 +171,7 @@ def test_translation_batch_is_disabled_for_sakura(tmp_path):
     try:
         assert window.translator_combo.currentData() == TranslatorPreset.GALTRANSL.value
         assert window.batch_spin.isEnabled()
-        assert window.advanced_dialog.batch_label.text() == "翻译批大小（仅 GalTransl 生效）"
+        assert window.advanced_dialog.batch_label.text() == "翻译批大小"
 
         window.translator_combo.setCurrentIndex(
             window.translator_combo.findData(TranslatorPreset.SAKURA.value)
@@ -176,6 +184,98 @@ def test_translation_batch_is_disabled_for_sakura(tmp_path):
         )
         assert window.batch_spin.isEnabled()
         assert window.advanced_dialog.batch_label.isEnabled()
+    finally:
+        window.close()
+
+
+def test_target_language_switches_translator_and_restores_chinese_choice(tmp_path):
+    application()
+    window = MainWindow(settings=window_settings(tmp_path))
+    try:
+        window.translator_combo.setCurrentIndex(window.translator_combo.findData(TranslatorPreset.SAKURA.value))
+        window.batch_spin.setValue(7)
+        window.wrap_spin.setValue(18)
+        window.target_language_combo.setCurrentIndex(
+            window.target_language_combo.findData(TargetLanguage.ENGLISH.value)
+        )
+        assert window.translator_combo.currentData() == TranslatorPreset.SUGOI.value
+        assert not window.translator_combo.isEnabled()
+        assert window.batch_spin.value() == 10
+        assert window.wrap_spin.value() == 60
+        assert window.font_combo.currentFont().family() != "Microsoft YaHei"
+        assert window.ja_font_combo.currentFont().family() == "Microsoft YaHei"
+        assert not window.context_spin.isEnabled()
+
+        window.target_language_combo.setCurrentIndex(
+            window.target_language_combo.findData(TargetLanguage.TRADITIONAL_CHINESE.value)
+        )
+        assert window.translator_combo.currentData() == TranslatorPreset.SAKURA.value
+        assert window.translator_combo.isEnabled()
+        assert window.batch_spin.value() == 7
+        assert window.wrap_spin.value() == 18
+        assert window.font_combo.currentFont().family() == "Microsoft YaHei"
+        assert window.context_spin.isEnabled()
+    finally:
+        window.close()
+
+
+def test_english_target_persists_and_keeps_last_chinese_translator(tmp_path):
+    application()
+    settings = window_settings(tmp_path)
+    first = MainWindow(settings=settings)
+    try:
+        first.translator_combo.setCurrentIndex(first.translator_combo.findData(TranslatorPreset.SAKURA.value))
+        first.batch_spin.setValue(7)
+        first.wrap_spin.setValue(18)
+        first.target_language_combo.setCurrentIndex(
+            first.target_language_combo.findData(TargetLanguage.ENGLISH.value)
+        )
+        first.batch_spin.setValue(9)
+        first.wrap_spin.setValue(40)
+        first._save_settings()
+        settings.sync()
+    finally:
+        first.close()
+
+    second = MainWindow(settings=settings)
+    try:
+        assert second.target_language_combo.currentData() == TargetLanguage.ENGLISH.value
+        assert second.translator_combo.currentData() == TranslatorPreset.SUGOI.value
+        second.target_language_combo.setCurrentIndex(
+            second.target_language_combo.findData(TargetLanguage.SIMPLIFIED_CHINESE.value)
+        )
+        assert second.translator_combo.currentData() == TranslatorPreset.SAKURA.value
+        assert second.batch_spin.value() == 7
+        assert second.wrap_spin.value() == 18
+        second.target_language_combo.setCurrentIndex(
+            second.target_language_combo.findData(TargetLanguage.ENGLISH.value)
+        )
+        assert second.batch_spin.value() == 9
+        assert second.wrap_spin.value() == 40
+    finally:
+        second.close()
+
+
+def test_restore_defaults_uses_target_language_translation_defaults(tmp_path):
+    application()
+    window = MainWindow(settings=window_settings(tmp_path))
+    try:
+        window.target_language_combo.setCurrentIndex(
+            window.target_language_combo.findData(TargetLanguage.ENGLISH.value)
+        )
+        window.batch_spin.setValue(4)
+        window.wrap_spin.setValue(24)
+        window.advanced_dialog.restore_defaults()
+        assert window.batch_spin.value() == 10
+        assert window.wrap_spin.value() == 60
+        assert window.font_combo.currentFont().family() != "Microsoft YaHei"
+
+        window.target_language_combo.setCurrentIndex(
+            window.target_language_combo.findData(TargetLanguage.SIMPLIFIED_CHINESE.value)
+        )
+        window.advanced_dialog.restore_defaults()
+        assert window.batch_spin.value() == GuiConfig().translate_batch_size
+        assert window.wrap_spin.value() == GuiConfig().display_wrap_max_chars
     finally:
         window.close()
 
@@ -341,25 +441,6 @@ def test_advanced_dialog_cancel_restores_snapshot(tmp_path, monkeypatch):
         window.close()
 
 
-def test_retry_failed_and_cancelled_tasks_resets_only_those_tasks(tmp_path):
-    application()
-    window = MainWindow(settings=window_settings(tmp_path))
-    failed = GuiTask(Path("failed.mp4"), status=TaskStatus.FAILED, error="test failure")
-    cancelled = GuiTask(Path("cancelled.mp4"), status=TaskStatus.CANCELLED)
-    completed = GuiTask(Path("completed.mp4"), status=TaskStatus.COMPLETED)
-    window.tasks = [failed, cancelled, completed]
-    for task in window.tasks:
-        window._append_task_row(task)
-    try:
-        window._retry_failed()
-        assert failed.status == TaskStatus.WAITING
-        assert failed.error == ""
-        assert cancelled.status == TaskStatus.WAITING
-        assert completed.status == TaskStatus.COMPLETED
-    finally:
-        window.close()
-
-
 def test_missing_model_files_blocks_start_and_shows_paths(tmp_path, monkeypatch):
     application()
     video = tmp_path / "input.mp4"
@@ -396,6 +477,24 @@ def test_settings_actions_open_config_and_local_guide(tmp_path, monkeypatch):
         assert Path(opened[-1].toLocalFile()) == Path(settings.fileName()).resolve().parent
         window._open_user_guide()
         assert Path(opened[-1].toLocalFile()).name == "README-CN.md"
+    finally:
+        window.close()
+
+
+def test_top_directory_buttons_open_configured_folders(tmp_path, monkeypatch):
+    application()
+    opened: list[QUrl] = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+    window = MainWindow(settings=window_settings(tmp_path))
+    try:
+        output_dir = tmp_path / "output"
+        work_dir = tmp_path / "work"
+        window.output_edit.setText(str(output_dir))
+        window.work_edit.setText(str(work_dir))
+        window.open_work_button.click()
+        window.open_output_button.click()
+        assert [Path(url.toLocalFile()) for url in opened] == [work_dir.resolve(), output_dir.resolve()]
+        assert window.menuBar().cornerWidget(Qt.Corner.TopRightCorner) is window.top_actions
     finally:
         window.close()
 

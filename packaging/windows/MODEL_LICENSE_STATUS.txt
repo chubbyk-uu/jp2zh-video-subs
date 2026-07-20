@@ -27,6 +27,10 @@ Sakura-14B-Qwen2.5-v1.0-GGUF
   Declared license: CC-BY-NC-SA-4.0
   Important: this optional model package is non-commercial.
 
+Sugoi-14B-Ultra-GGUF
+  Upstream: https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF
+  Declared license: Apache-2.0
+
 voice-gender-classifier
   Upstream: https://huggingface.co/JaesungHuh/voice-gender-classifier
   Declared license: MIT

@@ -20,6 +20,7 @@ from make_bilingual_ass import (
 def default_options():
     return Namespace(
         font="Arial",
+        ja_font="Noto Sans JP",
         zh_font_size=36,
         ja_font_size=24,
         zh_colour="&H0000FFFF",
@@ -45,12 +46,12 @@ def test_escape_ass_text_neutralizes_braces_and_newlines():
 def test_build_dialogue_puts_chinese_on_top_and_switches_style():
     entry = AssEntry("1", 1.0, 3.0, "你好")
     line = build_dialogue(entry, "こんにちは")
-    assert line == "Dialogue: 0,0:00:01.00,0:00:03.00,ZH,,0,0,0,,你好\\N{\\rJA}こんにちは"
+    assert line == "Dialogue: 0,0:00:01.00,0:00:03.00,TL,,0,0,0,,你好\\N{\\rJA}こんにちは"
 
 
 def test_build_dialogue_without_japanese_keeps_single_line():
     entry = AssEntry("1", 0.0, 1.0, "你好")
-    assert build_dialogue(entry, "") == "Dialogue: 0,0:00:00.00,0:00:01.00,ZH,,0,0,0,,你好"
+    assert build_dialogue(entry, "") == "Dialogue: 0,0:00:00.00,0:00:01.00,TL,,0,0,0,,你好"
 
 
 def test_build_bilingual_ass_aligns_by_index():
@@ -58,8 +59,8 @@ def test_build_bilingual_ass_aligns_by_index():
     ja_by_index = {"1": "こんにちは", "2": "さようなら"}
     content = build_bilingual_ass(zh, ja_by_index, default_options())
     assert "[V4+ Styles]" in content
-    assert "Style: ZH,Arial,36,&H0000FFFF" in content
-    assert "Style: JA,Arial,24,&H00B4B4B4" in content
+    assert "Style: TL,Arial,36,&H0000FFFF" in content
+    assert "Style: JA,Noto Sans JP,24,&H00B4B4B4" in content
     assert "你好\\N{\\rJA}こんにちは" in content
     assert "再见\\N{\\rJA}さようなら" in content
 
@@ -113,21 +114,21 @@ def test_parse_srt_ignores_timing_settings(tmp_path):
 
 def test_header_emits_speaker_styles():
     content = build_bilingual_ass([], {}, default_options())
-    assert "Style: ZH_M,Arial,36,&H00FFBF00" in content
-    assert "Style: ZH_F,Arial,36,&H00B478FF" in content
+    assert "Style: TL_M,Arial,36,&H00FFBF00" in content
+    assert "Style: TL_F,Arial,36,&H00B478FF" in content
 
 
 def test_style_for_gender_maps_to_styles():
-    assert style_for_gender("M") == "ZH_M"
-    assert style_for_gender("F") == "ZH_F"
-    assert style_for_gender(None) == "ZH"
-    assert style_for_gender("") == "ZH"
+    assert style_for_gender("M") == "TL_M"
+    assert style_for_gender("F") == "TL_F"
+    assert style_for_gender(None) == "TL"
+    assert style_for_gender("") == "TL"
 
 
 def test_build_dialogue_uses_given_style():
     entry = AssEntry("1", 1.0, 3.0, "你好")
-    line = build_dialogue(entry, "こんにちは", "ZH_F")
-    assert line.startswith("Dialogue: 0,0:00:01.00,0:00:03.00,ZH_F,,")
+    line = build_dialogue(entry, "こんにちは", "TL_F")
+    assert line.startswith("Dialogue: 0,0:00:01.00,0:00:03.00,TL_F,,")
 
 
 def test_build_bilingual_ass_assigns_style_per_gender():
@@ -135,9 +136,9 @@ def test_build_bilingual_ass_assigns_style_per_gender():
     genders = {"1": "M", "2": "F"}  # index 3 missing -> default ZH
     content = build_bilingual_ass(zh, {}, default_options(), genders)
     lines = [ln for ln in content.splitlines() if ln.startswith("Dialogue:")]
-    assert ",ZH_M,," in lines[0]
-    assert ",ZH_F,," in lines[1]
-    assert ",ZH,," in lines[2]
+    assert ",TL_M,," in lines[0]
+    assert ",TL_F,," in lines[1]
+    assert ",TL,," in lines[2]
 
 
 def test_classify_gender_thresholds_confidence():

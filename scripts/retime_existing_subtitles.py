@@ -17,6 +17,7 @@ from make_bilingual_ass import (
     DEFAULT_ZH_FONT_SIZE,
 )
 from srt_utils import padded_end, parse_time, srt_time
+from target_languages import TargetLanguage, output_language_suffix
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".webm"}
@@ -105,9 +106,18 @@ def retime_blocks(
     return output
 
 
-def subtitle_paths(video: Path, output_dir: Path, work_dir: Path) -> SubtitlePaths | None:
+def subtitle_paths(
+    video: Path,
+    output_dir: Path,
+    work_dir: Path,
+    target_language: str | TargetLanguage = TargetLanguage.SIMPLIFIED_CHINESE,
+) -> SubtitlePaths | None:
     stem = video.stem
-    source_zh_srt = output_dir / f"{stem}.zh.srt"
+    suffix = output_language_suffix(target_language)
+    source_zh_srt = output_dir / f"{stem}{suffix}.srt"
+    # Read legacy Simplified-Chinese outputs created before standard language tags.
+    if not source_zh_srt.exists() and target_language == TargetLanguage.SIMPLIFIED_CHINESE:
+        source_zh_srt = output_dir / f"{stem}.zh.srt"
     source_ja_srt = find_ja_srt(work_dir, stem)
     if not source_zh_srt.exists() or source_ja_srt is None:
         return None
@@ -115,9 +125,9 @@ def subtitle_paths(video: Path, output_dir: Path, work_dir: Path) -> SubtitlePat
         video=video,
         source_zh_srt=source_zh_srt,
         source_ja_srt=source_ja_srt,
-        retimed_zh_srt=output_dir / f"{stem}.retimed.zh.srt",
-        retimed_ass=output_dir / f"{stem}.retimed.zh.ass",
-        video_ass=video.with_suffix(".zh.ass"),
+        retimed_zh_srt=output_dir / f"{stem}.retimed{suffix}.srt",
+        retimed_ass=output_dir / f"{stem}.retimed{suffix}.ass",
+        video_ass=video.parent / f"{stem}{suffix}.ass",
     )
 
 
@@ -172,11 +182,16 @@ def process_video(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Retiming-only refresh for existing zh.srt + bilingual ASS outputs."
+        description="Retiming-only refresh for existing translated SRT + bilingual ASS outputs."
     )
     parser.add_argument("input", help="Video file or video directory. Windows drive paths are accepted in WSL.")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     parser.add_argument("--work-dir", type=Path, default=Path("work"))
+    parser.add_argument(
+        "--target-language",
+        choices=tuple(item.value for item in TargetLanguage),
+        default=TargetLanguage.SIMPLIFIED_CHINESE.value,
+    )
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument("--no-copy-to-video-dir", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -184,6 +199,7 @@ def main() -> None:
     parser.add_argument("--min-display-seconds", type=float, default=1.5)
     parser.add_argument("--min-gap-seconds", type=float, default=0.04)
     parser.add_argument("--font", default=DEFAULT_FONT)
+    parser.add_argument("--ja-font", default=DEFAULT_FONT)
     parser.add_argument("--zh-font-size", type=int, default=DEFAULT_ZH_FONT_SIZE)
     parser.add_argument("--ja-font-size", type=int, default=DEFAULT_JA_FONT_SIZE)
     parser.add_argument("--zh-colour", default=DEFAULT_ZH_COLOUR, help="ASS colour &HAABBGGRR")
@@ -207,10 +223,11 @@ def main() -> None:
     processed = 0
     skipped = 0
     for video in videos:
-        paths = subtitle_paths(video, args.output_dir, args.work_dir)
+        paths = subtitle_paths(video, args.output_dir, args.work_dir, args.target_language)
         if paths is None:
             skipped += 1
-            print(f"[SKIP] {video.name}: missing outputs/{video.stem}.zh.srt or work/{video.stem}/*.ja.srt")
+            suffix = output_language_suffix(args.target_language)
+            print(f"[SKIP] {video.name}: missing outputs/{video.stem}{suffix}.srt or work/{video.stem}/*.ja.srt")
             continue
         process_video(paths, args, args.dry_run, not args.no_copy_to_video_dir)
         processed += 1

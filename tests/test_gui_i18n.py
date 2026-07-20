@@ -107,7 +107,16 @@ def test_english_main_window_fits_key_labels_at_1280_width(tmp_path):
         app.processEvents()
         assert window.minimumSize().toTuple() == (1280, 720)
         assert window.minimumSizeHint().width() <= 1280
+        assert window.settings_group.height() == window.settings_group.sizeHint().height()
+        assert window.common_group.height() == window.common_group.sizeHint().height()
         assert window.refresh_device_button.sizeHint().width() <= window.refresh_device_button.width()
+        assert window.asr_combo.sizeHint().width() <= window.asr_combo.width()
+        assert window.target_language_combo.sizeHint().width() <= window.target_language_combo.width()
+        assert window.translator_combo.sizeHint().width() <= window.translator_combo.width()
+        assert window.asr_label.geometry().top() == window.target_language_label.geometry().top()
+        assert window.target_language_label.geometry().top() == window.translator_label.geometry().top()
+        assert window.asr_combo.geometry().top() == window.target_language_combo.geometry().top()
+        assert window.target_language_combo.geometry().top() == window.translator_combo.geometry().top()
         for widget in (window.recursive_check, window.resume_check, window.copy_check, window.speaker_check):
             assert widget.sizeHint().width() <= widget.width(), widget.text()
         assert window.batch_note.sizeHint().width() <= window.batch_note.width()
@@ -148,9 +157,11 @@ def test_restore_defaults_keeps_settings_controls_aligned(tmp_path, monkeypatch)
         assert manager.current_code == "zh_CN"
         control_x = {
             widget.mapTo(window.settings_group, widget.rect().topLeft()).x()
-            for widget in (window.asr_combo, window.output_edit, window.work_edit, window.cleanup_combo)
+            for widget in (window.output_edit, window.work_edit, window.cleanup_combo)
         }
         assert len(control_x) == 1
+        assert window.asr_combo.geometry().top() == window.target_language_combo.geometry().top()
+        assert window.target_language_combo.geometry().top() == window.translator_combo.geometry().top()
         for label in (window.output_label, window.work_label, window.cleanup_label):
             assert label.contentsMargins().top() == 2
         control_heights = {

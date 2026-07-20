@@ -12,6 +12,13 @@ from uuid import uuid4
 
 from pipeline_runtime import PIPELINE_STAGES, VIDEO_EXTENSIONS
 from portable_runtime import project_root, scripts_dir
+from target_languages import (
+    DEFAULT_BATCH_SIZE_BY_TRANSLATOR,
+    DEFAULT_CONTEXT_SIZE,
+    DEFAULT_WRAP_CHARS_BY_TARGET,
+    TargetLanguage,
+    translator_supports_target,
+)
 
 
 PROJECT_ROOT = project_root(Path(__file__))
@@ -26,6 +33,7 @@ class AsrPreset(StrEnum):
 class TranslatorPreset(StrEnum):
     GALTRANSL = "galtransl"
     SAKURA = "sakura"
+    SUGOI = "sugoi"
 
 
 class CleanupPolicy(StrEnum):
@@ -81,6 +89,9 @@ MODEL_REQUIREMENTS = {
     TranslatorPreset.SAKURA: (
         "models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf",
     ),
+    TranslatorPreset.SUGOI: (
+        "models/Sugoi-14B-Ultra-GGUF/Sugoi-14B-Ultra-Q4_K_M.gguf",
+    ),
 }
 GENDER_MODEL_REQUIREMENTS = (
     "models/voice-gender-classifier/config.json",
@@ -95,16 +106,18 @@ class GuiConfig:
     recursive: bool = False
     asr: AsrPreset = AsrPreset.ANIME
     translator: TranslatorPreset = TranslatorPreset.GALTRANSL
+    target_language: TargetLanguage = TargetLanguage.SIMPLIFIED_CHINESE
     bilingual: bool = True
     quality_report: bool = False
     resume: bool = False
     copy_to_video_dir: bool = True
     cleanup_policy: CleanupPolicy = CleanupPolicy.KEEP_ALL
     asr_batch_size: int = 24
-    context_size: int = 6
-    translate_batch_size: int = 8
-    display_wrap_max_chars: int = 20
+    context_size: int = DEFAULT_CONTEXT_SIZE
+    translate_batch_size: int = DEFAULT_BATCH_SIZE_BY_TRANSLATOR["galtransl"]
+    display_wrap_max_chars: int = DEFAULT_WRAP_CHARS_BY_TARGET[TargetLanguage.SIMPLIFIED_CHINESE]
     bilingual_font: str = "Microsoft YaHei"
+    bilingual_ja_font: str = "Microsoft YaHei"
     bilingual_zh_font_size: int = 36
     bilingual_ja_font_size: int = 24
     bilingual_zh_colour: str = "&H0000FFFF"
@@ -115,6 +128,8 @@ class GuiConfig:
 
     def validate(self) -> list[ValidationIssue]:
         errors: list[ValidationIssue] = []
+        if not translator_supports_target(self.translator.value, self.target_language):
+            errors.append(ValidationIssue("translator_target_incompatible"))
         if self.asr_batch_size <= 0:
             errors.append(ValidationIssue("asr_batch_positive"))
         if self.context_size < 0:
@@ -125,7 +140,7 @@ class GuiConfig:
             errors.append(ValidationIssue("wrap_nonnegative"))
         if self.bilingual_zh_font_size <= 0 or self.bilingual_ja_font_size <= 0:
             errors.append(ValidationIssue("subtitle_size_positive"))
-        if not self.bilingual_font.strip():
+        if not self.bilingual_font.strip() or not self.bilingual_ja_font.strip():
             errors.append(ValidationIssue("subtitle_font_required"))
         for field_name, value in (
             ("zh", self.bilingual_zh_colour),
@@ -159,12 +174,13 @@ class GuiConfig:
             "--cancel-file", str(cancel_file),
             "--asr", self.asr.value,
             "--translator", self.translator.value,
+            "--target-language", self.target_language.value,
             "--cleanup-policy", self.cleanup_policy.value,
             f"--{self.asr.value}-batch-size", str(self.asr_batch_size),
-            "--context-size", str(self.context_size),
             "--translate-batch-size", str(self.translate_batch_size),
             "--display-wrap-max-chars", str(self.display_wrap_max_chars),
             "--bilingual-font", self.bilingual_font,
+            "--bilingual-ja-font", self.bilingual_ja_font,
             "--bilingual-zh-font-size", str(self.bilingual_zh_font_size),
             "--bilingual-ja-font-size", str(self.bilingual_ja_font_size),
             "--bilingual-zh-colour", self.bilingual_zh_colour,
@@ -172,6 +188,8 @@ class GuiConfig:
             "--bilingual-male-colour", self.bilingual_male_colour,
             "--bilingual-female-colour", self.bilingual_female_colour,
         ]
+        if self.translator != TranslatorPreset.SUGOI:
+            command.extend(("--context-size", str(self.context_size)))
         if self.recursive:
             command.append("--recursive")
         if not self.bilingual:

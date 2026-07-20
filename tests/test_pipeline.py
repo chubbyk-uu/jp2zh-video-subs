@@ -12,12 +12,16 @@ from video_to_zh_srt import (
     JobLog,
     cleanup_intermediate_files,
     effective_cleanup_policy,
+    main,
     output_path_for,
     run,
     run_pipeline,
     run_stage_command,
+    require_python_module,
     srt_cue_count,
     translation_is_complete,
+    translation_provenance_matches,
+    write_translation_provenance,
 )
 
 
@@ -248,6 +252,37 @@ def test_run_stage_command_converts_child_output_to_progress_events(tmp_path):
     assert progress[2]["progress"] == pytest.approx(0.835)
 
 
+def test_translate_progress_does_not_depend_on_command_argument_order(tmp_path):
+    event_path = tmp_path / "events.jsonl"
+    log = JobLog(tmp_path / "pipeline.log")
+    command = [
+        sys.executable,
+        "-c",
+        "print('1: First', flush=True); print('2: Second', flush=True)",
+        "an-unrelated-extra-argument",
+    ]
+    try:
+        with EventWriter(event_path) as events:
+            run_stage_command(
+                "translate",
+                command,
+                log,
+                events,
+                CancellationToken(),
+                tmp_path / "sample.mp4",
+                1,
+                1,
+                progress_total=2,
+            )
+    finally:
+        log.close()
+
+    payloads = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+    progress = [payload for payload in payloads if payload["event"] == "stage_progress"]
+    assert [payload["status_args"]["current"] for payload in progress] == [1, 2]
+    assert progress[-1]["progress"] == 1.0
+
+
 def test_run_stage_command_emits_failed_event(tmp_path):
     event_path = tmp_path / "events.jsonl"
     log = JobLog(tmp_path / "pipeline.log")
@@ -322,6 +357,7 @@ def test_process_video_stages_emits_skips_for_resumed_and_disabled_stages(tmp_pa
         no_copy_to_video_dir=True,
         display_wrap_max_chars=0,
     )
+    write_translation_provenance(job_dir / "sample.zh-Hans.translation.json", args)
     event_path = tmp_path / "events.jsonl"
     log = JobLog(job_dir / "pipeline.log")
     try:
@@ -390,6 +426,59 @@ def test_translation_is_complete_requires_matching_cue_counts(tmp_path):
     assert translation_is_complete(zh, ja)
 
 
+def test_translation_provenance_rejects_target_or_backend_change(tmp_path):
+    import argparse
+
+    path = tmp_path / "translation.json"
+    args = argparse.Namespace(
+        translator="galtransl", target_language="zh-Hans", context_size=6,
+        translate_batch_size=8, lead_out_seconds=0.5, min_display_seconds=1.5,
+    )
+    write_translation_provenance(path, args)
+    assert translation_provenance_matches(path, args)
+    args.target_language = "zh-Hant"
+    assert not translation_provenance_matches(path, args)
+    args.target_language = "zh-Hans"
+    args.translator = "sakura"
+    assert not translation_provenance_matches(path, args)
+
+
+def test_sugoi_provenance_normalizes_batch_zero_and_ignores_context(tmp_path):
+    import argparse
+
+    path = tmp_path / "translation.json"
+    args = argparse.Namespace(
+        translator="sugoi", target_language="en", context_size=None,
+        translate_batch_size=0, display_wrap_max_chars=None,
+        lead_out_seconds=0.5, min_display_seconds=1.5,
+    )
+    write_translation_provenance(path, args)
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["context_size"] is None
+    assert stored["translate_batch_size"] == 1
+
+
+def test_top_level_rejects_context_for_sugoi():
+    import argparse
+
+    from video_to_zh_srt import validate_runtime_args
+
+    args = argparse.Namespace(
+        translator="sugoi", target_language="en", context_size=6, asr="anime"
+    )
+    with pytest.raises(SystemExit, match="not supported by the Sugoi"):
+        validate_runtime_args(args)
+
+
+def test_opencc_dependency_probe_has_actionable_error(monkeypatch):
+    def missing(_module):
+        raise ImportError("not installed")
+
+    monkeypatch.setattr("video_to_zh_srt.importlib.import_module", missing)
+    with pytest.raises(SystemExit, match=r"Missing OpenCC Python package \(opencc\)"):
+        require_python_module("opencc", "OpenCC")
+
+
 @pytest.mark.parametrize(
     ("policy", "remaining"),
     [
@@ -425,7 +514,7 @@ def test_output_path_for_includes_relative_parent_when_present(tmp_path):
     input_dir.mkdir()
     video = input_dir / "set-a" / "sample.mp4"
 
-    assert output_path_for(video, input_dir, output_dir, recursive=False) == (output_dir / "set-a__sample.zh.srt").resolve()
+    assert output_path_for(video, input_dir, output_dir, recursive=False) == (output_dir / "set-a__sample.zh-s.srt").resolve()
 
 
 def test_output_path_for_keeps_flat_directory_names(tmp_path):
@@ -434,7 +523,26 @@ def test_output_path_for_keeps_flat_directory_names(tmp_path):
     input_dir.mkdir()
     video = input_dir / "sample.mp4"
 
-    assert output_path_for(video, input_dir, output_dir, recursive=False) == (output_dir / "sample.zh.srt").resolve()
+    assert output_path_for(video, input_dir, output_dir, recursive=False) == (output_dir / "sample.zh-s.srt").resolve()
+
+
+@pytest.mark.parametrize(
+    ("target_language", "expected"),
+    (("zh-Hans", "sample.zh-s.srt"), ("zh-Hant", "sample.zh-t.srt"), ("en", "sample.en.srt")),
+)
+def test_output_path_for_uses_target_language_suffix(tmp_path, target_language, expected):
+    video = tmp_path / "sample.mp4"
+    assert output_path_for(video, video, tmp_path / "out", False, target_language) == (tmp_path / "out" / expected).resolve()
+
+
+def test_english_print_config_uses_arial_target_font(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["video_to_zh_srt.py", "unused.mp4", "--target-language", "en", "--translator", "sugoi", "--print-config"],
+    )
+    main()
+    assert 'bilingual_font = "Arial"' in capsys.readouterr().out
 
 
 def test_build_qwen_command_survives_unexposed_config_fields(tmp_path):
@@ -669,7 +777,10 @@ def test_quality_report_is_opt_in_by_default():
     default = printed_config()
     assert "quality_report = false" in default
     assert "skip_quality_report = false" in default
-    assert "display_wrap_max_chars = 20" in default
+    # None means the runtime chooses the language-aware default (Chinese 20,
+    # English 60), so this key is intentionally absent from printed TOML.
+    assert "display_wrap_max_chars" not in default
+    assert 'target_language = "zh-Hans"' in default
     assert "event_log" not in default
     assert "cancel_file" not in default
 

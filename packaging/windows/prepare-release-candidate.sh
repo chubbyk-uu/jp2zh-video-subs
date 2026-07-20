@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
-    echo "Usage: $0 VERIFIED_PACKAGE_ROOT LAB_ROOT [all|program|default|qwen-asr|sakura-14b|speaker-gender|models]" >&2
+    echo "Usage: $0 VERIFIED_PACKAGE_ROOT LAB_ROOT [all|program|default|qwen-asr|sakura-14b|sugoi-14b|speaker-gender|models]" >&2
     exit 2
 fi
 
@@ -14,10 +14,11 @@ program_stage="$release_root/staging/program/jp2zh-video-subs"
 models_stage="$release_root/staging/models-default/jp2zh-video-subs"
 qwen_stage="$release_root/staging/models-qwen-asr/jp2zh-video-subs"
 sakura_stage="$release_root/staging/models-sakura-14b/jp2zh-video-subs"
+sugoi_stage="$release_root/staging/models-sugoi-14b/jp2zh-video-subs"
 speaker_stage="$release_root/staging/models-speaker-gender/jp2zh-video-subs"
 
 case "$target" in
-    all|program|default|qwen-asr|sakura-14b|speaker-gender|models) ;;
+    all|program|default|qwen-asr|sakura-14b|sugoi-14b|speaker-gender|models) ;;
     *)
         echo "Unknown staging target: $target" >&2
         exit 2
@@ -43,12 +44,14 @@ else
         default) rm -rf "$(dirname "$models_stage")" ;;
         qwen-asr) rm -rf "$(dirname "$qwen_stage")" ;;
         sakura-14b) rm -rf "$(dirname "$sakura_stage")" ;;
+        sugoi-14b) rm -rf "$(dirname "$sugoi_stage")" ;;
         speaker-gender) rm -rf "$(dirname "$speaker_stage")" ;;
         models)
             rm -rf \
                 "$(dirname "$models_stage")" \
                 "$(dirname "$qwen_stage")" \
                 "$(dirname "$sakura_stage")" \
+                "$(dirname "$sugoi_stage")" \
                 "$(dirname "$speaker_stage")"
             ;;
     esac
@@ -212,6 +215,15 @@ if [[ "$target" == all || "$target" == models || "$target" == sakura-14b ]]; the
     done
     generate_manifest "$sakura_stage" "$sakura_stage/config/models-sakura-14b.sha256"
     printf 'Sakura 14B model stage: %s\n' "$sakura_stage"
+fi
+
+if [[ "$target" == all || "$target" == models || "$target" == sugoi-14b ]]; then
+    stage_model_package "$sugoi_stage" Sugoi-14B-Ultra-GGUF
+    for name in Apache-2.0.txt sugoi-14b-ultra-README.md; do
+        copy_license_file "$sugoi_stage" "$name"
+    done
+    generate_manifest "$sugoi_stage" "$sugoi_stage/config/models-sugoi-14b.sha256"
+    printf 'Sugoi 14B model stage: %s\n' "$sugoi_stage"
 fi
 
 if [[ "$target" == all || "$target" == models || "$target" == speaker-gender ]]; then

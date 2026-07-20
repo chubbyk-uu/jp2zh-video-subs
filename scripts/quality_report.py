@@ -22,6 +22,7 @@ from srt_utils import (
 )
 
 KANA_RE = re.compile(r"[ぁ-ゟ゠-ヿ]")
+CJK_RE = re.compile(r"[\u3400-\u9fff]")
 READING_STRIP_RE = re.compile(r"[。、，,！？!?…♪〜~ー・「」『』（）()\[\]【】\s]")
 # Conservative candidates for Japanese/traditional CJK left in Simplified Chinese
 # output. These are review hints only; they are never used to filter subtitles.
@@ -298,13 +299,15 @@ def adjacent_duplicate_candidates(ja_entries: list[Entry], zh_entries: list[Entr
     return candidates
 
 
-def possible_japanese_text_left(entries: list[Entry]) -> list[tuple[Entry, str]]:
+def possible_japanese_text_left(entries: list[Entry], target_language: str = "zh-Hans") -> list[tuple[Entry, str]]:
     candidates: list[tuple[Entry, str]] = []
     for item in entries:
         if KANA_RE.search(item.text):
             candidates.append((item, "kana"))
-        elif NON_SIMPLIFIED_CJK_RE.search(item.text):
+        elif target_language == "zh-Hans" and NON_SIMPLIFIED_CJK_RE.search(item.text):
             candidates.append((item, "non_simplified_cjk"))
+        elif target_language == "en" and CJK_RE.search(item.text):
+            candidates.append((item, "cjk"))
     return candidates
 
 
@@ -315,6 +318,7 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
         metrics = {}
     ja_entries = parse_srt(args.ja_srt)
     zh_entries = parse_srt(args.zh_srt)
+    target_language = getattr(args, "target_language", "zh-Hans")
     qwen_metadata = load_json(getattr(args, "qwen_metadata", None))
     reference_args = getattr(args, "reference_srt", None) or []
     max_samples = getattr(args, "max_samples", 20)
@@ -323,7 +327,7 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
     lines.append("Subtitle quality report")
     lines.append(f"ja_srt: {args.ja_srt}")
     if args.zh_srt:
-        lines.append(f"zh_srt: {args.zh_srt}")
+        lines.append(f"target_srt: {args.zh_srt}")
     if args.audio:
         lines.append(f"audio: {args.audio}")
     lines.append("")
@@ -444,10 +448,10 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
         lines.append("")
 
     if zh_entries:
-        lines.append("[Chinese SRT]")
+        lines.append(f"[Translated SRT: {target_language}]")
         lines.append(f"entries: {len(zh_entries)}")
         jp_left = [item for item in zh_entries if KANA_RE.search(item.text)]
-        possible_jp_left = possible_japanese_text_left(zh_entries)
+        possible_jp_left = possible_japanese_text_left(zh_entries, target_language)
         lines.append(f"japanese_kana_left: {len(jp_left)}")
         lines.append(f"possible_japanese_or_traditional_left: {len(possible_jp_left)}")
         duplicate_candidates = adjacent_duplicate_candidates(ja_entries, zh_entries)
@@ -520,7 +524,8 @@ def build_parser() -> argparse.ArgumentParser:
     orchestrator); only IO/per-run args are declared here."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--ja-srt", type=Path, required=True)
-    parser.add_argument("--zh-srt", type=Path)
+    parser.add_argument("--target-srt", "--zh-srt", dest="zh_srt", type=Path)
+    parser.add_argument("--target-language", choices=("zh-Hans", "zh-Hant", "en"), default="zh-Hans")
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--qwen-metadata", type=Path)
     parser.add_argument(

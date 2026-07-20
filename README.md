@@ -2,9 +2,9 @@
 
 English | [Chinese](README-CN.md)
 
-This project generates Simplified Chinese SRT subtitles from local video files and writes
-a bilingual Chinese/Japanese ASS by default. The default pipeline is tuned for Japanese
-audio and runs fully offline after the required models are downloaded.
+This project generates Simplified Chinese, Traditional Chinese, or English SRT subtitles
+from local Japanese video files and writes a target-language/Japanese bilingual ASS by
+default. Inference runs fully offline after the required models are downloaded.
 
 Windows users can start with the portable desktop GUI in the
 [`v0.1.0 Beta 2` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.2).
@@ -18,10 +18,15 @@ It ships two transcription backends, selectable with `--asr`:
 - **`anime` (default)** — `litagin/anime-whisper` for text, WhisperSeg for weak-speech framing, semantic scene boundaries, and Qwen forced alignment with automatic VAD fallback. This is the recommended main line for the current JAV/anime-style material.
 - **`qwen`** — `Qwen3-ASR-1.7B` for content plus `Qwen3-ForcedAligner-0.6B` for timing, over WhisperSeg speech frames with aligner fallback recovery. Useful as a cleaner text/timing comparison line.
 
-…and two translation backends, selectable with `--translator`:
+…and three translation backends, selected compatibly with `--target-language`:
 
 - **`galtransl` (default)** — `Sakura-GalTransl-7B-v3.7`, a Japanese→Chinese model GRPO-tuned for visual-novel dialogue. Smaller and faster than Sakura-14B with more colloquial output; follows a terminology table natively in its native `src->dst #note` format.
 - **`sakura`** — `Sakura-14B-Qwen2.5-v1.0`, a larger light-novel/galgame model. Heavier but a useful second opinion on long, complex lines.
+- **`sugoi`** — `Sugoi-14B-Ultra`, the Japanese→English backend. It translates numbered batches of ten with strict identifier validation, split/retry, and per-line fallback.
+
+`galtransl` and `sakura` produce Simplified Chinese; Traditional Chinese applies bundled
+OpenCC `s2t` conversion afterward. English requires `sugoi`. The GUI enforces these compatible
+combinations automatically.
 
 See [docs/BACKENDS.md](docs/BACKENDS.md) (Chinese) for feature-by-feature backend comparisons.
 
@@ -34,9 +39,9 @@ The one-command pipeline performs these steps:
 
 1. Extract a 16 kHz mono WAV file from the input video with `ffmpeg`.
 2. Transcribe Japanese audio into a Japanese SRT with the selected ASR backend (`anime` by default).
-3. Translate the Japanese SRT into Simplified Chinese with the selected translation backend (`galtransl` by default).
-4. Generate a bilingual ASS by default (Chinese on top, Japanese below) and copy it next to the input video.
-5. Optionally write a quality report for coverage, possible missed speech, duplicate-looking lines, and Japanese or non-Simplified text left in Chinese subtitles when `--quality-report` is set.
+3. Translate the Japanese SRT into the selected target language (`zh-Hans` by default); `zh-Hant` adds OpenCC `s2t` conversion.
+4. Generate a bilingual ASS by default (translated text on top, Japanese below) and copy it next to the input video.
+5. Optionally write a target-aware quality report for coverage, possible missed speech, duplicate-looking lines, and source-script residue when `--quality-report` is set.
 
 The default anime backend runs WJ-style ASR framing (semantic scene boundaries, WhisperSeg
 grouped frames, anime-whisper text, and forced alignment with local/whole-frame VAD fallback); `--asr qwen` is the cleaner
@@ -60,14 +65,17 @@ No online API is required for inference. Model files are not included in this re
 │   ├── Qwen3-ForcedAligner-0.6B/    # Default Anime/Qwen timing model
 │   ├── Sakura-GalTransl-7B-v3.7-GGUF/ # Default translation model
 │   ├── Sakura-14B-Qwen2.5-v1.0-GGUF/ # Alternate (larger) translation model
+│   ├── Sugoi-14B-Ultra-GGUF/           # Optional Japanese-to-English model
 │   └── voice-gender-classifier/     # Optional ECAPA gender model (bilingual colouring)
-├── outputs/                         # Final subtitles (Chinese SRT and bilingual ASS)
+├── outputs/                         # Final translated SRT and bilingual ASS files
 ├── scripts/
 │   ├── video_to_zh_srt.py           # One-command video-to-Chinese-SRT pipeline
 │   ├── transcribe_ja_srt_qwen.py    # WAV/audio to Japanese SRT (Qwen/anime shared backend)
 │   ├── quality_report.py            # Subtitle quality report
 │   ├── translate_srt_galtransl.py   # Japanese SRT to Chinese SRT (default Sakura-GalTransl)
 │   ├── translate_srt_sakura.py      # Japanese SRT to Chinese SRT (Sakura-14B)
+│   ├── translate_srt_sugoi.py       # Japanese SRT to English SRT (Sugoi)
+│   ├── convert_srt_opencc.py        # Simplified-to-Traditional SRT conversion
 │   ├── retime_existing_subtitles.py # Retiming + ASS refresh from existing outputs
 │   ├── make_bilingual_ass.py        # Bilingual ASS (Chinese on top, Japanese below) + speaker colouring
 │   ├── ecapa_gender.py              # Vendored ECAPA-TDNN voice gender classifier
@@ -90,6 +98,7 @@ Verified environment:
 - `llama-cpp-python`: 0.3.33 (CUDA build for GPU translation)
 - `numpy`: 2.4.6 (`<2.5` is required by the installed `numba` used for semantic scenes)
 - `huggingface-hub`: 0.36.2
+- `opencc`: 1.4.1 (bundled by the Windows portable runtime)
 
 Recommended hardware:
 
@@ -146,6 +155,7 @@ Default one-command models:
 Optional comparison models:
 
 - Qwen ASR comparison: [`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
+- English translation: [`sugoitoolkit/Sugoi-14B-Ultra-GGUF`](https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF)
 
 The `hf` command is installed by `huggingface-hub` from `requirements.txt`. Download
 models to the default paths:
@@ -205,6 +215,14 @@ hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
   --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
+English output (`--target-language en`) needs Sugoi 14B Ultra:
+
+```bash
+hf download sugoitoolkit/Sugoi-14B-Ultra-GGUF \
+  Sugoi-14B-Ultra-Q4_K_M.gguf \
+  --local-dir models/Sugoi-14B-Ultra-GGUF
+```
+
 Bilingual speaker colouring (opt-in with `--colour-by-speaker`) needs the ECAPA voice
 gender model [`JaesungHuh/voice-gender-classifier`](https://huggingface.co/JaesungHuh/voice-gender-classifier)
 (~60 MB, torch-only). It is optional — without it the bilingual ASS is still written,
@@ -244,6 +262,12 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen
 
 # Keep default anime ASR, but switch the translator
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
+
+# Traditional Chinese (GalTransl/Sakura output followed by generic OpenCC s2t)
+python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language zh-Hant
+
+# English (Sugoi is the compatible backend)
+python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language en --translator sugoi
 ```
 
 Process all supported video files in a directory:
@@ -298,8 +322,8 @@ On first launch, missing-model checks list the files that must be downloaded. Un
 CUDA, CPU, or a probe failure from a real ONNX Runtime session; use **Refresh** after changing
 model files.
 
-The GUI supports video/folder drag-and-drop, a visible task queue, Anime/Qwen and
-GalTransl/Sakura selectors, common subtitle settings, live overall progress with detailed stage
+The GUI supports video/folder drag-and-drop, a visible task queue, Anime/Qwen ASR, independent
+Simplified Chinese/Traditional Chinese/English subtitle targets, compatible GalTransl/Sakura/Sugoi selection, common subtitle settings, live overall progress with detailed stage
 status, collapsible logs, cancellation, retry, remembered settings, model-file checks, and
 successful-job cleanup policies. Expanded videos run sequentially so multiple model instances
 do not stack their VRAM usage.
@@ -333,28 +357,34 @@ For `path/to/input.mp4`, the default outputs are:
 - `work/input/pipeline.log`: full pipeline log with per-stage timestamps (stdout + stderr of every subprocess). Appended across runs, survives terminal disconnects and reboots.
 - `work/input/input.quality.txt`: quality report, only when `--quality-report` is set.
 - `work/metrics.jsonl`: one JSON line of key quality metrics per processed video, only when `--quality-report` is set (entries, VAD coverage, kana residue, adjacent duplicates). Shared across videos and runs, for comparing tuning changes over time.
-- `outputs/input.zh.srt`: final Chinese SRT.
-- `path/to/input.zh.ass`: bilingual ASS copied next to the input video. Bilingual
+- `outputs/input.zh-s.srt`: final Simplified-Chinese SRT. Traditional Chinese uses
+  `.zh-t.srt`; English uses `.en.srt`.
+- `path/to/input.zh-s.ass`: bilingual ASS copied next to the input video, with the same
+  target suffix (`.zh-t.ass` or `.en.ass` for the other targets). Bilingual
   output is on by default, so the ASS (not the SRT) is the artifact placed beside the
-  video; the Chinese SRT still stays in `outputs/`. With `--no-bilingual`, the Chinese
+  video; the translated SRT still stays in `outputs/`. With `--no-bilingual`, the translated
   SRT is copied next to the video instead.
 
 Japanese SRT files keep the recognized speech timing and are used for gap
-analysis, VAD coverage, and quality reports. The Chinese SRT is the display
+analysis, VAD coverage, and quality reports. The translated SRT is the display
 subtitle: the one-command pipeline slightly extends its cue end times so short
 lines do not disappear immediately when speech ends. Bilingual ASS files take
-their timing from the Chinese SRT; Japanese text in ASS is aligned by subtitle
+their timing from the translated SRT; Japanese text in ASS is aligned by subtitle
 index only.
 By default, a Chinese cue over 20 visible characters (including punctuation) is
 shown on two lines after the `。？！.!?` nearest its midpoint. It remains one SRT/ASS
 cue with the same timing; cues without suitable punctuation are not hard-split. Use
 `--display-wrap-max-chars 0` to disable this or pass another threshold.
+English wraps at word boundaries into at most two lines, using 60 characters as the default
+single-line trigger. The earlier two-source, 200-cue evaluation established that the more
+conservative 42-character setting was safely within the 1280×720 ASS width; the new 60-character
+default reduces overly aggressive wrapping and still requires player-rendering acceptance.
 
 ## Documentation
 
 The detailed reference docs are maintained in Chinese only:
 
-- [docs/BACKENDS.md](docs/BACKENDS.md) — ASR (Anime vs Qwen) and translation (GalTransl vs Sakura) backend comparisons, how each line works, and when to prefer which.
+- [docs/BACKENDS.md](docs/BACKENDS.md) — ASR and Chinese/English translation backend comparisons, how each line works, and when to prefer which.
 - [docs/USAGE.md](docs/USAGE.md) — config files, full default behavior, all common options, step-by-step per-script usage, the CUDA check, and troubleshooting.
 - [docs/GUI_TEST_PLAN.md](docs/GUI_TEST_PLAN.md) — executable GUI test matrix, Windows portable acceptance cases, and run/defect record templates (Chinese).
 
@@ -390,5 +420,5 @@ Do not commit:
 - Continue A/B review of the default anime line against the current Qwen comparison line, especially weak-speech recall, local mishears, and readability splits.
 - Improve Qwen text accuracy without re-enabling long merged context by default unless manual review shows hallucination and tail drift stay controlled.
 - Qwen gap recapture has been removed; continue improving Qwen recall through WhisperSeg/scene framing and text recognition quality instead of a second ASR pass.
-- HY-MT and the legacy Whisper ASR backend have been removed; the pipeline now exposes two ASR backends (`anime`/`qwen`) and two translators (`galtransl`/`sakura`).
+- HY-MT and the legacy Whisper ASR backend have been removed; the pipeline now exposes two ASR backends (`anime`/`qwen`) and three translators (`galtransl`/`sakura`/`sugoi`) under a target-language compatibility matrix.
 - Continue improving ASR post-processing for isolated symbols, meaningless short subtitles, OCR-like noise, and end-credit noise.

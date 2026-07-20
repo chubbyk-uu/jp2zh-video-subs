@@ -20,6 +20,7 @@ from pipeline_configs import (
     QualityReportConfig,
     QwenAsrConfig,
     SakuraTranslateConfig,
+    SugoiTranslateConfig,
 )
 from make_bilingual_ass import build_parser as bilingual_build_parser
 from quality_report import build_parser as quality_build_parser
@@ -192,6 +193,7 @@ def _pipeline_args(translator: str = "galtransl") -> argparse.Namespace:
         lead_out_seconds=0.5,
         min_display_seconds=1.5,
         bilingual_font="Microsoft YaHei",
+        bilingual_ja_font="Microsoft YaHei",
         bilingual_zh_font_size=36,
         bilingual_ja_font_size=24,
         bilingual_zh_colour="&H0000FFFF",
@@ -209,6 +211,7 @@ def test_pipeline_translate_command_uses_backend_configs():
     cases = [
         ("sakura", sakura_build_parser(), SakuraTranslateConfig, 6),
         ("galtransl", galtransl_build_parser(), GalTranslTranslateConfig, 6),
+        ("sugoi", __import__("translate_srt_sugoi").build_parser(), SugoiTranslateConfig, None),
     ]
     for translator, parser, cls, expected_context in cases:
         cmd = build_translate_command(_pipeline_args(translator), Path("in.ja.srt"), Path("out.zh.srt"))
@@ -216,10 +219,22 @@ def test_pipeline_translate_command_uses_backend_configs():
         assert cmd[2] == "in.ja.srt"
         ns = parser.parse_args(cmd[2:])
         cfg = config_from_namespace(ns, cls)
-        assert cfg.context_size == expected_context
+        if expected_context is not None:
+            assert cfg.context_size == expected_context
         assert cfg.lead_out_seconds == 0.5
         assert cfg.min_display_seconds == 1.5
-        assert ("--batch-size" in cmd) is (translator == "galtransl")
+        assert ("--batch-size" in cmd) is (translator in ("galtransl", "sugoi"))
+
+
+def test_pipeline_uses_translator_specific_default_batch_sizes():
+    gal = _pipeline_args("galtransl")
+    gal.translate_batch_size = None
+    sugoi = _pipeline_args("sugoi")
+    sugoi.translate_batch_size = None
+    gal_cmd = build_translate_command(gal, Path("in.ja.srt"), Path("out.zh-s.srt"))
+    sugoi_cmd = build_translate_command(sugoi, Path("in.ja.srt"), Path("out.en.srt"))
+    assert gal_cmd[gal_cmd.index("--batch-size") + 1] == "8"
+    assert sugoi_cmd[sugoi_cmd.index("--batch-size") + 1] == "10"
 
 
 def test_pipeline_bilingual_command_uses_bilingual_config():

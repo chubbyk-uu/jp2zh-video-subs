@@ -50,9 +50,11 @@ TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒�
 - 语气词重复拼接折叠：共享 qwen/anime 子脚本默认开启，但只折叠至少 3 次、且每次都由明确标点分隔的失控 filler loop。无标点重复和正常双重复（如「ふふっ」「ねえねえ」「あ、ああ」）保留。anime 可用 `--no-anime-collapse-filler-repetition` 做 A/B，qwen 用 `--no-qwen-collapse-filler-repetition`。
 - 通用失控重复折叠：共享 qwen/anime 子脚本默认开启。类似「行く」连续重复很多次的短语 flood 会在最终字幕前折成两个，普通 2-3 次强调会保留。
 - 翻译后端：`galtransl`（`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`）；用 `--translator sakura` 切 Sakura-14B
+- 字幕目标：默认简体中文 `zh-Hans`；`zh-Hant` 在中文翻译后使用 OpenCC 通用 `s2t`；`en` 使用 `sugoi`
 - 识别语言：日语 `ja`
-- 翻译上下文：GalTransl/Sakura 默认前 6 轮；设为 0 则逐句独立翻译
-- 批量翻译（仅 GalTransl，`--translate-batch-size`，默认 8）：把至多 N 条连续字幕（不跨越 >10 秒间隔）作为一轮一起翻译，让被切成多条 cue 的整句能被完整看到，从而纠正省略主语/人称错误——例如跨多条 cue 的第三人称旁白此前会被误译成第一人称。它依赖 GalTransl「不要擅自增减换行」的契约保证输出与输入逐行 1:1；行数不匹配会先拆成更小的严格批量重试，仍不可靠的输出槽位才逐条回退，不会丢掉同块里已经可靠的译文。设为 `0` 或 `1` 关闭批量。
+- 翻译上下文：GalTransl/Sakura 默认前 6 轮；设为 0 则逐句独立翻译。Sugoi 不支持该参数，GUI 会禁用它，CLI 显式传入会在启动时拒绝。
+- 批量翻译：GalTransl 默认 8 条，Sugoi 默认 10 条；`0` 和 `1` 都表示逐条翻译；Sakura 不使用该参数。GalTransl 依赖逐行契约并拆分重试；Sugoi 使用严格编号校验、拆分重试和逐条兜底。两者都不会因批量结构错误而丢失输出槽位。
+- 显示换行：中文默认 20 个可见字符后寻找附近标点；英文总长度超过 60 个字符时，在单词边界分成最多两行，无法在两行内满足时会写入日志提示。`0` 关闭。
 - 中文字幕显示时间：默认尾延 0.5 秒，并保证最短显示 1.5 秒
 - 质量报告：生产字幕默认关闭；调参/测试时用 `--quality-report` 开启
 - 抽取音频：默认保留 WAV，方便复查和调参
@@ -84,7 +86,7 @@ Qwen 字幕时保持默认的 `aligner_fallback + context none` 路径，除非�
 指定单个视频的输出路径：
 
 ```bash
-python scripts/video_to_zh_srt.py path/to/input.mp4 --output outputs/input.zh.srt
+python scripts/video_to_zh_srt.py path/to/input.mp4 --output outputs/input.zh-s.srt
 ```
 
 批量处理时指定输出目录：
@@ -118,6 +120,16 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
 ```
+
+输出繁体中文或英文：
+
+```bash
+python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language zh-Hant
+python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language en --translator sugoi
+```
+
+自动命名分别使用 `.zh-s.srt/.ass`、`.zh-t.srt/.ass`、`.en.srt/.ass`。
+显式 `--output` 时文件名仍由调用者决定。
 
 ### 召回与对比
 
@@ -164,8 +176,8 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --cleanup-policy final_only
 python scripts/video_to_zh_srt.py path/to/input.mp4 --reuse-existing-audio
 ```
 
-从中断处续跑——跳过产物已存在且完整的阶段：转写（日语 SRT 存在且非空）、翻译（中文 SRT
-条数与源日语 SRT 一致）、音频抽取（WAV 存在且非空）。ASS 始终重新生成（耗时极短，
+从中断处续跑——跳过产物已存在且完整的阶段：转写（日语 SRT 存在且非空）、翻译（译文 SRT
+条数与源日语 SRT 一致，且目标语言、后端、prompt schema、上下文/批量和换行设置的 provenance 一致）、音频抽取（WAV 存在且非空）。ASS 始终重新生成（耗时极短，
 不占 GPU）；如果加了 `--quality-report`，质量报告也会重新生成。`--resume` 隐含 `--reuse-existing-audio`：
 
 ```bash
@@ -235,22 +247,23 @@ NVIDIA 显卡仍缺少实机兼容性证据。缺少 `models\whisperseg\model.on
 时，设备栏显示“语音切分 未检测（缺少模型）”；模型存在时才创建真实 ONNX Runtime
 会话并区分 CUDA、CPU 和检测失败。更改模型文件后点击“刷新”重新检测。
 
-“复用已完成阶段（断点续跑）”会跳过完整存在的 WAV、日语 SRT 和条数匹配的中文字幕。
+“复用已完成阶段（断点续跑）”会跳过完整存在的 WAV、日语 SRT，以及条数与 provenance
+（目标语言、翻译后端和关键翻译/换行设置）均匹配的译文字幕。
 更换模型或识别参数后应关闭它，以免继续复用旧的识别结果。长字幕自动换行的默认阈值 20
 表示超过 20 个可见字符时尝试在靠近中间的句末标点处分成两行；没有合适标点时不会硬拆，
 关闭该开关等价于 `--display-wrap-max-chars 0`。
 
 ### 双语 ASS 与样式
 
-默认输出双语字幕（中文在上，日文在下）。若只想要中文 SRT，用 `--no-bilingual`：
+默认输出双语字幕（译文在上，日文在下）。若只想要目标语言 SRT，用 `--no-bilingual`：
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --no-bilingual
 ```
 
-默认会生成 `outputs/input.zh.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：中文那行更大、有颜色，日文那行更小、灰白色。默认样式可以用 `--bilingual-font`（默认 `Microsoft YaHei`，在 Windows 上中日文行均有字形；非 Windows 播放器经 fontconfig 回退）、`--bilingual-zh-font-size`、`--bilingual-ja-font-size`、`--bilingual-zh-colour`、`--bilingual-ja-colour`（颜色用 ASS 的 `&HAABBGGRR` 格式）调整。下面那行日文来自参与翻译的日语 SRT（`.ja.srt`），因此中日两行逐条对齐。
+自动命名会生成 `outputs/input.zh-s.ass`、`.zh-t.ass` 或 `.en.ass` 并拷贝到输入视频同目录。双语模式下，视频同目录只放 ASS、**不放 SRT**；`outputs/` 里 SRT 和 ASS 都保留。SRT 无法可靠地为每一行单独设置样式，所以双语输出用 ASS 格式：目标语言那行更大、有颜色，日文那行更小、灰白色。现有 `--bilingual-zh-*` 参数名为兼容旧命令保留，但作用对象是目标语言顶行。下面那行日文来自参与翻译的日语 SRT（`.ja.srt`），两行逐条对齐。
 
-双语模式下还可**按说话人性别给中文那行上色**（默认关闭，加 `--colour-by-speaker` 开启）：对每条字幕从音频里取对应片段，用 ECAPA-TDNN 声纹性别模型（VoxCeleb 训练，见 [README-CN.md 的下载模型](../README-CN.md#下载模型)）判男/女——它在嘈杂/带背景音乐的真实音频上远比纯基频（F0）稳健，不会出现 F0 八度错误导致的男女互判。只有置信度高于 `--gender-confidence`（默认 0.6）的字幕才上色：男声深天蓝、女声粉；不够确定的保持默认黄色，宁可不上色也不上错色。用 `--bilingual-male-colour`、`--bilingual-female-colour` 改配色。未下载该模型时自动跳过上色、输出普通双语 ASS。注意只给中文那行上色，日文那行始终灰白。
+双语模式下还可**按说话人性别给目标语言顶行上色**（默认关闭，加 `--colour-by-speaker` 开启）。只有置信度高于 `--gender-confidence`（默认 0.6）的字幕才上色；日文底行始终灰白。
 
 调整最终中文字幕和双语 ASS 的显示留白：
 
@@ -260,7 +273,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 \
   --min-display-seconds 1.5
 ```
 
-这些参数只影响 `outputs/input.zh.srt` 和生成的 ASS。日语 SRT 仍保持真实
+这些参数只影响最终目标语言 SRT 和生成的 ASS。日语 SRT 仍保持真实
 语音时间，所以质量分析不受影响。单独运行翻译脚本时默认是 `0/0`，
 保持向后兼容；一键流程默认是 `0.5/1.5`。
 
@@ -272,10 +285,10 @@ python scripts/retime_existing_subtitles.py path/to/videos/ \
   --min-display-seconds 1.5
 ```
 
-这个脚本读取 `outputs/<名称>.zh.srt` 和匹配的日语 SRT：
+这个脚本默认读取 `outputs/<名称>.zh-s.srt`（也兼容旧 `.zh.srt`）和匹配的日语 SRT：
 `work/<名称>/<名称>.ja.srt`。
-它会生成 `outputs/<名称>.retimed.zh.srt`、`outputs/<名称>.retimed.zh.ass`，
-并把新的 ASS 复制到视频同目录覆盖 `<名称>.zh.ass`。先用 `--dry-run`
+它会生成 `outputs/<名称>.retimed.zh-s.srt/.ass`，并把新的 ASS 复制到视频同目录
+`<名称>.zh-s.ass`。繁体或英文加 `--target-language zh-Hant|en`。先用 `--dry-run`
 可以只检查匹配关系；加 `--no-copy-to-video-dir` 则只写 `outputs/`，不覆盖视频同目录字幕。
 
 ### 翻译和资源调参
@@ -325,7 +338,7 @@ ASR + 对齐器结果导出一次，之后用 `--from-raw work/input/input.raw.j
 
 ```bash
 python scripts/translate_srt_galtransl.py work/input/input.ja.srt \
-  --output outputs/input.zh.srt \
+  --output outputs/input.zh-s.srt \
   --context-size 6 \
   --lead-out-seconds 0.5 \
   --min-display-seconds 1.5
@@ -335,19 +348,36 @@ python scripts/translate_srt_galtransl.py work/input/input.ja.srt \
 
 ```bash
 python scripts/translate_srt_sakura.py work/input/input.ja.srt \
-  --output outputs/input.zh.srt \
+  --output outputs/input.zh-s.srt \
   --context-size 6 \
   --lead-out-seconds 0.5 \
   --min-display-seconds 1.5
+```
+
+已有日语 SRT，用 Sugoi 翻译为英文：
+
+```bash
+python scripts/translate_srt_sugoi.py work/input/input.ja.srt \
+  --output outputs/input.en.srt \
+  --batch-size 10 \
+  --lead-out-seconds 0.5 \
+  --min-display-seconds 1.5
+```
+
+把简体 SRT 转为通用繁体：
+
+```bash
+python scripts/convert_srt_opencc.py outputs/input.zh-s.srt \
+  --output outputs/input.zh-t.srt --config s2t
 ```
 
 用对齐的日语和中文 SRT 生成双语 ASS：
 
 ```bash
 python scripts/make_bilingual_ass.py \
-  --zh-srt outputs/input.zh.srt \
+  --target-srt outputs/input.en.srt \
   --ja-srt work/input/input.ja.srt \
-  --output outputs/input.zh.ass
+  --output outputs/input.en.ass
 ```
 
 生成质量报告：
@@ -355,7 +385,8 @@ python scripts/make_bilingual_ass.py \
 ```bash
 python scripts/quality_report.py \
   --ja-srt work/input/input.ja.srt \
-  --zh-srt outputs/input.zh.srt \
+  --target-srt outputs/input.en.srt \
+  --target-language en \
   --audio work/input/input.wav \
   --output work/input/input.quality.txt
 ```
@@ -398,7 +429,8 @@ Missing GalTransl model: .../models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtran
 
 按 [README-CN.md 的下载模型](../README-CN.md#下载模型) 一节重新下载，并确认目录名和文件名没有改动。默认主线需要 anime-whisper、
 WhisperSeg、Qwen forced aligner 和 GalTransl；Qwen ASR 模型只在 `--asr qwen` 时需要；
-Sakura 模型只在 `--translator sakura` 时需要。
+Sakura 模型只在 `--translator sakura` 时需要；Sugoi 模型只在英文目标时需要。OpenCC
+是程序依赖，不是模型，源码安装随 `requirements.txt` 安装，Windows 绿色包会直接内置。
 
 ### 翻译速度很慢
 

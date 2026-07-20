@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cli_config import arg_field
+from target_languages import DEFAULT_BATCH_SIZE_BY_TRANSLATOR, DEFAULT_CONTEXT_SIZE
 
 
 @dataclass
@@ -187,7 +188,7 @@ class AnimeAsrConfig(BaseAsrConfig):
 class SakuraTranslateConfig:
     """Tunable knobs shared with translate_srt_sakura.py."""
 
-    context_size: int = arg_field(6, help="Prior source/translation turns supplied as context")
+    context_size: int = arg_field(DEFAULT_CONTEXT_SIZE, help="Prior source/translation turns supplied as context")
     lead_out_seconds: float = arg_field(0.0, help="Extend each displayed cue by this many seconds")
     min_display_seconds: float = arg_field(0.0, help="Minimum displayed cue duration")
 
@@ -196,8 +197,20 @@ class SakuraTranslateConfig:
 class GalTranslTranslateConfig:
     """Tunable knobs shared with translate_srt_galtransl.py."""
 
-    context_size: int = arg_field(6, help="Prior translated Chinese lines supplied as context")
-    batch_size: int = arg_field(8, help="Max consecutive cues translated as one GalTransl turn")
+    context_size: int = arg_field(DEFAULT_CONTEXT_SIZE, help="Prior translated Chinese lines supplied as context")
+    batch_size: int = arg_field(DEFAULT_BATCH_SIZE_BY_TRANSLATOR["galtransl"], help="Max consecutive cues translated as one GalTransl turn")
+    lead_out_seconds: float = arg_field(0.0, help="Extend each displayed cue by this many seconds")
+    min_display_seconds: float = arg_field(0.0, help="Minimum displayed cue duration")
+
+
+@dataclass
+class SugoiTranslateConfig:
+    """Tunable knobs for the Japanese-to-English Sugoi backend."""
+
+    batch_size: int = arg_field(
+        DEFAULT_BATCH_SIZE_BY_TRANSLATOR["sugoi"],
+        help="Max consecutive numbered cues translated in one turn; 0 or 1 translates one cue at a time",
+    )
     lead_out_seconds: float = arg_field(0.0, help="Extend each displayed cue by this many seconds")
     min_display_seconds: float = arg_field(0.0, help="Minimum displayed cue duration")
 
@@ -206,7 +219,8 @@ class GalTranslTranslateConfig:
 class BilingualAssConfig:
     """Style and speaker-colour knobs shared with make_bilingual_ass.py."""
 
-    font: str = arg_field("Microsoft YaHei", help="ASS font name")
+    font: str = arg_field("Microsoft YaHei", help="Target-language ASS font name")
+    ja_font: str = arg_field("Microsoft YaHei", help="Japanese ASS font name")
     zh_font_size: int = arg_field(36, help="Chinese line font size")
     ja_font_size: int = arg_field(24, help="Japanese line font size")
     zh_colour: str = arg_field("&H0000FFFF", help="Chinese line ASS colour &HAABBGGRR")

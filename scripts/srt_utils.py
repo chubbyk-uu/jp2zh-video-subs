@@ -41,7 +41,39 @@ def wrap_display_text(text: str, max_chars: int) -> str:
     return normalized[: split_at + 1].rstrip() + "\n" + normalized[split_at + 1 :].lstrip()
 
 
-def wrap_srt_display_file(path: Path, max_chars: int) -> int:
+def wrap_english_display_text(text: str, max_chars: int) -> str:
+    """Split English into at most two balanced lines, preferring lines within the limit."""
+    if max_chars <= 0 or "\n" in text:
+        return text
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    spaces = [index for index, char in enumerate(normalized) if char == " "]
+    if not spaces:
+        return normalized
+    midpoint = len(normalized) / 2.0
+    fitting = [
+        index for index in spaces
+        if index <= max_chars and len(normalized) - index - 1 <= max_chars
+    ]
+    split_at = min(fitting or spaces, key=lambda index: abs(index - midpoint))
+    return normalized[:split_at].rstrip() + "\n" + normalized[split_at + 1 :].lstrip()
+
+
+def count_overlong_srt_lines(path: Path, max_chars: int) -> int:
+    """Count subtitle cues that still exceed a preferred line length after wrapping."""
+    if max_chars <= 0:
+        return 0
+    content = path.read_text(encoding="utf-8")
+    count = 0
+    for block in re.split(r"\n\s*\n", content.strip()):
+        lines = block.splitlines()
+        if len(lines) >= 3 and "-->" in lines[1] and any(len(line.strip()) > max_chars for line in lines[2:]):
+            count += 1
+    return count
+
+
+def wrap_srt_display_file(path: Path, max_chars: int, target_language: str = "zh-Hans") -> int:
     """Apply punctuation-based two-line display wrapping to an SRT in place."""
     if max_chars <= 0:
         return 0
@@ -56,7 +88,11 @@ def wrap_srt_display_file(path: Path, max_chars: int) -> int:
             out.append(block)
             continue
         text = "\n".join(lines[2:])
-        display = wrap_display_text(text, max_chars)
+        display = (
+            wrap_english_display_text(text, max_chars)
+            if target_language == "en"
+            else wrap_display_text(text, max_chars)
+        )
         if display != text:
             wrapped += 1
         out.append("\n".join([*lines[:2], *display.splitlines()]))

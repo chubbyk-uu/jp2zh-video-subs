@@ -33,6 +33,7 @@ mkdir -p "$extract_root"
 for archive in \
     jp2zh-video-subs-qwen-asr-model.7z \
     jp2zh-video-subs-sakura-14b-model.7z \
+    jp2zh-video-subs-sugoi-14b-model.7z \
     jp2zh-video-subs-speaker-gender-model.7z; do
     if [[ -f "$archives/$archive" ]]; then
         7z.exe x -y -o"$(wslpath -w "$extract_root")" \
@@ -49,6 +50,7 @@ test ! -e "$extract_root/jp2zh-video-subs/启动字幕工具-调试.cmd"
 test -f "$extract_root/jp2zh-video-subs/models/anime-whisper/model.safetensors"
 test -f "$extract_root/jp2zh-video-subs/models/Qwen3-ASR-1.7B/config.json"
 test -f "$extract_root/jp2zh-video-subs/models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
+test -f "$extract_root/jp2zh-video-subs/models/Sugoi-14B-Ultra-GGUF/Sugoi-14B-Ultra-Q4_K_M.gguf"
 test -f "$extract_root/jp2zh-video-subs/models/voice-gender-classifier/model.safetensors"
 test -d "$extract_root/jp2zh-video-subs/runtime/Lib/site-packages/transformers/models"
 test -f "$extract_root/jp2zh-video-subs/app/scripts/jp2zh_gui/translations/languages.json"

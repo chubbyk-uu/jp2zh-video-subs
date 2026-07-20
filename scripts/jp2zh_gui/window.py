@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from portable_runtime import portable_config_path, rebase_portable_path
+from target_languages import DEFAULT_BATCH_SIZE_BY_TRANSLATOR, DEFAULT_WRAP_CHARS_BY_TARGET
 from .controller import PipelineController
 from .i18n import LanguageManager
 from .models import (
@@ -54,6 +55,7 @@ from .models import (
     PROJECT_ROOT,
     TaskStatus,
     TranslatorPreset,
+    TargetLanguage,
     discover_dropped_videos,
     missing_model_files,
 )
@@ -117,44 +119,6 @@ class LogSplitter(QSplitter):
         return LogSplitterHandle(self.orientation(), self)
 
 
-class AutoCloseComboBox(QComboBox):
-    """Combo-box facade backed by QMenu instead of WSLg's sticky Qt popup."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._popup_menu: QMenu | None = None
-
-    def showPopup(self) -> None:
-        if self._popup_menu is not None:
-            self._popup_menu.close()
-        menu = QMenu(self)
-        menu.setMinimumWidth(self.width())
-        for index in range(self.count()):
-            action = menu.addAction(self.itemIcon(index), self.itemText(index))
-            action.setCheckable(True)
-            action.setChecked(index == self.currentIndex())
-            action.triggered.connect(lambda _checked=False, selected=index: self._select_menu_item(selected))
-        menu.aboutToHide.connect(self._menu_hidden)
-        self._popup_menu = menu
-        menu.popup(self.mapToGlobal(QPoint(0, self.height())))
-
-    def hidePopup(self) -> None:
-        if self._popup_menu is not None:
-            self._popup_menu.close()
-
-    def _select_menu_item(self, index: int) -> None:
-        self.setCurrentIndex(index)
-        self.activated.emit(index)
-        if self._popup_menu is not None:
-            self._popup_menu.close()
-
-    def _menu_hidden(self) -> None:
-        menu = self._popup_menu
-        self._popup_menu = None
-        if menu is not None:
-            menu.deleteLater()
-
-
 class FontComboBox(QFontComboBox):
     """Scrollable font dropdown backed by a QMenu-owned list."""
 
@@ -207,8 +171,9 @@ class FontComboBox(QFontComboBox):
 class AdvancedSettingsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(560, 440)
-        self.resize(640, 440)
+        self.target_language = TargetLanguage.SIMPLIFIED_CHINESE
+        self.setMinimumSize(560, 480)
+        self.resize(640, 480)
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
         self.tabs = tabs
@@ -242,6 +207,10 @@ class AdvancedSettingsDialog(QDialog):
         self.font_combo.setMaxVisibleItems(18)
         self.font_label = QLabel()
         style_form.addRow(self.font_label, self.font_combo)
+        self.ja_font_combo = FontComboBox()
+        self.ja_font_combo.setMaxVisibleItems(18)
+        self.ja_font_label = QLabel()
+        style_form.addRow(self.ja_font_label, self.ja_font_combo)
         self.zh_size_spin = QSpinBox()
         self.zh_size_spin.setRange(1, 200)
         self.ja_size_spin = QSpinBox()
@@ -284,21 +253,22 @@ class AdvancedSettingsDialog(QDialog):
     def retranslate_ui(self) -> None:
         self.setWindowTitle(self.tr("Advanced subtitle and translation settings"))
         self.context_spin.setToolTip(self.tr("Number of preceding lines supplied to the translation model; 0 translates each line independently."))
-        self.batch_spin.setToolTip(self.tr("Maximum number of consecutive subtitles translated together by GalTransl; this is not GPU parallelism."))
+        self.batch_spin.setToolTip(self.tr("Maximum number of consecutive subtitles translated together; this is not GPU parallelism."))
         self.context_label.setText(self.tr("Translation context"))
-        self.batch_label.setText(self.tr("Translation batch size (GalTransl only)"))
+        self.batch_label.setText(self.tr("Translation batch size"))
         self.translation_note.setText(self.tr("These settings affect translation context and grouping, not GPU parallelism."))
         self.tabs.setTabText(0, self.tr("Translation"))
         self.wrap_check.setText(self.tr("Wrap long subtitles"))
-        self.wrap_check.setToolTip(self.tr("Split at the punctuation nearest the middle when the character limit is exceeded"))
+        self.wrap_check.setToolTip(self.tr("Wrap long Chinese text near punctuation and English text at a word boundary"))
         self.wrap_spin.setSuffix(self.tr(" chars"))
-        self.wrap_spin.setToolTip(self.tr("Text is not forcibly wrapped when no suitable punctuation exists; cue count and timing stay unchanged."))
-        self.wrap_limit_label.setText(self.tr("Character limit"))
-        self.font_label.setText(self.tr("Subtitle font"))
-        self.zh_size_label.setText(self.tr("Chinese font size"))
+        self.wrap_spin.setToolTip(self.tr("Cue count and timing stay unchanged; English uses a separately evaluated default."))
+        self.wrap_limit_label.setText(self.tr("Preferred line length"))
+        self.font_label.setText(self.tr("Target subtitle font"))
+        self.ja_font_label.setText(self.tr("Japanese subtitle font"))
+        self.zh_size_label.setText(self.tr("Target font size"))
         self.ja_size_label.setText(self.tr("Japanese font size"))
         colour_names = {
-            "zh": self.tr("Chinese colour"),
+            "zh": self.tr("Target colour"),
             "ja": self.tr("Japanese colour"),
             "male": self.tr("Male speaker colour"),
             "female": self.tr("Female speaker colour"),
@@ -314,9 +284,15 @@ class AdvancedSettingsDialog(QDialog):
 
     def set_translator(self, translator: str) -> None:
         """Enable translator-specific controls without discarding saved values."""
-        batch_supported = translator == TranslatorPreset.GALTRANSL.value
+        context_supported = translator != TranslatorPreset.SUGOI.value
+        batch_supported = translator in (TranslatorPreset.GALTRANSL.value, TranslatorPreset.SUGOI.value)
+        self.context_label.setEnabled(context_supported)
+        self.context_spin.setEnabled(context_supported)
         self.batch_label.setEnabled(batch_supported)
         self.batch_spin.setEnabled(batch_supported)
+
+    def set_target_language(self, target_language: TargetLanguage) -> None:
+        self.target_language = target_language
 
     @staticmethod
     def _ass_colour_parts(value: str) -> tuple[int, int, int, str]:
@@ -343,10 +319,18 @@ class AdvancedSettingsDialog(QDialog):
     def restore_defaults(self) -> None:
         defaults = GuiConfig()
         self.context_spin.setValue(defaults.context_size)
-        self.batch_spin.setValue(defaults.translate_batch_size)
+        english = self.target_language == TargetLanguage.ENGLISH
+        self.batch_spin.setValue(
+            DEFAULT_BATCH_SIZE_BY_TRANSLATOR["sugoi"] if english else defaults.translate_batch_size
+        )
         self.wrap_check.setChecked(defaults.display_wrap_max_chars > 0)
-        self.wrap_spin.setValue(defaults.display_wrap_max_chars or 20)
-        self.font_combo.setCurrentFont(QFont(defaults.bilingual_font))
+        self.wrap_spin.setValue(
+            DEFAULT_WRAP_CHARS_BY_TARGET[TargetLanguage.ENGLISH]
+            if english
+            else (defaults.display_wrap_max_chars or DEFAULT_WRAP_CHARS_BY_TARGET[TargetLanguage.SIMPLIFIED_CHINESE])
+        )
+        self.font_combo.setCurrentFont(QFont("Arial" if english else defaults.bilingual_font))
+        self.ja_font_combo.setCurrentFont(QFont(defaults.bilingual_ja_font))
         self.zh_size_spin.setValue(defaults.bilingual_zh_font_size)
         self.ja_size_spin.setValue(defaults.bilingual_ja_font_size)
         for key, value in (
@@ -360,7 +344,8 @@ class AdvancedSettingsDialog(QDialog):
         return {
             "context": self.context_spin.value(), "batch": self.batch_spin.value(),
             "wrap_enabled": self.wrap_check.isChecked(), "wrap": self.wrap_spin.value(),
-            "font": self.font_combo.currentFont().family(), "zh_size": self.zh_size_spin.value(),
+            "font": self.font_combo.currentFont().family(),
+            "ja_font": self.ja_font_combo.currentFont().family(), "zh_size": self.zh_size_spin.value(),
             "ja_size": self.ja_size_spin.value(),
             **{f"{key}_colour": edit.text() for key, edit in self.colour_edits.items()},
         }
@@ -371,6 +356,7 @@ class AdvancedSettingsDialog(QDialog):
         self.wrap_check.setChecked(bool(values["wrap_enabled"]))
         self.wrap_spin.setValue(int(values["wrap"]))
         self.font_combo.setCurrentFont(QFont(str(values["font"])))
+        self.ja_font_combo.setCurrentFont(QFont(str(values["ja_font"])))
         self.zh_size_spin.setValue(int(values["zh_size"]))
         self.ja_size_spin.setValue(int(values["ja_size"]))
         for key in self.colour_edits:
@@ -382,7 +368,7 @@ class MainWindow(QMainWindow):
     UI_SETTINGS_VERSION = 3
     DEFAULT_WINDOW_WIDTH = 1280
     DEFAULT_WINDOW_HEIGHT = 720
-    DEFAULT_LOG_HEIGHT = 130
+    DEFAULT_LOG_HEIGHT = 140
 
     def __init__(
         self,
@@ -406,6 +392,15 @@ class MainWindow(QMainWindow):
         self._last_device_data: dict[str, object] | None = None
         self._device_probe_state = "idle"
         self._log_splitter_initialised = False
+        self._target_change_guard = False
+        self._active_target = TargetLanguage.SIMPLIFIED_CHINESE
+        self._last_chinese_translator = TranslatorPreset.GALTRANSL
+        self._last_chinese_batch_size = DEFAULT_BATCH_SIZE_BY_TRANSLATOR["galtransl"]
+        self._last_chinese_wrap = DEFAULT_WRAP_CHARS_BY_TARGET[TargetLanguage.SIMPLIFIED_CHINESE]
+        self._last_chinese_font = "Microsoft YaHei"
+        self._last_english_batch_size = DEFAULT_BATCH_SIZE_BY_TRANSLATOR["sugoi"]
+        self._last_english_wrap = DEFAULT_WRAP_CHARS_BY_TARGET[TargetLanguage.ENGLISH]
+        self._last_english_font = "Arial"
         hide_windows_console(self._device_probe)
         self.setMinimumSize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
         self.resize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
@@ -428,7 +423,7 @@ class MainWindow(QMainWindow):
             QLineEdit, QComboBox, QSpinBox { min-height: 30px; }
             QPushButton { min-height: 30px; padding: 2px 10px; }
             QPushButton#primaryButton {
-                min-height: 34px; min-width: 112px; font-weight: 600;
+                min-height: 32px; min-width: 112px; font-weight: 600;
                 color: white; background: #2563a8; border: 1px solid #1f5797; border-radius: 3px;
             }
             QPushButton#primaryButton:hover { background: #2f74bd; }
@@ -463,20 +458,26 @@ class MainWindow(QMainWindow):
 
         settings_group = QGroupBox()
         self.settings_group = settings_group
+        settings_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         settings_layout = QVBoxLayout(settings_group)
         settings_layout.setSpacing(5)
         model_layout = QGridLayout()
         self.model_layout = model_layout
         model_layout.setHorizontalSpacing(8)
-        self.asr_combo = AutoCloseComboBox()
+        model_layout.setVerticalSpacing(2)
+        self.asr_combo = QComboBox()
         self.asr_combo.setMinimumWidth(150)
         for preset in AsrPreset:
             self.asr_combo.addItem("", preset.value)
-        self.translator_combo = AutoCloseComboBox()
-        self.translator_combo.setMinimumWidth(170)
-        for preset in TranslatorPreset:
+        self.translator_combo = QComboBox()
+        self.translator_combo.setMinimumWidth(180)
+        for preset in (TranslatorPreset.GALTRANSL, TranslatorPreset.SAKURA):
             self.translator_combo.addItem("", preset.value)
-        self.cleanup_combo = AutoCloseComboBox()
+        self.target_language_combo = QComboBox()
+        self.target_language_combo.setMinimumWidth(150)
+        for language in TargetLanguage:
+            self.target_language_combo.addItem("", language.value)
+        self.cleanup_combo = QComboBox()
         for policy in CleanupPolicy:
             self.cleanup_combo.addItem("", policy.value)
         self.model_status_label = QLabel()
@@ -494,12 +495,16 @@ class MainWindow(QMainWindow):
         self.work_browse = QPushButton()
         self.asr_label = QLabel()
         self.translator_label = QLabel()
+        self.target_language_label = QLabel()
         model_layout.addWidget(self.asr_label, 0, 0)
-        model_layout.addWidget(self.asr_combo, 0, 1)
+        model_layout.addWidget(self.target_language_label, 0, 1)
         model_layout.addWidget(self.translator_label, 0, 2)
-        model_layout.addWidget(self.translator_combo, 0, 3)
-        model_layout.setColumnStretch(1, 1)
-        model_layout.setColumnStretch(3, 1)
+        model_layout.addWidget(self.asr_combo, 1, 0)
+        model_layout.addWidget(self.target_language_combo, 1, 1)
+        model_layout.addWidget(self.translator_combo, 1, 2)
+        model_layout.setColumnStretch(0, 3)
+        model_layout.setColumnStretch(1, 3)
+        model_layout.setColumnStretch(2, 4)
         settings_layout.addLayout(model_layout)
         status_row = QHBoxLayout()
         status_text = QVBoxLayout()
@@ -532,14 +537,17 @@ class MainWindow(QMainWindow):
 
         common_group = QGroupBox()
         self.common_group = common_group
+        common_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         common_layout = QGridLayout(common_group)
+        common_layout.setContentsMargins(9, 7, 9, 7)
+        common_layout.setVerticalSpacing(2)
         self.recursive_check = QCheckBox()
         self.bilingual_check = QCheckBox()
         self.quality_check = QCheckBox()
         self.resume_check = QCheckBox()
         self.copy_check = QCheckBox()
         self.speaker_check = QCheckBox()
-        self.asr_batch_combo = AutoCloseComboBox()
+        self.asr_batch_combo = QComboBox()
         self.asr_batch_combo.setMinimumWidth(260)
         self.asr_batch_combo.setMaximumWidth(275)
         for value in (24, 16, 8, 4):
@@ -549,6 +557,7 @@ class MainWindow(QMainWindow):
         self.batch_spin = self.advanced_dialog.batch_spin
         self.wrap_spin = self.advanced_dialog.wrap_spin
         self.font_combo = self.advanced_dialog.font_combo
+        self.ja_font_combo = self.advanced_dialog.ja_font_combo
         self.zh_size_spin = self.advanced_dialog.zh_size_spin
         self.ja_size_spin = self.advanced_dialog.ja_size_spin
         self.zh_colour_edit = self.advanced_dialog.colour_edits["zh"]
@@ -577,6 +586,7 @@ class MainWindow(QMainWindow):
 
         guidance_group = QGroupBox()
         self.guidance_group = guidance_group
+        guidance_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         guidance_layout = QVBoxLayout(guidance_group)
         guidance_layout.setContentsMargins(9, 6, 9, 6)
         self.guidance_label = QLabel()
@@ -633,17 +643,18 @@ class MainWindow(QMainWindow):
         log_splitter.setSizes([500, self.DEFAULT_LOG_HEIGHT])
         outer.addWidget(log_splitter, 1)
 
-        action_row = QHBoxLayout()
         self.start_button = QPushButton()
         self.start_button.setObjectName("primaryButton")
         self.cancel_button = QPushButton()
         self.cancel_button.setEnabled(False)
-        self.retry_button = QPushButton()
+        self.open_work_button = QPushButton()
         self.open_output_button = QPushButton()
-        action_row.addStretch()
-        for button in (self.start_button, self.cancel_button, self.retry_button, self.open_output_button):
-            action_row.addWidget(button)
-        outer.addLayout(action_row)
+        self.top_actions = QWidget()
+        top_actions_layout = QHBoxLayout(self.top_actions)
+        top_actions_layout.setContentsMargins(0, 1, 4, 1)
+        top_actions_layout.setSpacing(6)
+        for button in (self.start_button, self.cancel_button, self.open_work_button, self.open_output_button):
+            top_actions_layout.addWidget(button)
         self.setCentralWidget(central)
         for control in (
             self.output_edit,
@@ -655,6 +666,7 @@ class MainWindow(QMainWindow):
             control.ensurePolished()
             control.setFixedHeight(32)
         self._build_language_menu()
+        self.menuBar().setCornerWidget(self.top_actions, Qt.Corner.TopRightCorner)
 
     def _build_language_menu(self) -> None:
         self.settings_menu = self.menuBar().addMenu("")
@@ -702,11 +714,11 @@ class MainWindow(QMainWindow):
     def _align_settings_form_columns(self) -> None:
         label_width = max(
             label.sizeHint().width()
-            for label in (self.asr_label, self.output_label, self.work_label, self.cleanup_label)
+            for label in (self.output_label, self.work_label, self.cleanup_label)
         )
-        for layout in (self.model_layout, self.path_layout):
-            layout.setColumnMinimumWidth(0, label_width)
-            layout.invalidate()
+        self.path_layout.setColumnMinimumWidth(0, label_width)
+        self.path_layout.invalidate()
+        self.model_layout.invalidate()
 
     def retranslate_ui(self) -> None:
         self.setWindowTitle(self.tr("Japanese Video Subtitle Tool"))
@@ -721,6 +733,7 @@ class MainWindow(QMainWindow):
         self.settings_group.setTitle(self.tr("Models and common settings"))
         self.asr_label.setText(self.tr("ASR model"))
         self.translator_label.setText(self.tr("Translation model"))
+        self.target_language_label.setText(self.tr("Subtitle language"))
         self._replace_combo_labels(self.asr_combo, {
             AsrPreset.ANIME.value: self.tr("Anime (recommended)"),
             AsrPreset.QWEN.value: "Qwen",
@@ -728,6 +741,12 @@ class MainWindow(QMainWindow):
         self._replace_combo_labels(self.translator_combo, {
             TranslatorPreset.GALTRANSL.value: self.tr("GalTransl 7B (recommended)"),
             TranslatorPreset.SAKURA.value: "Sakura 14B",
+            TranslatorPreset.SUGOI.value: "Sugoi 14B Ultra",
+        })
+        self._replace_combo_labels(self.target_language_combo, {
+            TargetLanguage.SIMPLIFIED_CHINESE.value: self.tr("Simplified Chinese"),
+            TargetLanguage.TRADITIONAL_CHINESE.value: self.tr("Traditional Chinese"),
+            TargetLanguage.ENGLISH.value: self.tr("English"),
         })
         self.refresh_device_button.setText(self.tr("Probing…") if self._device_probe_state == "running" else self.tr("Refresh"))
         self.output_label.setText(self.tr("Output folder"))
@@ -745,7 +764,7 @@ class MainWindow(QMainWindow):
         self.bilingual_check.setText(self.tr("Generate bilingual ASS"))
         self.quality_check.setText(self.tr("Generate quality report"))
         self.resume_check.setText(self.tr("Resume completed stages"))
-        self.resume_check.setToolTip(self.tr("Reuse complete WAV, Japanese SRT, and Chinese translation files; disable this after changing models or key settings."))
+        self.resume_check.setToolTip(self.tr("Reuse complete WAV, Japanese SRT, and translated subtitle files; disable this after changing models or key settings."))
         self.copy_check.setText(self.tr("Copy subtitles beside video"))
         self.speaker_check.setText(self.tr("Colour by speaker gender"))
         self.asr_batch_label.setText(self.tr("ASR batch size"))
@@ -771,7 +790,7 @@ class MainWindow(QMainWindow):
         self.log_splitter_handle.setAccessibleName(resize_log_text)
         self.start_button.setText(self.tr("Start"))
         self.cancel_button.setText(self.tr("Cancel"))
-        self.retry_button.setText(self.tr("Retry failed tasks"))
+        self.open_work_button.setText(self.tr("Open work folder"))
         self.open_output_button.setText(self.tr("Open output folder"))
         self.settings_menu.setTitle(self.tr("Settings"))
         self.language_menu.setTitle(self.tr("Language"))
@@ -805,10 +824,11 @@ class MainWindow(QMainWindow):
         self.work_browse.clicked.connect(lambda: self._choose_directory(self.work_edit))
         self.start_button.clicked.connect(self._start)
         self.cancel_button.clicked.connect(self.controller.cancel)
-        self.retry_button.clicked.connect(self._retry_failed)
+        self.open_work_button.clicked.connect(self._open_work)
         self.open_output_button.clicked.connect(self._open_output)
         self.asr_combo.currentIndexChanged.connect(self._update_model_status)
         self.translator_combo.currentIndexChanged.connect(self._translator_changed)
+        self.target_language_combo.currentIndexChanged.connect(self._target_language_changed)
         self.speaker_check.toggled.connect(self._update_model_status)
         self.advanced_button.clicked.connect(self._show_advanced_settings)
         self.refresh_device_button.clicked.connect(self._start_device_probe)
@@ -834,6 +854,68 @@ class MainWindow(QMainWindow):
         self.about_action.triggered.connect(self._show_about)
 
     def _translator_changed(self) -> None:
+        if self._target_change_guard:
+            return
+        if self._active_target != TargetLanguage.ENGLISH and self.translator_combo.currentData():
+            self._last_chinese_translator = TranslatorPreset(self.translator_combo.currentData())
+        self.advanced_dialog.set_translator(str(self.translator_combo.currentData()))
+        self._update_model_status()
+
+    def _populate_translator_combo(self, target: TargetLanguage, selected: TranslatorPreset) -> None:
+        allowed = (
+            (TranslatorPreset.SUGOI,)
+            if target == TargetLanguage.ENGLISH
+            else (TranslatorPreset.GALTRANSL, TranslatorPreset.SAKURA)
+        )
+        self.translator_combo.clear()
+        for preset in allowed:
+            self.translator_combo.addItem("", preset.value)
+        wanted = selected if selected in allowed else allowed[0]
+        self.translator_combo.setCurrentIndex(self.translator_combo.findData(wanted.value))
+        self.translator_combo.setEnabled(len(allowed) > 1)
+        self._replace_combo_labels(self.translator_combo, {
+            TranslatorPreset.GALTRANSL.value: self.tr("GalTransl 7B (recommended)"),
+            TranslatorPreset.SAKURA.value: "Sakura 14B",
+            TranslatorPreset.SUGOI.value: "Sugoi 14B Ultra",
+        })
+
+    def _target_language_changed(self) -> None:
+        if self._target_change_guard or self.target_language_combo.currentData() is None:
+            return
+        new_target = TargetLanguage(self.target_language_combo.currentData())
+        old_target = self._active_target
+        if old_target == new_target:
+            return
+        current_wrap = self.wrap_spin.value() if self.advanced_dialog.wrap_check.isChecked() else 0
+        if old_target == TargetLanguage.ENGLISH:
+            self._last_english_batch_size = self.batch_spin.value()
+            self._last_english_wrap = current_wrap
+            self._last_english_font = self.font_combo.currentFont().family()
+        else:
+            if self.translator_combo.currentData():
+                self._last_chinese_translator = TranslatorPreset(self.translator_combo.currentData())
+            self._last_chinese_batch_size = self.batch_spin.value()
+            self._last_chinese_wrap = current_wrap
+            self._last_chinese_font = self.font_combo.currentFont().family()
+
+        self._target_change_guard = True
+        try:
+            if new_target == TargetLanguage.ENGLISH:
+                self._populate_translator_combo(new_target, TranslatorPreset.SUGOI)
+                batch, wrap = self._last_english_batch_size, self._last_english_wrap
+                target_font = self._last_english_font
+            else:
+                self._populate_translator_combo(new_target, self._last_chinese_translator)
+                batch, wrap = self._last_chinese_batch_size, self._last_chinese_wrap
+                target_font = self._last_chinese_font
+            self.batch_spin.setValue(batch)
+            self.advanced_dialog.wrap_check.setChecked(wrap > 0)
+            self.wrap_spin.setValue(wrap or DEFAULT_WRAP_CHARS_BY_TARGET[new_target])
+            self.font_combo.setCurrentFont(QFont(target_font))
+            self._active_target = new_target
+        finally:
+            self._target_change_guard = False
+        self.advanced_dialog.set_target_language(new_target)
         self.advanced_dialog.set_translator(str(self.translator_combo.currentData()))
         self._update_model_status()
 
@@ -1079,6 +1161,7 @@ class MainWindow(QMainWindow):
             recursive=self.recursive_check.isChecked(),
             asr=AsrPreset(self.asr_combo.currentData()),
             translator=TranslatorPreset(self.translator_combo.currentData()),
+            target_language=TargetLanguage(self.target_language_combo.currentData()),
             bilingual=self.bilingual_check.isChecked(),
             quality_report=self.quality_check.isChecked(),
             resume=self.resume_check.isChecked(),
@@ -1089,6 +1172,7 @@ class MainWindow(QMainWindow):
             translate_batch_size=self.batch_spin.value(),
             display_wrap_max_chars=self.wrap_spin.value() if self.advanced_dialog.wrap_check.isChecked() else 0,
             bilingual_font=self.font_combo.currentFont().family(),
+            bilingual_ja_font=self.ja_font_combo.currentFont().family(),
             bilingual_zh_font_size=self.zh_size_spin.value(),
             bilingual_ja_font_size=self.ja_size_spin.value(),
             bilingual_zh_colour=self.zh_colour_edit.text().strip(),
@@ -1100,7 +1184,7 @@ class MainWindow(QMainWindow):
 
     def _start(self) -> None:
         if not any(task.status == TaskStatus.WAITING for task in self.tasks):
-            QMessageBox.information(self, self.tr("No tasks"), self.tr("Add a video first, or retry failed tasks."))
+            QMessageBox.information(self, self.tr("No tasks"), self.tr("Add a video task first."))
             return
         config = self._config_from_ui()
         errors = config.validate()
@@ -1112,6 +1196,7 @@ class MainWindow(QMainWindow):
                 "wrap_nonnegative": self.tr("Maximum characters per line cannot be negative."),
                 "subtitle_size_positive": self.tr("Subtitle font sizes must be greater than 0."),
                 "subtitle_font_required": self.tr("Subtitle font cannot be empty."),
+                "translator_target_incompatible": self.tr("The selected translation model does not support this subtitle language."),
             }
             colour_names = {
                 "zh": self.tr("Chinese colour"), "ja": self.tr("Japanese colour"),
@@ -1133,16 +1218,11 @@ class MainWindow(QMainWindow):
         self._save_settings()
         self.controller.start(self.tasks, config)
 
-    def _retry_failed(self) -> None:
-        if self.controller.is_running:
-            return
-        for task in self.tasks:
-            if task.status in (TaskStatus.FAILED, TaskStatus.CANCELLED):
-                task.reset_for_retry()
-                self._update_task_row(task)
-
     def _open_output(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self.output_edit.text()).expanduser().resolve())))
+
+    def _open_work(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self.work_edit.text()).expanduser().resolve())))
 
     def _open_config_folder(self) -> None:
         config_folder = Path(self.settings.fileName()).expanduser().resolve().parent
@@ -1168,7 +1248,7 @@ class MainWindow(QMainWindow):
             self.tr("About jp2zh Subtitle Tool"),
             self.tr(
                 "<b>jp2zh Subtitle Tool</b><br><br>"
-                "Generate Simplified-Chinese subtitles from Japanese videos with local models.<br><br>"
+                "Generate Chinese or English subtitles from Japanese videos with local models.<br><br>"
                 '<a href="https://github.com/chubbyk-uu/jp2zh-video-subs">Project on GitHub</a>'
             ),
         )
@@ -1251,7 +1331,46 @@ class MainWindow(QMainWindow):
         self.output_edit.setText(output_dir)
         self.work_edit.setText(work_dir)
         self._set_combo_value(self.asr_combo, self.settings.value("asr", defaults.asr.value, str))
-        self._set_combo_value(self.translator_combo, self.settings.value("translator", defaults.translator.value, str))
+        try:
+            self._last_chinese_translator = TranslatorPreset(
+                self.settings.value("last_chinese_translator", defaults.translator.value, str)
+            )
+        except ValueError:
+            self._last_chinese_translator = defaults.translator
+        self._last_chinese_font = self.settings.value("last_chinese_font", defaults.bilingual_font, str)
+        self._last_english_font = self.settings.value("last_english_font", "Arial", str)
+        self._last_chinese_batch_size = self.settings.value(
+            "last_chinese_batch", defaults.translate_batch_size, int
+        )
+        self._last_chinese_wrap = self.settings.value(
+            "last_chinese_wrap", defaults.display_wrap_max_chars, int
+        )
+        self._last_english_batch_size = self.settings.value(
+            "last_english_batch", DEFAULT_BATCH_SIZE_BY_TRANSLATOR["sugoi"], int
+        )
+        self._last_english_wrap = self.settings.value(
+            "last_english_wrap", DEFAULT_WRAP_CHARS_BY_TARGET[TargetLanguage.ENGLISH], int
+        )
+        try:
+            restored_target = TargetLanguage(
+                self.settings.value("target_language", defaults.target_language.value, str)
+            )
+        except ValueError:
+            restored_target = defaults.target_language
+        try:
+            restored_translator = TranslatorPreset(
+                self.settings.value("translator", defaults.translator.value, str)
+            )
+        except ValueError:
+            restored_translator = defaults.translator
+        self._target_change_guard = True
+        try:
+            self._set_combo_value(self.target_language_combo, restored_target.value)
+            self._active_target = restored_target
+            self._populate_translator_combo(restored_target, restored_translator)
+        finally:
+            self._target_change_guard = False
+        self.advanced_dialog.set_target_language(restored_target)
         self._set_combo_value(self.cleanup_combo, self.settings.value("cleanup", defaults.cleanup_policy.value, str))
         self.recursive_check.setChecked(defaults.recursive if migrate_common_defaults else self.settings.value("recursive", defaults.recursive, bool))
         self.bilingual_check.setChecked(defaults.bilingual if migrate_common_defaults else self.settings.value("bilingual", defaults.bilingual, bool))
@@ -1273,6 +1392,7 @@ class MainWindow(QMainWindow):
         self.advanced_dialog.wrap_check.setChecked(wrap_value > 0)
         self.wrap_spin.setValue(wrap_value or defaults.display_wrap_max_chars)
         self.font_combo.setCurrentFont(QFont(self.settings.value("font", defaults.bilingual_font, str)))
+        self.ja_font_combo.setCurrentFont(QFont(self.settings.value("ja_font", defaults.bilingual_ja_font, str)))
         self.zh_size_spin.setValue(self.settings.value("zh_size", defaults.bilingual_zh_font_size, int))
         self.ja_size_spin.setValue(self.settings.value("ja_size", defaults.bilingual_ja_font_size, int))
         self.zh_colour_edit.setText(self.settings.value("zh_colour", defaults.bilingual_zh_colour, str))
@@ -1306,16 +1426,34 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self) -> None:
         config = self._config_from_ui()
+        if config.target_language != TargetLanguage.ENGLISH:
+            self._last_chinese_translator = config.translator
+            self._last_chinese_font = config.bilingual_font
+            self._last_chinese_batch_size = config.translate_batch_size
+            self._last_chinese_wrap = config.display_wrap_max_chars
+        else:
+            self._last_english_font = config.bilingual_font
+            self._last_english_batch_size = config.translate_batch_size
+            self._last_english_wrap = config.display_wrap_max_chars
         values = {
             "output_dir": str(config.output_dir), "work_dir": str(config.work_dir),
             "asr": config.asr.value, "translator": config.translator.value,
+            "target_language": config.target_language.value,
+            "last_chinese_translator": self._last_chinese_translator.value,
+            "last_chinese_font": self._last_chinese_font,
+            "last_english_font": self._last_english_font,
+            "last_chinese_batch": self._last_chinese_batch_size,
+            "last_chinese_wrap": self._last_chinese_wrap,
+            "last_english_batch": self._last_english_batch_size,
+            "last_english_wrap": self._last_english_wrap,
             "cleanup": config.cleanup_policy.value, "recursive": config.recursive,
             "bilingual": config.bilingual, "quality": config.quality_report,
             "resume": config.resume, "copy": config.copy_to_video_dir,
             "speaker": config.colour_by_speaker, "context": config.context_size,
             "asr_batch": config.asr_batch_size,
             "batch": config.translate_batch_size, "wrap": config.display_wrap_max_chars,
-            "font": config.bilingual_font, "zh_size": config.bilingual_zh_font_size,
+            "font": config.bilingual_font, "ja_font": config.bilingual_ja_font,
+            "zh_size": config.bilingual_zh_font_size,
             "ja_size": config.bilingual_ja_font_size,
             "zh_colour": config.bilingual_zh_colour, "ja_colour": config.bilingual_ja_colour,
             "male_colour": config.bilingual_male_colour, "female_colour": config.bilingual_female_colour,

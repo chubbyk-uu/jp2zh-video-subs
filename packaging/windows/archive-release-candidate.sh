@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-    echo "Usage: $0 LAB_ROOT [all|program|default|qwen-asr|sakura-14b|speaker-gender|models]" >&2
+    echo "Usage: $0 LAB_ROOT [all|program|default|qwen-asr|sakura-14b|sugoi-14b|speaker-gender|models]" >&2
     exit 2
 fi
 
@@ -13,17 +13,19 @@ program_stage="$release_root/staging/program"
 models_stage="$release_root/staging/models-default"
 qwen_stage="$release_root/staging/models-qwen-asr"
 sakura_stage="$release_root/staging/models-sakura-14b"
+sugoi_stage="$release_root/staging/models-sugoi-14b"
 speaker_stage="$release_root/staging/models-speaker-gender"
 archives="$release_root/archives"
 program_archive="$archives/jp2zh-video-subs-windows-x64-cuda-program.7z"
 models_archive="$archives/jp2zh-video-subs-default-models.7z"
 qwen_archive="$archives/jp2zh-video-subs-qwen-asr-model.7z"
 sakura_archive="$archives/jp2zh-video-subs-sakura-14b-model.7z"
+sugoi_archive="$archives/jp2zh-video-subs-sugoi-14b-model.7z"
 speaker_archive="$archives/jp2zh-video-subs-speaker-gender-model.7z"
 changed_archives=()
 
 case "$target" in
-    all|program|default|qwen-asr|sakura-14b|speaker-gender|models) ;;
+    all|program|default|qwen-asr|sakura-14b|sugoi-14b|speaker-gender|models) ;;
     *)
         echo "Unknown archive target: $target" >&2
         exit 2
@@ -78,6 +80,7 @@ archive_model_stage() {
 archive_model_stage default "$models_stage" "$models_archive" anime-whisper
 archive_model_stage qwen-asr "$qwen_stage" "$qwen_archive" Qwen3-ASR-1.7B
 archive_model_stage sakura-14b "$sakura_stage" "$sakura_archive" Sakura-14B-Qwen2.5-v1.0-GGUF
+archive_model_stage sugoi-14b "$sugoi_stage" "$sugoi_archive" Sugoi-14B-Ultra-GGUF
 archive_model_stage speaker-gender "$speaker_stage" "$speaker_archive" voice-gender-classifier
 
 checksum_file="$archives/SHA256SUMS"

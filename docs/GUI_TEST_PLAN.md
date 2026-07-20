@@ -3,7 +3,7 @@
 状态：执行中
 适用范围：源码开发版 GUI，以及后续 Windows CUDA 绿色目录版  
 基线提交：`b6cec92 Add source GUI for subtitle pipeline`  
-最近自动测试基线：`330 passed`
+最近自动测试基线：`371 passed`
 
 ## 1. 目标
 
@@ -23,7 +23,7 @@
 1. 完整自动测试通过，且 `git diff --check` 无错误；
 2. 所有 P0、P1 用例通过；
 3. 每个用户可见控件至少被一个自动或人工用例覆盖；
-4. Anime、Qwen、GalTransl、Sakura 四个后端都至少完成一次真实加载；
+4. Anime、Qwen、GalTransl、Sakura、Sugoi 后端都至少完成一次真实加载；
 5. 默认 Anime + GalTransl 流程从 GUI 输入一直生成最终双语 ASS；
 6. 取消、失败、重试和断点续跑不误报成功、不误删中间产物；
 7. Windows 绿色版阶段必须在没有项目开发环境的 Windows 会话中单独通过验收。
@@ -96,6 +96,8 @@ git diff --check
 - 文件选择结果和模拟本地文件拖放事件；
 - 设置保存后由新窗口实例恢复；
 - 模型文件完整性检查；
+- 简体/繁体/英文字幕目标、兼容模型联动、设置持久化和标准输出后缀；
+- OpenCC SRT 结构保持、Sugoi 编号批量严格校验/拆分重试/字符残留拒绝；
 - 模型缺失时阻止启动并显示缺失路径；
 - 下拉菜单和字体菜单选择后销毁；
 - 高级设置自动换行开关和取消修改回滚；
@@ -144,12 +146,14 @@ git diff --check
 |---|---|---|---|---|
 | SET-001 | P0 | 清空旧设置后首次启动 | 双语 ASS、复制字幕开启；递归、断点续跑关闭 | NOT RUN |
 | SET-002 | P1 | 切换 Anime/Qwen | 模型状态随选择刷新 | NOT RUN |
-| SET-003 | P1 | 切换 GalTransl/Sakura | 模型状态随选择刷新 | NOT RUN |
+| SET-003 | P1 | 简体/繁体下切换 GalTransl/Sakura | 模型状态随选择刷新 | NOT RUN |
 | SET-004 | P1 | 修改 ASR 批大小 | 值被记忆，并传给所选 ASR 后端 | NOT RUN |
 | SET-005 | P1 | 选择输出目录和工作目录 | 输入框更新，悬停可见完整路径 | NOT RUN |
 | SET-006 | P1 | 切换三种清理策略 | 当前选项显示正确并被记忆 | NOT RUN |
 | SET-007 | P1 | 切换质量报告、复制、说话人着色 | 状态被记忆，模型检查按需更新 | NOT RUN |
 | SET-008 | P1 | 模型缺少必需文件时开始 | 启动被阻止并列出缺失文件 | NOT RUN |
+| SET-009 | P0 | 字幕语言切到英文 | 翻译模型自动切为 Sugoi 且不可选不兼容模型 | NOT RUN |
+| SET-010 | P1 | 从英文切回简体或繁体 | 恢复上次中文翻译模型、批大小和换行值 | NOT RUN |
 
 ### 7.4 高级设置
 
@@ -158,7 +162,7 @@ git diff --check
 | ADV-001 | P1 | 打开高级设置 | 独立窗口完整显示两个标签页 | NOT RUN |
 | ADV-002 | P1 | 修改参数后点“取消” | 所有修改回滚 | NOT RUN |
 | ADV-003 | P1 | 修改参数后点“确定” | 修改保留并在重启后恢复 | NOT RUN |
-| ADV-004 | P1 | 点击“恢复默认值” | 上下文 6、翻译批 8、换行 20、默认字体字号颜色恢复 | NOT RUN |
+| ADV-004 | P1 | 点击“恢复默认值” | 中文恢复上下文 6、批 8、换行 20；英文批量默认 10、换行初始值 60 | NOT RUN |
 | ADV-005 | P1 | 展开字体列表并滚动选择 | 有垂直滚动条；选择后菜单关闭 | NOT RUN |
 | ADV-006 | P1 | 选择四种字幕颜色 | 调色板可用，按钮色块与所选颜色一致 | NOT RUN |
 | ADV-007 | P1 | 关闭长字幕自动换行 | CLI 收到阈值 0，输出不做显示换行 | NOT RUN |
@@ -174,7 +178,7 @@ git diff --check
 |---|---|---|---|---|
 | RUN-001 | P0 | V1，Anime + GalTransl，默认设置运行 | 任务完成，进度 100%，无错误 | NOT RUN |
 | RUN-002 | P0 | 检查阶段状态和日志 | 提取、ASR、翻译、ASS 阶段顺序正确，日志持续刷新 | NOT RUN |
-| RUN-003 | P0 | 检查输出目录 | 中文 SRT、双语 ASS 和术语文件存在且非空 | NOT RUN |
+| RUN-003 | P0 | 检查输出目录 | `.zh-s` SRT/ASS 和术语文件存在且非空 | NOT RUN |
 | RUN-004 | P0 | 检查视频目录 | 按默认设置只复制最终双语 ASS | NOT RUN |
 | RUN-005 | P1 | 用播放器打开 ASS | 中文、日文、换行、颜色和字号正常显示 | NOT RUN |
 | RUN-006 | P1 | 点击“打开输出目录” | 系统文件管理器打开当前输出目录 | NOT RUN |
@@ -185,8 +189,10 @@ git diff --check
 
 | ID | 优先级 | 组合 | 预期 | 结果 |
 |---|---|---|---|---|
-| BACKEND-001 | P0 | V1：Anime + GalTransl | 两个后端真实加载并完成 | NOT RUN |
+| BACKEND-001 | P0 | V1：Anime + GalTransl | 两个后端真实加载并完成 | PASS |
 | BACKEND-002 | P0 | V1：Qwen + Sakura | 两个后端真实加载并完成 | NOT RUN |
+| BACKEND-003 | P0 | V1：Anime + Sugoi，英文目标 | Sugoi CUDA 加载并生成 `.en.srt/.en.ass` | PASS |
+| BACKEND-004 | P0 | V1：Anime + GalTransl，繁体目标 | OpenCC `s2t` 后生成 `.zh-t.srt/.ass` | PASS |
 
 两次运行都要从日志确认实际选择的后端，不能只看 GUI 下拉框。
 
@@ -207,7 +213,7 @@ git diff --check
 | RECOVER-001 | P0 | V3 运行中点击“取消” | 当前任务变为已取消，后续等待任务不启动 | NOT RUN |
 | RECOVER-002 | P0 | 检查取消后的文件 | 已有中间产物保留，不执行成功后清理 | NOT RUN |
 | RECOVER-003 | P1 | 点击“重试失败任务” | 失败/取消任务恢复等待状态 | NOT RUN |
-| RECOVER-004 | P0 | 勾选断点续跑后重试 | 完整 WAV/日语 SRT/中文 SRT 对应阶段被安全跳过 | NOT RUN |
+| RECOVER-004 | P0 | 勾选断点续跑后重试 | 完整 WAV/日语 SRT/译文 SRT 且 provenance 相符时安全跳过 | NOT RUN |
 | RECOVER-005 | P1 | 取消翻译形成不完整中文 SRT后重试 | 条数不完整时翻译不会被错误跳过 | NOT RUN |
 | RECOVER-006 | P1 | 制造可恢复失败后重试 | 任务先显示失败原因，修正条件后可成功重试 | NOT RUN |
 | RECOVER-007 | P1 | 更换 ASR 模型后关闭断点续跑 | ASR 确实重新执行，不复用旧日语 SRT | NOT RUN |
@@ -541,6 +547,21 @@ git diff --check
 | 完整性 | PASS：原始程序归档和直接从 `.001` 识别的两分卷均通过 `7z t`；流式重组 SHA-256 与原归档一致 |
 | 隐私边界 | PASS：归档不包含模型、`config/gui.ini`、运行锁、work、outputs、用户/示例视频或字幕 |
 | 远端资产 | PASS：2 个程序分卷、2 个中英文安装说明和 2 个 SHA-256 文件均为 `uploaded`；release 非 draft 且为 prerelease |
+
+### RUN-20260720-17：三种字幕目标与 Windows CUDA 绿色目录
+
+| 项目 | 记录值 |
+|---|---|
+| 自动测试 | PASS：`371 passed`；`git diff --check` 和 Windows 打包脚本语法检查通过 |
+| Windows 运行时 | PASS：绿色包自带 OpenCC 1.4.1；`s2t` 转换保持 SRT 索引和时间轴 |
+| Sugoi 模型 | PASS：源文件与 Windows 包内 Q4 模型 SHA-256 均为 `d34cdc5f1be98091fdef6cedaf0a84978ca17c785a7b99c57ca22e44d4687b77` |
+| 运行设备 | PASS：RTX 5080；PyTorch CUDA、WhisperSeg CUDAExecutionProvider、llama.cpp GPU offload 均为可用 |
+| 简体流程 | PASS：Windows 原生 Anime + GalTransl 生成 `.zh-s.srt/.zh-s.ass` |
+| 繁体流程 | PASS：Windows 原生 Anime + GalTransl + OpenCC `s2t` 生成 `.zh-t.srt/.zh-t.ass` |
+| 英文流程 | PASS：Windows 原生 Anime + Sugoi 生成 `.en.srt/.en.ass`；10 条批处理无回退，英文默认 42 字符按词边界换行 |
+| 字体 | PASS：英文目标顶行默认 Arial，日文底行继续使用 Microsoft YaHei |
+| 测试素材 | 23 秒非成人日语对话样例；工作和输出均限制在 `E:\\jp2zh-win-portable-lab\\test-data` |
+| 尚未执行 | 新程序归档、解压复验、人工 GUI 三目标切换与新 Beta 发布 |
 
 ## 14. 当前剩余人工验收
 

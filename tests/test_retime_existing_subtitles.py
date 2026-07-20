@@ -32,6 +32,7 @@ def test_process_video_writes_retimed_srt_and_copied_ass(tmp_path):
         min_display_seconds = 1.5
         min_gap_seconds = 0.04
         font = "Arial"
+        ja_font = "Noto Sans JP"
         zh_font_size = 36
         ja_font_size = 24
         zh_colour = "&H0000FFFF"
@@ -41,9 +42,9 @@ def test_process_video_writes_retimed_srt_and_copied_ass(tmp_path):
 
     process_video(paths, Options(), dry_run=False, copy_to_video_dir=True)
 
-    assert (output_dir / f"{stem}.retimed.zh.srt").read_text(encoding="utf-8").startswith(
+    assert (output_dir / f"{stem}.retimed.zh-s.srt").read_text(encoding="utf-8").startswith(
         "1\n00:00:01,000 --> 00:00:02,500\n你好\n"
     )
-    ass = (output_dir / f"{stem}.retimed.zh.ass").read_text(encoding="utf-8")
+    ass = (output_dir / f"{stem}.retimed.zh-s.ass").read_text(encoding="utf-8")
     assert "Dialogue: 0,0:00:01.00,0:00:02.50" in ass
-    assert video.with_suffix(".zh.ass").read_text(encoding="utf-8") == ass
+    assert (video.parent / f"{stem}.zh-s.ass").read_text(encoding="utf-8") == ass

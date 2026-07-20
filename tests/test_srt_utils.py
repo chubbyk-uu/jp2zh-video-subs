@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from srt_utils import (
     Interval,
     compact_text,
+    count_overlong_srt_lines,
     format_time,
     merge_intervals,
     overlap_seconds,
@@ -11,6 +12,7 @@ from srt_utils import (
     srt_gaps,
     srt_time,
     wrap_display_text,
+    wrap_english_display_text,
     wrap_srt_display_file,
 )
 
@@ -38,12 +40,30 @@ def test_wrap_srt_display_file_preserves_cue_count_and_timecodes(tmp_path):
         "2\n00:00:04,000 --> 00:00:05,000\n短句。\n",
         encoding="utf-8",
     )
-
     assert wrap_srt_display_file(path, 15) == 1
     assert path.read_text(encoding="utf-8") == (
         "1\n00:00:01,000 --> 00:00:03,000\n这是前半句。\n这里是后半句仍然很长。\n\n"
         "2\n00:00:04,000 --> 00:00:05,000\n短句。\n"
     )
+
+
+def test_wrap_english_display_text_uses_word_boundary():
+    text = "This is a deliberately long English subtitle that should wrap cleanly between words."
+    wrapped = wrap_english_display_text(text, 45)
+    assert wrapped.count("\n") == 1
+    assert wrapped.replace("\n", " ") == text
+    assert all(len(line) <= 45 for line in wrapped.splitlines())
+
+
+def test_wrap_english_display_text_keeps_two_line_layout_when_limit_is_impossible(tmp_path):
+    text = " ".join(["lengthyword"] * 12)
+    wrapped = wrap_english_display_text(text, 20)
+    assert wrapped.count("\n") == 1
+    assert max(map(len, wrapped.splitlines())) > 20
+
+    path = tmp_path / "english.srt"
+    path.write_text(f"1\n00:00:01,000 --> 00:00:03,000\n{wrapped}\n", encoding="utf-8")
+    assert count_overlong_srt_lines(path, 20) == 1
 
 
 def test_srt_time_formats_milliseconds():

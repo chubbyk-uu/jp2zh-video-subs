@@ -96,11 +96,11 @@ def build_header(options: argparse.Namespace) -> str:
             "",
             "[V4+ Styles]",
             style_format,
-            f"Style: ZH,{options.font},{options.zh_font_size},{options.zh_colour},{style_tail}",
-            # ZH_M / ZH_F clone ZH but recolour the top line per speaker gender.
-            f"Style: ZH_M,{options.font},{options.zh_font_size},{male_colour},{style_tail}",
-            f"Style: ZH_F,{options.font},{options.zh_font_size},{female_colour},{style_tail}",
-            f"Style: JA,{options.font},{options.ja_font_size},{options.ja_colour},{style_tail}",
+            f"Style: TL,{options.font},{options.zh_font_size},{options.zh_colour},{style_tail}",
+            # TL_M / TL_F clone the target-language style but recolour the top line.
+            f"Style: TL_M,{options.font},{options.zh_font_size},{male_colour},{style_tail}",
+            f"Style: TL_F,{options.font},{options.zh_font_size},{female_colour},{style_tail}",
+            f"Style: JA,{options.ja_font},{options.ja_font_size},{options.ja_colour},{style_tail}",
             "",
             "[Events]",
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -109,10 +109,10 @@ def build_header(options: argparse.Namespace) -> str:
 
 
 def style_for_gender(gender: str | None) -> str:
-    return {"M": "ZH_M", "F": "ZH_F"}.get(gender or "", "ZH")
+    return {"M": "TL_M", "F": "TL_F"}.get(gender or "", "TL")
 
 
-def build_dialogue(entry: AssEntry, ja_text: str, style: str = "ZH") -> str:
+def build_dialogue(entry: AssEntry, ja_text: str, style: str = "TL") -> str:
     zh = escape_ass_text(entry.text)
     if ja_text:
         # \N starts a new line; {\rJA} resets the rest of the cue to the JA style.
@@ -187,9 +187,9 @@ def detect_genders(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build a bilingual ASS subtitle (Chinese on top, Japanese below) from aligned SRTs."
+        description="Build a bilingual ASS subtitle (translated text on top, Japanese below) from aligned SRTs."
     )
-    parser.add_argument("--zh-srt", type=Path, required=True, help="Chinese SRT (top line)")
+    parser.add_argument("--target-srt", "--zh-srt", dest="target_srt", type=Path, required=True, help="Translated SRT (top line)")
     parser.add_argument("--ja-srt", type=Path, required=True, help="Japanese SRT aligned by index (bottom line)")
     parser.add_argument("--output", type=Path, required=True, help="Output ASS path")
     parser.add_argument(
@@ -207,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
 
-    zh_entries = parse_srt(args.zh_srt)
+    zh_entries = parse_srt(args.target_srt)
     ja_by_index = {entry.index: entry.text for entry in parse_srt(args.ja_srt)}
 
     genders: dict[str, str | None] | None = None

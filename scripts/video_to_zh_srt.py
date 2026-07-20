@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import json
 import os
 import queue
 import re
@@ -28,6 +30,7 @@ from pipeline_configs import (
     QualityReportConfig,
     QwenAsrConfig,
     SakuraTranslateConfig,
+    SugoiTranslateConfig,
 )
 from pipeline_runtime import (
     CancellationToken,
@@ -37,7 +40,13 @@ from pipeline_runtime import (
     PipelineCancelled,
 )
 from portable_runtime import project_root, scripts_dir
-from srt_utils import wrap_srt_display_file
+from srt_utils import count_overlong_srt_lines, wrap_srt_display_file
+from target_languages import (
+    TargetLanguage,
+    output_language_suffix,
+    resolve_translation_settings,
+    translator_supports_target,
+)
 
 
 PROJECT_ROOT = project_root(Path(__file__))
@@ -45,8 +54,10 @@ SCRIPTS_DIR = scripts_dir(Path(__file__))
 QWEN_TRANSCRIBE_SCRIPT = SCRIPTS_DIR / "transcribe_ja_srt_qwen.py"
 SAKURA_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_sakura.py"
 GALTRANSL_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_galtransl.py"
+SUGOI_TRANSLATE_SCRIPT = SCRIPTS_DIR / "translate_srt_sugoi.py"
 QUALITY_REPORT_SCRIPT = SCRIPTS_DIR / "quality_report.py"
 BILINGUAL_SCRIPT = SCRIPTS_DIR / "make_bilingual_ass.py"
+OPENCC_SCRIPT = SCRIPTS_DIR / "convert_srt_opencc.py"
 QWEN_ASR_MODEL = PROJECT_ROOT / "models" / "Qwen3-ASR-1.7B"
 QWEN_ALIGNER_MODEL = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 # anime backend reuses the Qwen sub-script (shared VAD/cue-shaping/finalize) with a
@@ -54,6 +65,7 @@ QWEN_ALIGNER_MODEL = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 ANIME_ASR_MODEL = PROJECT_ROOT / "models" / "anime-whisper"
 SAKURA_MODEL = PROJECT_ROOT / "models" / "Sakura-14B-Qwen2.5-v1.0-GGUF" / "sakura-14b-qwen2.5-v1.0-iq4xs.gguf"
 GALTRANSL_MODEL = PROJECT_ROOT / "models" / "Sakura-GalTransl-7B-v3.7-GGUF" / "Sakura-Galtransl-7B-v3.7.gguf"
+SUGOI_MODEL = PROJECT_ROOT / "models" / "Sugoi-14B-Ultra-GGUF" / "Sugoi-14B-Ultra-Q4_K_M.gguf"
 ANIME_PREFIX_SKIP = {"language", "min_cue_seconds", "text_backend"}
 CLEANUP_POLICIES = ("keep_all", "delete_audio", "final_only")
 
@@ -165,6 +177,14 @@ def require_file(path: Path, label: str) -> None:
         raise SystemExit(f"Missing {label}: {path}")
 
 
+def require_python_module(module: str, label: str) -> None:
+    """Fail before long-running stages when a target-specific dependency is absent."""
+    try:
+        importlib.import_module(module)
+    except (ImportError, OSError) as exc:
+        raise SystemExit(f"Missing {label} Python package ({module}): {exc}") from exc
+
+
 def srt_cue_count(path: Path) -> int:
     try:
         text = path.read_text(encoding="utf-8")
@@ -179,6 +199,50 @@ def translation_is_complete(zh_srt: Path, ja_srt: Path) -> bool:
     bare existence is not enough to resume past it."""
     count = srt_cue_count(zh_srt)
     return count > 0 and count == srt_cue_count(ja_srt)
+
+
+def translation_provenance(args: argparse.Namespace) -> dict[str, object]:
+    """Settings that make a translated SRT unsafe to reuse across configurations."""
+    translator = getattr(args, "translator", "galtransl")
+    target = getattr(args, "target_language", TargetLanguage.SIMPLIFIED_CHINESE.value)
+    settings = resolve_translation_settings(
+        translator,
+        target,
+        context_size=getattr(args, "context_size", None),
+        batch_size=getattr(args, "translate_batch_size", None),
+        wrap_chars=getattr(args, "display_wrap_max_chars", None),
+    )
+    return {
+        "schema": 1,
+        "translator": translator,
+        "translator_prompt_schema": {
+            "galtransl": "galtransl-v3-project-1",
+            "sakura": "sakura-v1-project-1",
+            "sugoi": "sugoi-numbered-batch-1",
+        }.get(translator, "unknown"),
+        "target_language": target,
+        "context_size": settings.context_size,
+        "translate_batch_size": settings.batch_size,
+        "opencc_config": "s2t" if target == TargetLanguage.TRADITIONAL_CHINESE.value else None,
+        "display_wrap_max_chars": settings.wrap_chars,
+        "lead_out_seconds": getattr(args, "lead_out_seconds", 0.5),
+        "min_display_seconds": getattr(args, "min_display_seconds", 1.5),
+    }
+
+
+def translation_provenance_matches(path: Path, args: argparse.Namespace) -> bool:
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return stored == translation_provenance(args)
+
+
+def write_translation_provenance(path: Path, args: argparse.Namespace) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + ".part")
+    partial.write_text(json.dumps(translation_provenance(args), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    partial.replace(path)
 
 
 def effective_cleanup_policy(args: argparse.Namespace) -> str:
@@ -358,20 +422,27 @@ def discover_videos(input_path: Path, recursive: bool) -> list[Path]:
     return sorted((path.resolve() for path in iterator if is_video_file(path)), key=lambda item: str(item).lower())
 
 
-def output_path_for(video: Path, input_path: Path, output_dir: Path, recursive: bool) -> Path:
+def output_path_for(
+    video: Path,
+    input_path: Path,
+    output_dir: Path,
+    recursive: bool,
+    target_language: str | TargetLanguage = TargetLanguage.SIMPLIFIED_CHINESE,
+) -> Path:
+    suffix = f"{output_language_suffix(target_language)}.srt"
     if input_path.is_dir():
         if recursive:
-            relative = video.relative_to(input_path).with_suffix(".zh.srt")
+            relative = video.relative_to(input_path).with_suffix(suffix)
             return (output_dir / relative).resolve()
         try:
             relative_parent = video.parent.relative_to(input_path)
         except ValueError:
             relative_parent = Path()
         if relative_parent == Path():
-            return (output_dir / f"{video.stem}.zh.srt").resolve()
+            return (output_dir / f"{video.stem}{suffix}").resolve()
         safe_parent = "__".join(relative_parent.parts)
-        return (output_dir / f"{safe_parent}__{video.stem}.zh.srt").resolve()
-    return (output_dir / f"{video.stem}.zh.srt").resolve()
+        return (output_dir / f"{safe_parent}__{video.stem}{suffix}").resolve()
+    return (output_dir / f"{video.stem}{suffix}").resolve()
 
 
 def work_dir_for(video: Path, input_path: Path, work_dir: Path, recursive: bool) -> Path:
@@ -446,6 +517,14 @@ def build_qwen_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> l
 
 def validate_runtime_args(args: argparse.Namespace) -> None:
     """Validate cross-field combinations that argparse choices cannot express."""
+    target = getattr(args, "target_language", TargetLanguage.SIMPLIFIED_CHINESE.value)
+    translator = getattr(args, "translator", "galtransl")
+    if not translator_supports_target(translator, target):
+        raise SystemExit(
+            f"Translator '{translator}' does not support target language '{target}'."
+        )
+    if translator == "sugoi" and getattr(args, "context_size", None) is not None:
+        raise SystemExit("--context-size is not supported by the Sugoi translator.")
     if args.asr == "qwen":
         cfg = asr_config_for_command(args)
         if (
@@ -463,22 +542,37 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
 def translate_backend(args: argparse.Namespace) -> tuple[Path, Path]:
     if args.translator == "sakura":
         return SAKURA_TRANSLATE_SCRIPT, SAKURA_MODEL
+    if args.translator == "sugoi":
+        return SUGOI_TRANSLATE_SCRIPT, SUGOI_MODEL
     return GALTRANSL_TRANSLATE_SCRIPT, GALTRANSL_MODEL
 
 
 def build_translate_command(args: argparse.Namespace, input_srt: Path, output_srt: Path) -> list[str]:
     translate_script, translate_model = translate_backend(args)
-    context_size = args.context_size
-    if context_size is None:
-        context_size = 6
+    settings = resolve_translation_settings(
+        args.translator,
+        getattr(args, "target_language", TargetLanguage.SIMPLIFIED_CHINESE.value),
+        context_size=args.context_size,
+        batch_size=args.translate_batch_size,
+        wrap_chars=getattr(args, "display_wrap_max_chars", None),
+    )
 
     common = {
-        "context_size": context_size,
+        "context_size": settings.context_size,
         "lead_out_seconds": args.lead_out_seconds,
         "min_display_seconds": args.min_display_seconds,
     }
     if args.translator == "galtransl":
-        cfg = GalTranslTranslateConfig(batch_size=args.translate_batch_size, **common)
+        cfg = GalTranslTranslateConfig(
+            batch_size=settings.batch_size,
+            **common,
+        )
+    elif args.translator == "sugoi":
+        common.pop("context_size")
+        cfg = SugoiTranslateConfig(
+            batch_size=settings.batch_size,
+            **common,
+        )
     else:
         cfg = SakuraTranslateConfig(**common)
 
@@ -507,7 +601,7 @@ def build_bilingual_command(args: argparse.Namespace, zh_srt: Path, ja_srt: Path
     command = [
         sys.executable,
         str(BILINGUAL_SCRIPT),
-        "--zh-srt",
+        "--target-srt",
         str(zh_srt),
         "--ja-srt",
         str(ja_srt),
@@ -547,8 +641,10 @@ def build_quality_command(
         str(QUALITY_REPORT_SCRIPT),
         "--ja-srt",
         str(ja_srt),
-        "--zh-srt",
+        "--target-srt",
         str(zh_srt),
+        "--target-language",
+        getattr(args, "target_language", TargetLanguage.SIMPLIFIED_CHINESE.value),
         "--audio",
         str(audio),
         "--output",
@@ -586,6 +682,8 @@ def run_stage_command(
     video: Path,
     job_index: int,
     job_total: int,
+    post_commands: Iterable[list[str]] = (),
+    progress_total: int | None = None,
 ) -> None:
     fields = _stage_fields(video, job_index, job_total, stage)
     initial_status = {
@@ -602,7 +700,9 @@ def run_stage_command(
     }.get(stage)
     events.emit("stage_started", status=initial_status, status_key=initial_status_key, status_args={}, **fields)
 
-    translation_total = srt_cue_count(Path(command[2])) if stage == "translate" and len(command) > 2 else -1
+    # The caller owns the subtitle input path. Passing its cue count explicitly
+    # keeps progress independent from the translate command's argv ordering.
+    translation_total = progress_total if stage == "translate" and progress_total is not None else -1
     translation_done = 0
 
     def report_output(line: str) -> None:
@@ -664,6 +764,8 @@ def run_stage_command(
 
     try:
         run(command, log, cancel_token, report_output)
+        for post_command in post_commands:
+            run(post_command, log, cancel_token)
     except PipelineCancelled:
         events.emit("stage_cancelled", **fields)
         raise
@@ -734,6 +836,8 @@ def process_video_stages(
     output.parent.mkdir(parents=True, exist_ok=True)
     ja_srt = job_dir / f"{video.stem}.ja.srt"
     translate_input_srt = ja_srt
+    target_language = getattr(args, "target_language", TargetLanguage.SIMPLIFIED_CHINESE.value)
+    translation_manifest = job_dir / f"{video.stem}.{target_language}.translation.json"
 
     transcribe_command = build_qwen_command(args, audio, ja_srt)
     if resume_skip(args, ja_srt, log, "transcription"):
@@ -743,21 +847,58 @@ def process_video_stages(
             "asr", transcribe_command, log, events, cancel_token, video, job_index, job_total
         )
 
-    translate_command = build_translate_command(args, translate_input_srt, output)
-    if args.resume and translation_is_complete(output, translate_input_srt):
+    # Traditional Chinese is deliberately derived from the Chinese translator's
+    # Simplified output. Keep that intermediate in the job directory, then convert
+    # cue text with generic OpenCC s2t before wrapping/ASS generation.
+    translated_output = output
+    translate_post_commands: list[list[str]] = []
+    if target_language == TargetLanguage.TRADITIONAL_CHINESE.value:
+        translated_output = job_dir / f"{video.stem}.zh-s.srt"
+        translate_post_commands.append([
+            sys.executable,
+            str(OPENCC_SCRIPT),
+            str(translated_output),
+            "--output",
+            str(output),
+            "--config",
+            "s2t",
+        ])
+    translate_command = build_translate_command(args, translate_input_srt, translated_output)
+    if (
+        args.resume
+        and translation_is_complete(output, translate_input_srt)
+        and translation_provenance_matches(translation_manifest, args)
+    ):
         log.print(f"Resume: skipping translation, reusing {output}")
         events.emit("stage_skipped", reason="resume", **_stage_fields(video, job_index, job_total, "translate"))
     else:
         run_stage_command(
-            "translate", translate_command, log, events, cancel_token, video, job_index, job_total
+            "translate", translate_command, log, events, cancel_token, video, job_index, job_total,
+            post_commands=translate_post_commands,
+            progress_total=srt_cue_count(translate_input_srt),
         )
+        write_translation_provenance(translation_manifest, args)
 
-    wrapped = wrap_srt_display_file(output, args.display_wrap_max_chars)
+    wrap_max_chars = resolve_translation_settings(
+        getattr(args, "translator", "galtransl"),
+        target_language,
+        context_size=getattr(args, "context_size", None),
+        batch_size=getattr(args, "translate_batch_size", None),
+        wrap_chars=getattr(args, "display_wrap_max_chars", None),
+    ).wrap_chars
+    wrapped = wrap_srt_display_file(output, wrap_max_chars, target_language)
     if wrapped:
         log.print(
-            f"Display wrapping: {wrapped} cues split at punctuation "
-            f"(max_chars={args.display_wrap_max_chars})"
+            f"Display wrapping: {wrapped} cues split for display "
+            f"(preferred_max_chars={wrap_max_chars})"
         )
+    if target_language == TargetLanguage.ENGLISH.value:
+        overlong = count_overlong_srt_lines(output, wrap_max_chars)
+        if overlong:
+            log.print(
+                f"Display warning: {overlong} English cues cannot fit within "
+                f"two lines of {wrap_max_chars} characters; kept as balanced two-line subtitles."
+            )
 
     bilingual_output: Path | None = None
     if args.bilingual:
@@ -816,7 +957,7 @@ def process_video_stages(
     if bilingual_output is not None:
         log.print(f"Bilingual ASS: {bilingual_output}")
     if copied_to_video is not None:
-        label = "Bilingual ASS" if bilingual_output is not None else "Chinese SRT"
+        label = "Bilingual ASS" if bilingual_output is not None else "Translated SRT"
         log.print(f"{label} next to video: {copied_to_video}")
     if ja_srt.exists():
         log.print(f"Intermediate Japanese SRT: {ja_srt}")
@@ -840,7 +981,7 @@ def _early_config_path(argv: list[str]) -> Path | None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate Chinese SRT subtitles from Japanese videos.")
+    parser = argparse.ArgumentParser(description="Generate translated subtitles from Japanese videos.")
     parser.add_argument(
         "--config",
         type=Path,
@@ -855,7 +996,7 @@ def main() -> None:
         help="Print the effective configuration as TOML (after applying --config and CLI flags) and exit.",
     )
     parser.add_argument("input", type=Path, help="Input video path or directory")
-    parser.add_argument("--output", type=Path, help="Output Chinese SRT path for a single input video")
+    parser.add_argument("--output", type=Path, help="Output translated SRT path for a single input video")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "outputs", help="Output directory")
     parser.add_argument("--work-dir", type=Path, default=PROJECT_ROOT / "work")
     parser.add_argument(
@@ -896,10 +1037,15 @@ def main() -> None:
         "--bilingual",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Write a bilingual ASS (Chinese on top, Japanese below) next to the Chinese SRT (default on; --no-bilingual writes only the Chinese SRT)",
+        help="Write a bilingual ASS (translated text on top, Japanese below) next to the translated SRT (default on)",
     )
     bilingual_defaults = BilingualAssConfig()
-    parser.add_argument("--bilingual-font", default=bilingual_defaults.font)
+    parser.add_argument(
+        "--bilingual-font",
+        default=None,
+        help="Target-language ASS font (default: Arial for English, Microsoft YaHei otherwise)",
+    )
+    parser.add_argument("--bilingual-ja-font", default=bilingual_defaults.ja_font)
     parser.add_argument("--bilingual-zh-font-size", type=int, default=bilingual_defaults.zh_font_size)
     parser.add_argument("--bilingual-ja-font-size", type=int, default=bilingual_defaults.ja_font_size)
     parser.add_argument("--bilingual-zh-colour", default=bilingual_defaults.zh_colour, help="ASS colour &HAABBGGRR for the Chinese line")
@@ -921,31 +1067,39 @@ def main() -> None:
         default=None,
         help="Prior dialogue turns supplied to the translator as context (galtransl: a "
         "历史翻译 block of prior translations; sakura: source/translation chat pairs; "
-        "default 6). 0 translates each line standalone.",
+        "default 6). 0 translates each line standalone. Sugoi does not support this option.",
     )
     parser.add_argument(
         "--translate-batch-size",
         type=int,
-        default=8,
-        help="GalTransl only: translate up to N consecutive cues as one turn so whole "
-        "sentences split across cues resolve correctly (e.g. omitted subjects/person). "
+        default=None,
+        help="Translate up to N consecutive cues as one turn (default: GalTransl 8, Sugoi 10). "
+        "Sakura ignores this setting. Whole sentences split across cues can then "
+        "resolve correctly (e.g. omitted subjects/person). "
         "Line-count mismatches are retried as smaller strict batches; any remaining "
         "unsafe slots fall back per-line. 0 or 1 disables batching.",
     )
     parser.add_argument("--lead-out-seconds", type=float, default=0.5)
     parser.add_argument("--min-display-seconds", type=float, default=1.5)
     parser.add_argument(
-        "--display-wrap-max-chars", type=int, default=20,
-        help="Split long final Chinese cues into two display lines at punctuation nearest the midpoint (0 disables)",
+        "--display-wrap-max-chars", type=int, default=None,
+        help="Wrap long final cues for display (default: 20 for Chinese, 60 for English; 0 disables)",
     )
     parser.add_argument("--language", default="ja")
     parser.add_argument(
+        "--target-language",
+        choices=tuple(item.value for item in TargetLanguage),
+        default=TargetLanguage.SIMPLIFIED_CHINESE.value,
+        help="Subtitle output language: zh-Hans, zh-Hant, or en (default zh-Hans)",
+    )
+    parser.add_argument(
         "--translator",
-        choices=("sakura", "galtransl"),
+        choices=("sakura", "galtransl", "sugoi"),
         default="galtransl",
         help="Translation backend (default galtransl). 'galtransl' uses "
         "Sakura-GalTransl-7B-v3.7 (visual-novel dialogue, smaller/faster, more "
-        "colloquial); 'sakura' uses Sakura-14B-Qwen2.5-v1.0 (light-novel style).",
+        "colloquial); 'sakura' uses Sakura-14B-Qwen2.5-v1.0 (light-novel style); "
+        "'sugoi' translates Japanese to English with Sugoi 14B Ultra.",
     )
     parser.add_argument(
         "--asr",
@@ -1079,6 +1233,10 @@ def main() -> None:
     args = parser.parse_args()
 
     validate_runtime_args(args)
+    if args.bilingual_font is None:
+        args.bilingual_font = (
+            "Arial" if args.target_language == TargetLanguage.ENGLISH.value else bilingual_defaults.font
+        )
 
     if args.print_config:
         # input/output are per-run IO arguments, not reusable configuration; a config
@@ -1097,10 +1255,12 @@ def main() -> None:
         raise SystemExit("--lead-out-seconds must be >= 0")
     if args.min_display_seconds < 0:
         raise SystemExit("--min-display-seconds must be >= 0")
-    if args.display_wrap_max_chars < 0:
+    if args.display_wrap_max_chars is not None and args.display_wrap_max_chars < 0:
         raise SystemExit("--display-wrap-max-chars must be >= 0")
     if args.context_size is not None and args.context_size < 0:
         raise SystemExit("--context-size must be >= 0")
+    if args.translate_batch_size is not None and args.translate_batch_size < 0:
+        raise SystemExit("--translate-batch-size must be >= 0")
     effective_cleanup_policy(args)
     if shutil.which("ffmpeg") is None:
         raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")
@@ -1121,6 +1281,12 @@ def main() -> None:
     elif args.translator == "galtransl":
         require_file(GALTRANSL_MODEL, "GalTransl model")
         require_file(GALTRANSL_TRANSLATE_SCRIPT, "GalTransl translation script")
+    elif args.translator == "sugoi":
+        require_file(SUGOI_MODEL, "Sugoi model")
+        require_file(SUGOI_TRANSLATE_SCRIPT, "Sugoi translation script")
+    if args.target_language == TargetLanguage.TRADITIONAL_CHINESE.value:
+        require_file(OPENCC_SCRIPT, "OpenCC subtitle converter")
+        require_python_module("opencc", "OpenCC")
     require_file(QUALITY_REPORT_SCRIPT, "quality report script")
     if args.bilingual:
         require_file(BILINGUAL_SCRIPT, "bilingual ASS script")
@@ -1138,7 +1304,9 @@ def main() -> None:
 
     jobs: list[VideoJob] = []
     for index, video in enumerate(videos, start=1):
-        output = args.output.resolve() if args.output else output_path_for(video, input_path, args.output_dir, args.recursive)
+        output = args.output.resolve() if args.output else output_path_for(
+            video, input_path, args.output_dir, args.recursive, args.target_language
+        )
         job_dir = work_dir_for(video, input_path, args.work_dir, args.recursive)
         jobs.append(VideoJob(index, video, output, job_dir, job_dir / f"{video.stem}.wav"))
 
@@ -1165,6 +1333,7 @@ def main() -> None:
             input=input_path,
             asr=args.asr,
             translator=args.translator,
+            target_language=args.target_language,
         )
 
         def extract(job: VideoJob) -> None:
