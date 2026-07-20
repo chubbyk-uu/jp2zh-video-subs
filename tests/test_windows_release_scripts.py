@@ -29,6 +29,13 @@ def test_sugoi_model_package_is_supported_across_release_lifecycle():
 def test_program_stage_still_excludes_all_model_weights():
     prepare = script_text("prepare-release-candidate.sh")
     assert "--exclude '/models/***'" in prepare
+    assert 'generate_manifest "$program_stage"' not in prepare
+    assert ".program-runtime-fingerprint" in prepare
+    assert "protect /runtime/***" in prepare
+    assert "--exclude '/runtime/***'" in prepare
+
+    archive = script_text("archive-release-candidate.sh")
+    assert 'sha256sum "$name"' in archive
 
 
 def test_portable_setup_guides_are_current_and_staged():

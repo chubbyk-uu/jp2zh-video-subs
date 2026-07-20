@@ -128,11 +128,38 @@ copy_license_file() {
 
 if [[ "$target" == all || "$target" == program ]]; then
     mkdir -p "$program_stage"
+    runtime_fingerprint_file="$release_root/staging/.program-runtime-fingerprint"
+    source_runtime_fingerprint="$({
+        sha256sum \
+            "$source_root/config/runtime-lock.txt" \
+            "$source_root/config/runtime-versions.txt" \
+            "$source_root/config/python-runtime.sha256"
+    } | sha256sum | awk '{print $1}')"
+    reuse_runtime=false
+    if [[ -d "$program_stage/runtime" ]]; then
+        if [[ -f "$runtime_fingerprint_file" ]] && \
+                [[ "$(<"$runtime_fingerprint_file")" == "$source_runtime_fingerprint" ]]; then
+            reuse_runtime=true
+        elif [[ "$source_root/runtime/python.exe" -ef "$program_stage/runtime/python.exe" ]] && \
+                cmp -s "$source_root/config/runtime-lock.txt" "$program_stage/config/runtime-lock.txt" && \
+                cmp -s "$source_root/config/runtime-versions.txt" "$program_stage/config/runtime-versions.txt"; then
+            # Upgrade an existing hard-link stage created before runtime fingerprints
+            # were introduced. Dependency changes update the checked lock files.
+            reuse_runtime=true
+        fi
+    fi
+    runtime_rsync_args=()
+    if [[ "$reuse_runtime" == true ]]; then
+        runtime_rsync_args+=(--filter='protect /runtime/***' --exclude '/runtime/***')
+        printf 'Reusing unchanged staged runtime.\n'
+    fi
     # Keep an existing program stage so small application updates do not recreate
-    # tens of thousands of NTFS hard links. --delete-excluded still enforces the
-    # release boundary when new local-only files appear in the package.
+    # or rescan tens of thousands of NTFS runtime files. The runtime fingerprint
+    # changes when the locked runtime build changes. --delete-excluded still
+    # enforces the release boundary for every directory that is synchronized.
     rsync -a --delete --delete-excluded \
         --link-dest="$source_root" \
+        "${runtime_rsync_args[@]}" \
         --exclude '__pycache__/' \
         --exclude '*.pyc' \
         --exclude '/cache/***' \
@@ -144,6 +171,7 @@ if [[ "$target" == all || "$target" == program ]]; then
         --exclude '/outputs/***' \
         --exclude '/work/***' \
         "$source_root/" "$program_stage/"
+    printf '%s\n' "$source_runtime_fingerprint" > "$runtime_fingerprint_file"
     mkdir -p \
         "$program_stage/cache/huggingface" \
         "$program_stage/cache/numba" \
@@ -175,7 +203,11 @@ if [[ "$target" == all || "$target" == program ]]; then
             exit 5
         fi
     done
-    generate_manifest "$program_stage" "$program_stage/config/program-files.sha256"
+    # Do not generate a per-file program manifest here. The portable runtime contains
+    # tens of thousands of small framework files, so hashing every file defeats the
+    # incremental hard-link stage and is not consumed by the launcher or verifier.
+    # archive-release-candidate.sh hashes the final .7z; release splitting also hashes
+    # each published volume.
     if rg -a -l \
         'jp2zh-win-portable-lab|/mnt/[a-z]/|\\\\wsl\\.localhost' \
         "$program_stage/app" "$program_stage/config" "$program_stage"/*.cmd >/dev/null 2>&1; then
