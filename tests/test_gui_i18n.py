@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from jp2zh_gui.i18n import LanguageManager, load_language_specs, resolve_language_code
 from jp2zh_gui.models import AsrPreset, GuiTask, TaskStatus
@@ -109,6 +109,67 @@ def test_english_main_window_fits_key_labels_at_1280_width(tmp_path):
         for widget in (window.recursive_check, window.resume_check, window.copy_check, window.speaker_check):
             assert widget.sizeHint().width() <= widget.width(), widget.text()
         assert window.batch_note.sizeHint().width() <= window.batch_note.width()
+    finally:
+        window.close()
+
+
+def test_restore_defaults_keeps_settings_controls_aligned(tmp_path, monkeypatch):
+    app = application()
+    settings = settings_at(tmp_path)
+    settings.setValue("ui_language", "en")
+    manager = LanguageManager(app, settings, system_locale="zh_CN")
+    manager.start()
+    window = MainWindow(settings=settings, language_manager=manager)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
+    try:
+        window.resize(1280, 720)
+        window.show()
+        app.processEvents()
+
+        window._restore_all_defaults()
+        app.processEvents()
+
+        assert manager.current_code == "zh_CN"
+        control_x = {
+            widget.mapTo(window.settings_group, widget.rect().topLeft()).x()
+            for widget in (window.asr_combo, window.output_edit, window.work_edit, window.cleanup_combo)
+        }
+        assert len(control_x) == 1
+        for label in (window.output_label, window.work_label, window.cleanup_label):
+            assert label.contentsMargins().top() == 2
+        control_heights = {
+            widget.height()
+            for widget in (window.output_edit, window.work_edit, window.cleanup_combo)
+        }
+        assert control_heights == {36}
+    finally:
+        window.close()
+
+
+def test_english_advanced_wrap_control_fits_dialog(tmp_path):
+    app = application()
+    settings = settings_at(tmp_path)
+    settings.setValue("ui_language", "en")
+    manager = LanguageManager(app, settings, system_locale="en_US")
+    manager.start()
+    window = MainWindow(settings=settings, language_manager=manager)
+    dialog = window.advanced_dialog
+    try:
+        dialog.tabs.setCurrentIndex(1)
+        dialog.show()
+        app.processEvents()
+        dialog.resize(560, 440)
+        app.processEvents()
+        assert dialog.wrap_check.text() == "Wrap long subtitles"
+        assert dialog.wrap_check.sizeHint().width() <= dialog.wrap_check.width()
+        spin_right = dialog.wrap_spin.mapTo(dialog, dialog.wrap_spin.rect().bottomRight()).x()
+        assert spin_right <= dialog.contentsRect().right()
+        assert dialog.minimumWidth() == 560
+        assert dialog.width() == 560
     finally:
         window.close()
 

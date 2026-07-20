@@ -48,7 +48,34 @@ def test_main_window_has_model_and_cleanup_choices(tmp_path):
         assert not window.open_output_on_finish_action.isChecked()
         assert not window.guidance_group.isHidden()
         assert window.guidance_label.alignment() & window_module.Qt.AlignmentFlag.AlignVCenter
-        assert window.log_edit.maximumHeight() == 130
+        assert window.log_edit.maximumHeight() > 130
+    finally:
+        window.close()
+
+
+def test_log_height_only_grows_when_user_moves_splitter(tmp_path):
+    app = application()
+    window = MainWindow(settings=window_settings(tmp_path))
+    try:
+        window.resize(1280, 720)
+        window.show()
+        app.processEvents()
+        default_content_height = window.content_panel.height()
+        default_log_height = window.log_edit.height()
+
+        window.resize(1280, 900)
+        app.processEvents()
+        assert window.content_panel.height() > default_content_height
+        assert abs(window.log_edit.height() - default_log_height) <= 1
+
+        window.log_splitter.setSizes([default_content_height, window.log_splitter.height()])
+        app.processEvents()
+        assert window.content_panel.height() >= default_content_height
+        assert window.log_edit.height() > default_log_height
+
+        window.log_splitter.setSizes([0, window.log_splitter.height()])
+        app.processEvents()
+        assert window.content_panel.height() >= default_content_height
     finally:
         window.close()
 

@@ -174,12 +174,14 @@ class AdvancedSettingsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumSize(560, 440)
+        self.resize(640, 440)
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
         self.tabs = tabs
 
         translation_tab = QWidget()
         translation_form = QFormLayout(translation_tab)
+        translation_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.context_spin = QSpinBox()
         self.context_spin.setRange(0, 64)
         self.batch_spin = QSpinBox()
@@ -194,15 +196,14 @@ class AdvancedSettingsDialog(QDialog):
 
         style_tab = QWidget()
         style_form = QFormLayout(style_tab)
+        style_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.wrap_check = QCheckBox()
         self.wrap_spin = QSpinBox()
         self.wrap_spin.setRange(1, 200)
         self.wrap_check.toggled.connect(self.wrap_spin.setEnabled)
-        wrap_row = QHBoxLayout()
-        wrap_row.addWidget(self.wrap_check)
-        wrap_row.addWidget(self.wrap_spin)
-        self.wrap_label = QLabel()
-        style_form.addRow(self.wrap_label, wrap_row)
+        self.wrap_limit_label = QLabel()
+        style_form.addRow(self.wrap_check)
+        style_form.addRow(self.wrap_limit_label, self.wrap_spin)
         self.font_combo = FontComboBox()
         self.font_combo.setMaxVisibleItems(18)
         self.font_label = QLabel()
@@ -254,10 +255,11 @@ class AdvancedSettingsDialog(QDialog):
         self.batch_label.setText(self.tr("Translation batch size"))
         self.translation_note.setText(self.tr("These settings affect translation context and grouping, not GPU parallelism."))
         self.tabs.setTabText(0, self.tr("Translation"))
-        self.wrap_check.setText(self.tr("Split at the punctuation nearest the middle when the character limit is exceeded"))
+        self.wrap_check.setText(self.tr("Wrap long subtitles"))
+        self.wrap_check.setToolTip(self.tr("Split at the punctuation nearest the middle when the character limit is exceeded"))
         self.wrap_spin.setSuffix(self.tr(" chars"))
         self.wrap_spin.setToolTip(self.tr("Text is not forcibly wrapped when no suitable punctuation exists; cue count and timing stay unchanged."))
-        self.wrap_label.setText(self.tr("Wrap long subtitles"))
+        self.wrap_limit_label.setText(self.tr("Character limit"))
         self.font_label.setText(self.tr("Subtitle font"))
         self.zh_size_label.setText(self.tr("Chinese font size"))
         self.ja_size_label.setText(self.tr("Japanese font size"))
@@ -338,6 +340,8 @@ class AdvancedSettingsDialog(QDialog):
 
 class MainWindow(QMainWindow):
     UI_SETTINGS_VERSION = 3
+    DEFAULT_WINDOW_HEIGHT = 720
+    DEFAULT_LOG_HEIGHT = 130
 
     def __init__(
         self,
@@ -419,6 +423,7 @@ class MainWindow(QMainWindow):
         self.settings_group = settings_group
         settings_layout = QVBoxLayout(settings_group)
         model_layout = QGridLayout()
+        self.model_layout = model_layout
         model_layout.setHorizontalSpacing(8)
         self.asr_combo = AutoCloseComboBox()
         self.asr_combo.setMinimumWidth(150)
@@ -458,10 +463,15 @@ class MainWindow(QMainWindow):
         status_row.addWidget(self.refresh_device_button)
         settings_layout.addLayout(status_row)
         path_layout = QGridLayout()
+        self.path_layout = path_layout
         path_layout.setHorizontalSpacing(8)
+        path_layout.setVerticalSpacing(1)
         self.output_label = QLabel()
         self.work_label = QLabel()
         self.cleanup_label = QLabel()
+        for label in (self.output_label, self.work_label, self.cleanup_label):
+            label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            label.setContentsMargins(0, 2, 0, 0)
         path_layout.addWidget(self.output_label, 0, 0)
         path_layout.addWidget(self.output_edit, 0, 1)
         path_layout.addWidget(self.output_browse, 0, 2)
@@ -521,6 +531,7 @@ class MainWindow(QMainWindow):
         guidance_group = QGroupBox()
         self.guidance_group = guidance_group
         guidance_layout = QVBoxLayout(guidance_group)
+        guidance_layout.setContentsMargins(9, 6, 9, 6)
         self.guidance_label = QLabel()
         self.guidance_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.guidance_label.setWordWrap(True)
@@ -534,13 +545,12 @@ class MainWindow(QMainWindow):
         settings_container_layout.addWidget(common_group)
         settings_container_layout.addWidget(guidance_group, 1)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(input_group)
-        splitter.addWidget(settings_container)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([600, 650])
-        outer.addWidget(splitter, 1)
+        content_splitter = QSplitter(Qt.Orientation.Horizontal)
+        content_splitter.addWidget(input_group)
+        content_splitter.addWidget(settings_container)
+        content_splitter.setStretchFactor(0, 1)
+        content_splitter.setStretchFactor(1, 1)
+        content_splitter.setSizes([600, 650])
 
         progress_row = QHBoxLayout()
         self.current_label = QLabel()
@@ -551,13 +561,29 @@ class MainWindow(QMainWindow):
         progress_row.addWidget(self.current_label)
         progress_row.addWidget(self.overall_progress, 1)
         progress_row.addWidget(self.log_toggle)
-        outer.addLayout(progress_row)
+
+        content_panel = QWidget()
+        self.content_panel = content_panel
+        content_panel_layout = QVBoxLayout(content_panel)
+        content_panel_layout.setContentsMargins(0, 0, 0, 0)
+        content_panel_layout.addWidget(content_splitter, 1)
+        content_panel_layout.addLayout(progress_row)
+
         self.log_edit = QPlainTextEdit()
         self.log_edit.setReadOnly(True)
         self.log_edit.setMaximumBlockCount(5000)
         self.log_edit.setMinimumHeight(100)
-        self.log_edit.setMaximumHeight(130)
-        outer.addWidget(self.log_edit)
+
+        log_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.log_splitter = log_splitter
+        log_splitter.setChildrenCollapsible(False)
+        log_splitter.setHandleWidth(6)
+        log_splitter.addWidget(content_panel)
+        log_splitter.addWidget(self.log_edit)
+        log_splitter.setStretchFactor(0, 1)
+        log_splitter.setStretchFactor(1, 0)
+        log_splitter.setSizes([500, self.DEFAULT_LOG_HEIGHT])
+        outer.addWidget(log_splitter, 1)
 
         action_row = QHBoxLayout()
         self.start_button = QPushButton()
@@ -616,6 +642,15 @@ class MainWindow(QMainWindow):
         if restored >= 0:
             combo.setCurrentIndex(restored)
 
+    def _align_settings_form_columns(self) -> None:
+        label_width = max(
+            label.sizeHint().width()
+            for label in (self.asr_label, self.output_label, self.work_label, self.cleanup_label)
+        )
+        for layout in (self.model_layout, self.path_layout):
+            layout.setColumnMinimumWidth(0, label_width)
+            layout.invalidate()
+
     def retranslate_ui(self) -> None:
         self.setWindowTitle(self.tr("Japanese Video Subtitle Tool"))
         self.input_group.setTitle(self.tr("Input tasks (drop videos or folders here)"))
@@ -668,8 +703,8 @@ class MainWindow(QMainWindow):
         self.advanced_button.setText(self.tr("Advanced subtitle and translation settings…"))
         self.guidance_group.setTitle(self.tr("Tips"))
         self.guidance_label.setText(self.tr(
-            "Drop videos or folders into the left panel\n\n"
-            "The work folder stores intermediate files; the output folder stores final subtitles\n\n"
+            "Drop videos or folders into the left panel\n"
+            "The work folder stores intermediate files; the output folder stores final subtitles\n"
             "Do not reuse completed stages after changing models or key settings"
         ))
         self.log_toggle.setText(self.tr("Show logs"))
@@ -692,6 +727,7 @@ class MainWindow(QMainWindow):
         self.user_guide_action.setText(self.tr("User guide"))
         self.about_action.setText(self.tr("About"))
         self.advanced_dialog.retranslate_ui()
+        self._align_settings_form_columns()
         self._refresh_device_status_text()
         self._rerender_tasks()
         if not self.tasks:
@@ -733,6 +769,27 @@ class MainWindow(QMainWindow):
         self.reset_settings_action.triggered.connect(self._restore_all_defaults)
         self.user_guide_action.triggered.connect(self._open_user_guide)
         self.about_action.triggered.connect(self._show_about)
+
+    def _update_log_splitter_floor(self) -> None:
+        if not hasattr(self, "log_splitter"):
+            return
+        extra_height = max(0, self.height() - self.DEFAULT_WINDOW_HEIGHT)
+        content_floor = (
+            self.log_splitter.height()
+            - self.log_splitter.handleWidth()
+            - self.DEFAULT_LOG_HEIGHT
+            - extra_height
+        )
+        if content_floor > 0:
+            self.content_panel.setMinimumHeight(content_floor)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt virtual method
+        super().resizeEvent(event)
+        self._update_log_splitter_floor()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt virtual method
+        super().showEvent(event)
+        self._update_log_splitter_floor()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):
