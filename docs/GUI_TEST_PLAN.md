@@ -558,10 +558,25 @@ git diff --check
 | 运行设备 | PASS：RTX 5080；PyTorch CUDA、WhisperSeg CUDAExecutionProvider、llama.cpp GPU offload 均为可用 |
 | 简体流程 | PASS：Windows 原生 Anime + GalTransl 生成 `.zh-s.srt/.zh-s.ass` |
 | 繁体流程 | PASS：Windows 原生 Anime + GalTransl + OpenCC `s2t` 生成 `.zh-t.srt/.zh-t.ass` |
-| 英文流程 | PASS：Windows 原生 Anime + Sugoi 生成 `.en.srt/.en.ass`；10 条批处理无回退，英文默认 42 字符按词边界换行 |
+| 英文流程 | PASS：Windows 原生 Anime + Sugoi 生成 `.en.srt/.en.ass`；10 条批处理无回退；该次运行当时使用 42 字符按词边界换行，当前默认值已调整为 60 |
 | 字体 | PASS：英文目标顶行默认 Arial，日文底行继续使用 Microsoft YaHei |
 | 测试素材 | 23 秒非成人日语对话样例；工作和输出均限制在 `E:\\jp2zh-win-portable-lab\\test-data` |
-| 尚未执行 | 新程序归档、解压复验、人工 GUI 三目标切换与新 Beta 发布 |
+| 当时尚未执行 | 新程序归档、解压复验与新 Beta 发布；归档/解压/发布已由 RUN-20260720-18 完成，完整人工 GUI 三目标切换仍属 Beta 反馈矩阵 |
+
+### RUN-20260720-18：Windows CUDA Beta 3 发布
+
+| 项目 | 记录值 |
+|---|---|
+| Release | `v0.1.0-beta.3` 已作为 GitHub prerelease 发布，tag 指向 `be0a255` |
+| 自动测试 | PASS：`385 passed`；Shell 语法、文档链接和 `git diff --check` 通过 |
+| 分发策略 | 只发布程序包；模型权重仍由用户按包内 `INSTALL-CN.txt` / `INSTALL-EN.txt` 从 Hugging Face 下载 |
+| 程序分卷 | `.001` 1,992,294,400 B；`.002` 1,291,825,906 B；重组 SHA-256 为 `c7ae7296648c585122c10205af6bfa407452fb09075801a37ae14cfb333b1fc4` |
+| 完整性 | PASS：原始 `.7z` 通过 SHA-256；两个分卷各自通过 SHA-256；顺序拼接结果与原始归档哈希一致 |
+| 发布边界 | PASS：程序包含 `jp2zh-subtitle-tool.exe` 和两份安装说明，不含模型权重、旧中文 EXE、`config/gui.ini`、运行锁或用户数据 |
+| 全新解压 | PASS：28,136 个文件完整解压；包内 Transformers 实际导入成功；空模型目录和空输出/工作目录符合程序-only 发布策略 |
+| 原生启动 | PASS：解压目录的 Windows EXE 启动有效 GUI 窗口并正常关闭；单实例锁和 `work/.gui` 临时文件正常清理 |
+| 远端资产 | PASS：两个程序分卷、两份安装说明和两份 SHA-256 文件均为 `uploaded`；release 非 draft 且为 prerelease |
+| 延续证据 | 简体、繁体和实验性英文的 Windows CUDA 完整流程沿用 RUN-20260720-17 的同代码 package 验证；最终归档后的变更仅为发布文档 |
 
 ## 14. 当前剩余人工验收
 
