@@ -7,7 +7,7 @@ from local Japanese video files and writes a target-language/Japanese bilingual 
 default. Inference runs fully offline after the required models are downloaded.
 
 Windows users can start with the portable desktop GUI in the
-[`v0.1.0 Beta 2` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.2).
+[`v0.1.0 Beta 3` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.3).
 It bundles the application runtime and FFmpeg, but not third-party model weights; follow
 `INSTALL-EN.txt` or `INSTALL-CN.txt` on the release page to download models with the bundled
 Hugging Face CLI. The command-line workflow remains fully supported for source installations
@@ -301,17 +301,14 @@ per-script usage, the CUDA check, and troubleshooting, see [docs/USAGE.md](docs/
 ### Windows portable beta
 
 The easiest Windows entry point is the portable
-[`v0.1.0 Beta 2` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.2):
+[`v0.1.0 Beta 3` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.3):
 
 1. Download every `jp2zh-video-subs-windows-x64-cuda-program.7z.*` volume.
 2. Put all volumes in one directory and extract `.7z.001` with 7-Zip or NanaZip.
 3. Open a Command Prompt in the extracted `jp2zh-video-subs` folder and follow
    `INSTALL-EN.txt` (or `INSTALL-CN.txt`) to download the required models with the bundled
    `runtime\Scripts\hf.exe`.
-4. Double-click `jp2zh字幕工具.exe`.
-
-That executable name is specific to the already-published Beta 2 archive. Current development
-builds and the next portable beta use the language-neutral `jp2zh-subtitle-tool.exe` name.
+4. Double-click `jp2zh-subtitle-tool.exe`.
 
 No system Python, FFmpeg, or CUDA Toolkit installation is required. A working NVIDIA driver
 is still required. The release contains no model weights, user or sample videos, subtitles, or

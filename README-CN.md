@@ -5,7 +5,7 @@
 这个项目用于从本地日语视频生成简体中文、繁体中文或实验性英文 SRT，并默认生成“译文在上、日文在下”的双语 ASS。下载好模型后，推理过程全部在本地完成。
 
 Windows 用户建议直接使用
-[`v0.1.0 Beta 2` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.2)。
+[`v0.1.0 Beta 3` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.3)。
 它已内置程序运行时和 FFmpeg，但不附带第三方模型权重；按 Release 里的
 `INSTALL-CN.txt` 使用包内 Hugging Face CLI 下载模型即可。CLI 仍是完整支持的
 源码安装与高级用法入口。
@@ -279,16 +279,13 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 ### Windows 绿色测试版
 
 Windows 上最直接的入口是
-[`v0.1.0 Beta 2` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.2)：
+[`v0.1.0 Beta 3` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.3)：
 
 1. 下载全部 `jp2zh-video-subs-windows-x64-cuda-program.7z.*` 分卷。
 2. 把所有分卷放在同一目录，用 7-Zip 或 NanaZip 从 `.7z.001` 开始解压。
 3. 在解压后的 `jp2zh-video-subs` 目录打开命令提示符，按 Release 中的
    `INSTALL-CN.txt` 使用包内 `runtime\Scripts\hf.exe` 下载必需模型。
-4. 双击 `jp2zh字幕工具.exe`。
-
-这个文件名仅适用于已经发布的 Beta 2 压缩包。当前开发版及下一个绿色测试版改用与界面语言无关的
-`jp2zh-subtitle-tool.exe`。
+4. 双击 `jp2zh-subtitle-tool.exe`。
 
 不需要安装系统 Python、FFmpeg 或 CUDA Toolkit，但必须有正常的 NVIDIA 显卡驱动。
 Release 不包含模型权重、用户或示例视频、字幕等内容。第一次启动时，模型完整性提示会列出尚未下载的文件。
