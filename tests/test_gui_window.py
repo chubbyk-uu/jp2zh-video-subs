@@ -34,7 +34,8 @@ def test_main_window_has_model_and_cleanup_choices(tmp_path):
         assert window.translator_combo.count() == 2
         assert window.cleanup_combo.count() == 3
         assert window.cleanup_combo.findData(CleanupPolicy.FINAL_ONLY.value) >= 0
-        assert window.width() >= 1120
+        assert window.minimumSize().toTuple() == (1280, 720)
+        assert window.size().toTuple() == (1280, 720)
         assert window.asr_batch_combo.currentData() == 24
         assert [window.asr_batch_combo.itemData(i) for i in range(4)] == [24, 16, 8, 4]
         assert not window.advanced_dialog.isVisible()
@@ -53,7 +54,7 @@ def test_main_window_has_model_and_cleanup_choices(tmp_path):
         window.close()
 
 
-def test_log_height_only_grows_when_user_moves_splitter(tmp_path):
+def test_extra_window_height_defaults_to_log_and_splitter_remains_adjustable(tmp_path):
     app = application()
     window = MainWindow(settings=window_settings(tmp_path))
     try:
@@ -65,17 +66,21 @@ def test_log_height_only_grows_when_user_moves_splitter(tmp_path):
 
         window.resize(1280, 900)
         app.processEvents()
-        assert window.content_panel.height() > default_content_height
-        assert abs(window.log_edit.height() - default_log_height) <= 1
+        grown_log_height = window.log_edit.height()
+        assert abs(window.content_panel.height() - default_content_height) <= 1
+        assert grown_log_height > default_log_height
 
-        window.log_splitter.setSizes([default_content_height, window.log_splitter.height()])
+        window.log_splitter.setSizes([window.log_splitter.height(), default_log_height])
         app.processEvents()
-        assert window.content_panel.height() >= default_content_height
-        assert window.log_edit.height() > default_log_height
+        assert window.content_panel.height() > default_content_height
+        assert window.log_edit.height() < grown_log_height
 
         window.log_splitter.setSizes([0, window.log_splitter.height()])
         app.processEvents()
         assert window.content_panel.height() >= default_content_height
+        assert window.log_splitter.handleWidth() == 10
+        assert window.log_splitter_handle.cursor().shape() == window_module.Qt.CursorShape.SizeVerCursor
+        assert window.log_splitter_handle.toolTip() == "拖动调整日志高度"
     finally:
         window.close()
 
@@ -386,7 +391,7 @@ def test_queue_finish_can_open_output_folder(tmp_path, monkeypatch):
 
 
 def test_restore_all_defaults_resets_settings_and_language(tmp_path, monkeypatch):
-    application()
+    app = application()
     settings = window_settings(tmp_path)
     window = MainWindow(settings=settings)
     monkeypatch.setattr(
@@ -400,9 +405,15 @@ def test_restore_all_defaults_resets_settings_and_language(tmp_path, monkeypatch
         window.probe_on_startup_action.setChecked(False)
         window.open_output_on_finish_action.setChecked(True)
         window.language_manager.set_language("en")
+        window.show()
+        window.resize(1440, 900)
+        app.processEvents()
+        window.log_splitter.setSizes([window.content_panel.minimumHeight(), window.log_splitter.height()])
+        window.log_toggle.setChecked(False)
         window._save_settings()
 
         window._restore_all_defaults()
+        app.processEvents()
 
         assert window.output_edit.text() == str(window_module.GuiConfig().output_dir)
         assert not window.quality_check.isChecked()
@@ -410,5 +421,9 @@ def test_restore_all_defaults_resets_settings_and_language(tmp_path, monkeypatch
         assert not window.open_output_on_finish_action.isChecked()
         assert window.language_manager.requested_code == "system"
         assert settings.value("ui_language") == "system"
+        assert window.size().toTuple() == (1280, 720)
+        assert window.log_toggle.isChecked()
+        assert window.log_edit.isVisible()
+        assert abs(window.log_edit.height() - window.DEFAULT_LOG_HEIGHT) <= 1
     finally:
         window.close()

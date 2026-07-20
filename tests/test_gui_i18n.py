@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from jp2zh_gui.i18n import LanguageManager, load_language_specs, resolve_language_code
 from jp2zh_gui.models import AsrPreset, GuiTask, TaskStatus
+import jp2zh_gui.window as window_module
 from jp2zh_gui.window import MainWindow
 
 
@@ -104,11 +105,22 @@ def test_english_main_window_fits_key_labels_at_1280_width(tmp_path):
         window.resize(1280, 720)
         window.show()
         app.processEvents()
+        assert window.minimumSize().toTuple() == (1280, 720)
         assert window.minimumSizeHint().width() <= 1280
         assert window.refresh_device_button.sizeHint().width() <= window.refresh_device_button.width()
         for widget in (window.recursive_check, window.resume_check, window.copy_check, window.speaker_check):
             assert widget.sizeHint().width() <= widget.width(), widget.text()
         assert window.batch_note.sizeHint().width() <= window.batch_note.width()
+        assert {
+            widget.height()
+            for widget in (
+                window.output_edit,
+                window.output_browse,
+                window.work_edit,
+                window.work_browse,
+                window.cleanup_combo,
+            )
+        } == {32}
     finally:
         window.close()
 
@@ -145,7 +157,43 @@ def test_restore_defaults_keeps_settings_controls_aligned(tmp_path, monkeypatch)
             widget.height()
             for widget in (window.output_edit, window.work_edit, window.cleanup_combo)
         }
-        assert control_heights == {36}
+        assert control_heights == {32}
+    finally:
+        window.close()
+
+
+def test_model_status_is_retranslated_for_complete_and_missing_models(tmp_path, monkeypatch):
+    app = application()
+    settings = settings_at(tmp_path)
+    settings.setValue("ui_language", "zh_CN")
+    manager = LanguageManager(app, settings, system_locale="zh_CN")
+    manager.start()
+    state = {"missing": False}
+    monkeypatch.setattr(
+        window_module,
+        "missing_model_files",
+        lambda _config: [tmp_path / "one", tmp_path / "two"] if state["missing"] else [],
+    )
+    window = MainWindow(settings=settings, language_manager=manager)
+    try:
+        assert window.model_status_label.text() == "所选模型文件完整"
+        manager.set_language("zh_TW")
+        app.processEvents()
+        assert window.model_status_label.text() == "所選模型檔案完整"
+        manager.set_language("en")
+        app.processEvents()
+        assert window.model_status_label.text() == "Selected model files are complete"
+
+        state["missing"] = True
+        manager.set_language("zh_CN")
+        app.processEvents()
+        assert window.model_status_label.text() == "缺少 2 个模型文件"
+        manager.set_language("zh_TW")
+        app.processEvents()
+        assert window.model_status_label.text() == "缺少 2 個模型檔案"
+        manager.set_language("en")
+        app.processEvents()
+        assert window.model_status_label.text() == "2 model files missing"
     finally:
         window.close()
 

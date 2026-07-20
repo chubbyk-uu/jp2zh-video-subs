@@ -7,7 +7,7 @@ import json
 import sys
 
 from PySide6.QtCore import QCoreApplication, QPoint, QProcess, QSettings, Qt, QUrl
-from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont, QGuiApplication
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont, QGuiApplication, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -31,8 +31,10 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
+    QSplitterHandle,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -81,6 +83,38 @@ def format_device_status(data: dict[str, object]) -> tuple[str, str]:
     if torch_cuda:
         return QCoreApplication.translate("DeviceStatus", "Device: partial CUDA · {gpu} ({parts})").format(gpu=display_gpu_name, parts=" / ".join(parts)), "#a56500"
     return QCoreApplication.translate("DeviceStatus", "Device: CUDA unavailable; ASR cannot start ({parts})").format(parts=" / ".join(parts)), "#c0392b"
+
+
+class LogSplitterHandle(QSplitterHandle):
+    """Visible grip for resizing the log panel."""
+
+    def __init__(self, orientation: Qt.Orientation, parent: QSplitter) -> None:
+        super().__init__(orientation, parent)
+        self.setCursor(Qt.CursorShape.SizeVerCursor)
+
+    def enterEvent(self, event) -> None:  # noqa: N802 - Qt virtual method
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802 - Qt virtual method
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt virtual method
+        del event
+        painter = QPainter(self)
+        hovered = self.underMouse()
+        painter.fillRect(self.rect(), QColor("#dbeafe" if hovered else "#edf0f3"))
+        painter.setPen(QColor("#2563a8" if hovered else "#7b8794"))
+        centre_x = self.rect().center().x()
+        centre_y = self.rect().center().y()
+        for offset in (-3, 0, 3):
+            painter.drawLine(centre_x - 18, centre_y + offset, centre_x + 18, centre_y + offset)
+
+
+class LogSplitter(QSplitter):
+    def createHandle(self) -> QSplitterHandle:  # noqa: N802 - Qt virtual method
+        return LogSplitterHandle(self.orientation(), self)
 
 
 class AutoCloseComboBox(QComboBox):
@@ -340,6 +374,7 @@ class AdvancedSettingsDialog(QDialog):
 
 class MainWindow(QMainWindow):
     UI_SETTINGS_VERSION = 3
+    DEFAULT_WINDOW_WIDTH = 1280
     DEFAULT_WINDOW_HEIGHT = 720
     DEFAULT_LOG_HEIGHT = 130
 
@@ -364,9 +399,10 @@ class MainWindow(QMainWindow):
         self._device_probe = QProcess(self)
         self._last_device_data: dict[str, object] | None = None
         self._device_probe_state = "idle"
+        self._log_splitter_initialised = False
         hide_windows_console(self._device_probe)
-        self.setMinimumSize(1120, 680)
-        self.resize(1280, 720)
+        self.setMinimumSize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
+        self.resize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
         self.setAcceptDrops(True)
         self._apply_visual_style()
         self._build_ui()
@@ -422,6 +458,7 @@ class MainWindow(QMainWindow):
         settings_group = QGroupBox()
         self.settings_group = settings_group
         settings_layout = QVBoxLayout(settings_group)
+        settings_layout.setSpacing(5)
         model_layout = QGridLayout()
         self.model_layout = model_layout
         model_layout.setHorizontalSpacing(8)
@@ -438,9 +475,13 @@ class MainWindow(QMainWindow):
             self.cleanup_combo.addItem("", policy.value)
         self.model_status_label = QLabel()
         self.device_status_label = QLabel()
-        self.device_status_label.setWordWrap(True)
+        self.device_status_label.setWordWrap(False)
+        self.device_status_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
         self.refresh_device_button = QPushButton()
-        self.refresh_device_button.setFixedWidth(90)
+        self.refresh_device_button.setMinimumWidth(90)
         self.output_edit = QLineEdit()
         self.output_browse = QPushButton()
         self.work_edit = QLineEdit()
@@ -574,14 +615,15 @@ class MainWindow(QMainWindow):
         self.log_edit.setMaximumBlockCount(5000)
         self.log_edit.setMinimumHeight(100)
 
-        log_splitter = QSplitter(Qt.Orientation.Vertical)
+        log_splitter = LogSplitter(Qt.Orientation.Vertical)
         self.log_splitter = log_splitter
         log_splitter.setChildrenCollapsible(False)
-        log_splitter.setHandleWidth(6)
+        log_splitter.setHandleWidth(10)
         log_splitter.addWidget(content_panel)
         log_splitter.addWidget(self.log_edit)
-        log_splitter.setStretchFactor(0, 1)
-        log_splitter.setStretchFactor(1, 0)
+        self.log_splitter_handle = log_splitter.handle(1)
+        log_splitter.setStretchFactor(0, 0)
+        log_splitter.setStretchFactor(1, 1)
         log_splitter.setSizes([500, self.DEFAULT_LOG_HEIGHT])
         outer.addWidget(log_splitter, 1)
 
@@ -597,6 +639,15 @@ class MainWindow(QMainWindow):
             action_row.addWidget(button)
         outer.addLayout(action_row)
         self.setCentralWidget(central)
+        for control in (
+            self.output_edit,
+            self.output_browse,
+            self.work_edit,
+            self.work_browse,
+            self.cleanup_combo,
+        ):
+            control.ensurePolished()
+            control.setFixedHeight(32)
         self._build_language_menu()
 
     def _build_language_menu(self) -> None:
@@ -699,8 +750,9 @@ class MainWindow(QMainWindow):
             4: self.tr("Stability (4)"),
         })
         self.asr_batch_combo.setToolTip(self.tr("Affects ASR speed and VRAM usage; actual usage varies by model and GPU."))
-        self.batch_note.setText(self.tr("Lower if VRAM is insufficient; usage varies by model and GPU."))
-        self.advanced_button.setText(self.tr("Advanced subtitle and translation settings…"))
+        self.batch_note.setText(self.tr("Lower if VRAM is insufficient."))
+        self.advanced_button.setText(self.tr("Advanced settings…"))
+        self.advanced_button.setToolTip(self.tr("Advanced subtitle and translation settings…"))
         self.guidance_group.setTitle(self.tr("Tips"))
         self.guidance_label.setText(self.tr(
             "Drop videos or folders into the left panel\n"
@@ -708,6 +760,9 @@ class MainWindow(QMainWindow):
             "Do not reuse completed stages after changing models or key settings"
         ))
         self.log_toggle.setText(self.tr("Show logs"))
+        resize_log_text = self.tr("Drag to resize the log panel")
+        self.log_splitter_handle.setToolTip(resize_log_text)
+        self.log_splitter_handle.setAccessibleName(resize_log_text)
         self.start_button.setText(self.tr("Start"))
         self.cancel_button.setText(self.tr("Cancel"))
         self.retry_button.setText(self.tr("Retry failed tasks"))
@@ -728,6 +783,7 @@ class MainWindow(QMainWindow):
         self.about_action.setText(self.tr("About"))
         self.advanced_dialog.retranslate_ui()
         self._align_settings_form_columns()
+        self._update_model_status()
         self._refresh_device_status_text()
         self._rerender_tasks()
         if not self.tasks:
@@ -770,9 +826,9 @@ class MainWindow(QMainWindow):
         self.user_guide_action.triggered.connect(self._open_user_guide)
         self.about_action.triggered.connect(self._show_about)
 
-    def _update_log_splitter_floor(self) -> None:
+    def _update_log_splitter_floor(self) -> int | None:
         if not hasattr(self, "log_splitter"):
-            return
+            return None
         extra_height = max(0, self.height() - self.DEFAULT_WINDOW_HEIGHT)
         content_floor = (
             self.log_splitter.height()
@@ -782,6 +838,8 @@ class MainWindow(QMainWindow):
         )
         if content_floor > 0:
             self.content_panel.setMinimumHeight(content_floor)
+            return content_floor
+        return None
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt virtual method
         super().resizeEvent(event)
@@ -789,7 +847,14 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt virtual method
         super().showEvent(event)
-        self._update_log_splitter_floor()
+        content_floor = self._update_log_splitter_floor()
+        if not self._log_splitter_initialised and content_floor is not None:
+            available_height = self.log_splitter.height() - self.log_splitter.handleWidth()
+            self.log_splitter.setSizes([
+                content_floor,
+                max(self.log_edit.minimumHeight(), available_height - content_floor),
+            ])
+            self._log_splitter_initialised = True
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):
@@ -1101,7 +1166,7 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(
             self,
             self.tr("Restore all defaults"),
-            self.tr("Reset all GUI settings, including paths, models, appearance, and language?"),
+            self.tr("Reset all GUI settings, including window layout, paths, models, appearance, and language?"),
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -1110,6 +1175,16 @@ class MainWindow(QMainWindow):
         self._restore_settings()
         self.retranslate_ui()
         self._update_model_status()
+        self.showNormal()
+        self.resize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
+        self.centralWidget().layout().activate()
+        available_height = self.log_splitter.height() - self.log_splitter.handleWidth()
+        self.log_splitter.setSizes([
+            max(0, available_height - self.DEFAULT_LOG_HEIGHT),
+            self.DEFAULT_LOG_HEIGHT,
+        ])
+        if sys.platform == "win32":
+            self._centre_on_primary_screen()
 
     def _update_model_status(self) -> None:
         config = self._config_from_ui()
