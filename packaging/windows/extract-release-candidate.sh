@@ -66,6 +66,9 @@ if [[ "$target" == all ]]; then
     test -f "$extract_root/jp2zh-video-subs/models/Sugoi-14B-Ultra-GGUF/Sugoi-14B-Ultra-Q4_K_M.gguf"
     test -f "$extract_root/jp2zh-video-subs/models/voice-gender-classifier/model.safetensors"
 else
+    # The program archive ships an empty models directory. Assert it exists before
+    # asserting it is empty, so a missing directory cannot pass as "no weights".
+    test -d "$extract_root/jp2zh-video-subs/models"
     test -z "$(find "$extract_root/jp2zh-video-subs/models" -type f -print -quit)"
 fi
 test -d "$extract_root/jp2zh-video-subs/runtime/Lib/site-packages/transformers/models"

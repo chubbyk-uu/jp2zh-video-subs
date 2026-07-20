@@ -55,3 +55,18 @@ def test_program_only_release_can_be_extracted_without_model_archives():
     assert 'INSTALL-CN.txt' in extract
     assert 'INSTALL-EN.txt' in extract
     assert 'find "$extract_root/jp2zh-video-subs/models"' in extract
+    # A missing models directory must not pass as "ships no weights".
+    assert 'test -d "$extract_root/jp2zh-video-subs/models"' in extract
+
+
+def test_dev_path_scan_covers_setup_guides_at_the_package_root():
+    prepare = script_text("prepare-release-candidate.sh")
+    stage = script_text("stage-portable.sh")
+
+    # Every hand-written file staged to the package root must be scanned for
+    # development-machine paths, not just the app tree and the launchers.
+    for root_file in ("INSTALL-CN.txt", "INSTALL-EN.txt", "THIRD_PARTY_NOTICES.md"):
+        assert f'"$package_root/{root_file}"' in stage
+        scanned_glob = f'"$program_stage"/*{Path(root_file).suffix}'
+        assert scanned_glob in prepare, f"{root_file} ships unscanned"
+    assert '"$program_stage"/*.cmd' in prepare

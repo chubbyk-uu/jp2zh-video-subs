@@ -157,6 +157,11 @@ if [[ "$target" == all || "$target" == program ]]; then
     # or rescan tens of thousands of NTFS runtime files. The runtime fingerprint
     # changes when the locked runtime build changes. --delete-excluded still
     # enforces the release boundary for every directory that is synchronized.
+    #
+    # The fingerprint tracks only the checked-in lock files, so editing anything
+    # under the source runtime without touching them leaves the staged runtime
+    # silently stale. Re-stage with the `all` target after any manual runtime
+    # surgery; it drops the whole staging tree and resynchronizes from scratch.
     rsync -a --delete --delete-excluded \
         --link-dest="$source_root" \
         "${runtime_rsync_args[@]}" \
@@ -208,13 +213,20 @@ if [[ "$target" == all || "$target" == program ]]; then
     # incremental hard-link stage and is not consumed by the launcher or verifier.
     # archive-release-candidate.sh hashes the final .7z; release splitting also hashes
     # each published volume.
-    if rg -a -l \
-        'jp2zh-win-portable-lab|/mnt/[a-z]/|\\\\wsl\\.localhost' \
-        "$program_stage/app" "$program_stage/config" "$program_stage"/*.cmd >/dev/null 2>&1; then
+    # Scan every hand-written file that ships to users: the app and config trees plus
+    # the launchers and setup guides at the package root. The per-file existence test
+    # keeps an unmatched glob from being passed to rg as a literal pattern, which would
+    # fail the whole scan and report a clean result.
+    leak_pattern='jp2zh-win-portable-lab|/mnt/[a-z]/|\\\\wsl\\.localhost'
+    leak_paths=("$program_stage/app" "$program_stage/config")
+    for root_file in "$program_stage"/*.cmd "$program_stage"/*.txt "$program_stage"/*.md; do
+        if [[ -f "$root_file" ]]; then
+            leak_paths+=("$root_file")
+        fi
+    done
+    if rg -a -l "$leak_pattern" "${leak_paths[@]}" >/dev/null 2>&1; then
         echo "Release candidate contains a development-machine path" >&2
-        rg -a -l \
-            'jp2zh-win-portable-lab|/mnt/[a-z]/|\\\\wsl\\.localhost' \
-            "$program_stage/app" "$program_stage/config" "$program_stage"/*.cmd >&2
+        rg -a -l "$leak_pattern" "${leak_paths[@]}" >&2
         exit 6
     fi
     printf 'Program stage: %s\n' "$program_stage"
