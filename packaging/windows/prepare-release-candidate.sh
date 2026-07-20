@@ -153,6 +153,25 @@ if [[ "$target" == all || "$target" == program ]]; then
         echo "Prepared runtime is incomplete: transformers/models is missing" >&2
         exit 5
     fi
+    for catalog in languages.json jp2zh_zh_CN.qm jp2zh_zh_TW.qm; do
+        if [[ ! -f "$program_stage/app/scripts/jp2zh_gui/translations/$catalog" ]]; then
+            echo "Program stage is missing GUI language catalog: $catalog" >&2
+            exit 5
+        fi
+    done
+    if [[ ! -x "$program_stage/jp2zh-subtitle-tool.exe" ]]; then
+        echo "Program stage is missing the language-neutral launcher" >&2
+        exit 5
+    fi
+    for legacy_entry in \
+        "$program_stage/jp2zh字幕工具.exe" \
+        "$program_stage/启动字幕工具.cmd" \
+        "$program_stage/启动字幕工具-调试.cmd"; do
+        if [[ -e "$legacy_entry" ]]; then
+            echo "Program stage contains a legacy Chinese launcher name: $legacy_entry" >&2
+            exit 5
+        fi
+    done
     generate_manifest "$program_stage" "$program_stage/config/program-files.sha256"
     if rg -a -l \
         'jp2zh-win-portable-lab|/mnt/[a-z]/|\\\\wsl\\.localhost' \

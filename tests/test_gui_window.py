@@ -6,7 +6,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QSettings, QUrl
+from PySide6.QtCore import QProcess, QSettings, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QListWidget, QMessageBox
 
 from jp2zh_gui.models import CleanupPolicy, GuiTask, TaskStatus
@@ -19,7 +20,10 @@ def application():
 
 
 def window_settings(tmp_path):
-    return QSettings(str(tmp_path / "gui-test.ini"), QSettings.Format.IniFormat)
+    settings = QSettings(str(tmp_path / "gui-test.ini"), QSettings.Format.IniFormat)
+    if not settings.contains("ui_language"):
+        settings.setValue("ui_language", "zh_CN")
+    return settings
 
 
 def test_main_window_has_model_and_cleanup_choices(tmp_path):
@@ -40,6 +44,8 @@ def test_main_window_has_model_and_cleanup_choices(tmp_path):
         assert not window.recursive_check.isChecked()
         assert not window.resume_check.isChecked()
         assert window.log_toggle.isChecked()
+        assert window.probe_on_startup_action.isChecked()
+        assert not window.open_output_on_finish_action.isChecked()
         assert not window.guidance_group.isHidden()
         assert window.guidance_label.alignment() & window_module.Qt.AlignmentFlag.AlignVCenter
         assert window.log_edit.maximumHeight() == 130
@@ -240,6 +246,8 @@ def test_saved_settings_restore_in_new_window(tmp_path):
         first.cleanup_combo.setCurrentIndex(first.cleanup_combo.findData(CleanupPolicy.FINAL_ONLY.value))
         first.context_spin.setValue(9)
         first.zh_size_spin.setValue(41)
+        first.probe_on_startup_action.setChecked(False)
+        first.open_output_on_finish_action.setChecked(True)
         first._save_settings()
         settings.sync()
     finally:
@@ -253,6 +261,10 @@ def test_saved_settings_restore_in_new_window(tmp_path):
         assert second.cleanup_combo.currentData() == CleanupPolicy.FINAL_ONLY.value
         assert second.context_spin.value() == 9
         assert second.zh_size_spin.value() == 41
+        assert not second.probe_on_startup_action.isChecked()
+        assert second.open_output_on_finish_action.isChecked()
+        assert second._device_probe.state() == QProcess.ProcessState.NotRunning
+        assert "已关闭启动时自动检测" in second.device_status_label.text()
     finally:
         second.close()
 
@@ -314,5 +326,62 @@ def test_missing_model_files_blocks_start_and_shows_paths(tmp_path, monkeypatch)
         window._start()
         assert not started
         assert shown == [("模型不完整", f"所选模型缺少文件：\n{missing}")]
+    finally:
+        window.close()
+
+
+def test_settings_actions_open_config_and_local_guide(tmp_path, monkeypatch):
+    application()
+    opened: list[QUrl] = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+    settings = window_settings(tmp_path)
+    window = MainWindow(settings=settings)
+    try:
+        window._open_config_folder()
+        assert Path(opened[-1].toLocalFile()) == Path(settings.fileName()).resolve().parent
+        window._open_user_guide()
+        assert Path(opened[-1].toLocalFile()).name == "README-CN.md"
+    finally:
+        window.close()
+
+
+def test_queue_finish_can_open_output_folder(tmp_path, monkeypatch):
+    application()
+    window = MainWindow(settings=window_settings(tmp_path))
+    opened = []
+    monkeypatch.setattr(window, "_open_output", lambda: opened.append(True))
+    try:
+        window.open_output_on_finish_action.setChecked(True)
+        window._queue_finished()
+        assert opened == [True]
+    finally:
+        window.close()
+
+
+def test_restore_all_defaults_resets_settings_and_language(tmp_path, monkeypatch):
+    application()
+    settings = window_settings(tmp_path)
+    window = MainWindow(settings=settings)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
+    try:
+        window.output_edit.setText(str(tmp_path / "custom-output"))
+        window.quality_check.setChecked(True)
+        window.probe_on_startup_action.setChecked(False)
+        window.open_output_on_finish_action.setChecked(True)
+        window.language_manager.set_language("en")
+        window._save_settings()
+
+        window._restore_all_defaults()
+
+        assert window.output_edit.text() == str(window_module.GuiConfig().output_dir)
+        assert not window.quality_check.isChecked()
+        assert window.probe_on_startup_action.isChecked()
+        assert not window.open_output_on_finish_action.isChecked()
+        assert window.language_manager.requested_code == "system"
+        assert settings.value("ui_language") == "system"
     finally:
         window.close()

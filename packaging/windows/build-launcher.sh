@@ -26,6 +26,8 @@ fi
 
 resource_object="$(mktemp --suffix=.o)"
 trap 'rm -f "$resource_object"' EXIT
+launcher="$package_root/jp2zh-subtitle-tool.exe"
+legacy_launcher="$package_root/jp2zh字幕工具.exe"
 
 (
     cd "$source_root/packaging/windows"
@@ -39,6 +41,9 @@ trap 'rm -f "$resource_object"' EXIT
     -s \
     "$source_root/packaging/windows/launcher.c" \
     "$resource_object" \
-    -o "$package_root/jp2zh字幕工具.exe"
+    -o "$launcher"
 
-printf 'Launcher written to %s\n' "$package_root/jp2zh字幕工具.exe"
+if [[ -e "$legacy_launcher" ]]; then
+    unlink "$legacy_launcher"
+fi
+printf 'Launcher written to %s\n' "$launcher"

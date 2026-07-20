@@ -42,34 +42,6 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-ASR_LABELS = {
-    AsrPreset.ANIME: "Anime（推荐）",
-    AsrPreset.QWEN: "Qwen",
-}
-TRANSLATOR_LABELS = {
-    TranslatorPreset.GALTRANSL: "GalTransl 7B（推荐）",
-    TranslatorPreset.SAKURA: "Sakura 14B",
-}
-CLEANUP_LABELS = {
-    CleanupPolicy.KEEP_ALL: "保留全部中间产物",
-    CleanupPolicy.DELETE_AUDIO: "成功后删除 WAV",
-    CleanupPolicy.FINAL_ONLY: "成功后仅保留最终字幕、质检和日志",
-}
-STATUS_LABELS = {
-    TaskStatus.WAITING: "等待中",
-    TaskStatus.RUNNING: "处理中",
-    TaskStatus.COMPLETED: "已完成",
-    TaskStatus.FAILED: "失败",
-    TaskStatus.CANCELLED: "已取消",
-}
-STAGE_LABELS = {
-    "extract": "提取音频",
-    "asr": "日语识别",
-    "translate": "中文翻译",
-    "ass": "生成 ASS",
-    "quality": "质量检查",
-    "cleanup": "清理中间产物",
-}
 STAGE_PROGRESS_RANGES = {
     "extract": (0.00, 0.05),
     "asr": (0.05, 0.60),
@@ -78,6 +50,12 @@ STAGE_PROGRESS_RANGES = {
     "quality": (0.96, 0.99),
     "cleanup": (0.99, 1.00),
 }
+
+
+@dataclass(frozen=True)
+class ValidationIssue:
+    code: str
+    params: dict[str, object] = field(default_factory=dict)
 
 
 MODEL_REQUIREMENTS = {
@@ -135,28 +113,28 @@ class GuiConfig:
     bilingual_female_colour: str = "&H00B478FF"
     colour_by_speaker: bool = False
 
-    def validate(self) -> list[str]:
-        errors: list[str] = []
+    def validate(self) -> list[ValidationIssue]:
+        errors: list[ValidationIssue] = []
         if self.asr_batch_size <= 0:
-            errors.append("ASR 批大小必须大于 0")
+            errors.append(ValidationIssue("asr_batch_positive"))
         if self.context_size < 0:
-            errors.append("翻译上下文不能小于 0")
+            errors.append(ValidationIssue("context_nonnegative"))
         if self.translate_batch_size < 0:
-            errors.append("翻译批大小不能小于 0")
+            errors.append(ValidationIssue("translate_batch_nonnegative"))
         if self.display_wrap_max_chars < 0:
-            errors.append("每行最大字符数不能小于 0")
+            errors.append(ValidationIssue("wrap_nonnegative"))
         if self.bilingual_zh_font_size <= 0 or self.bilingual_ja_font_size <= 0:
-            errors.append("字幕字号必须大于 0")
+            errors.append(ValidationIssue("subtitle_size_positive"))
         if not self.bilingual_font.strip():
-            errors.append("字幕字体不能为空")
-        for label, value in (
-            ("中文颜色", self.bilingual_zh_colour),
-            ("日文颜色", self.bilingual_ja_colour),
-            ("男性颜色", self.bilingual_male_colour),
-            ("女性颜色", self.bilingual_female_colour),
+            errors.append(ValidationIssue("subtitle_font_required"))
+        for field_name, value in (
+            ("zh", self.bilingual_zh_colour),
+            ("ja", self.bilingual_ja_colour),
+            ("male", self.bilingual_male_colour),
+            ("female", self.bilingual_female_colour),
         ):
             if not re.fullmatch(r"&H[0-9A-Fa-f]{8}", value):
-                errors.append(f"{label}必须使用 ASS &HAABBGGRR 格式")
+                errors.append(ValidationIssue("ass_colour_format", {"field": field_name}))
         return errors
 
     def build_command(
@@ -170,7 +148,7 @@ class GuiConfig:
     ) -> list[str]:
         errors = self.validate()
         if errors:
-            raise ValueError("；".join(errors))
+            raise ValueError("; ".join(issue.code for issue in errors))
         command = [
             str(python_executable),
             str(pipeline_script),
@@ -219,15 +197,13 @@ class GuiTask:
     stage_total: int = len(PIPELINE_STAGES)
     completed_stages: int = 0
     stage_progress: float = 0.0
+    detail_key: str = ""
+    detail_args: dict[str, object] = field(default_factory=dict)
     detail: str = ""
+    error_key: str = ""
+    error_args: dict[str, object] = field(default_factory=dict)
     error: str = ""
     outputs: dict[str, Path] = field(default_factory=dict)
-
-    @property
-    def status_text(self) -> str:
-        if self.status == TaskStatus.RUNNING and self.stage:
-            return self.detail or STAGE_LABELS.get(self.stage, self.stage)
-        return STATUS_LABELS[self.status]
 
     @property
     def progress_percent(self) -> int:
@@ -247,7 +223,11 @@ class GuiTask:
         self.stage_index = 0
         self.completed_stages = 0
         self.stage_progress = 0.0
+        self.detail_key = ""
+        self.detail_args.clear()
         self.detail = ""
+        self.error_key = ""
+        self.error_args.clear()
         self.error = ""
         self.outputs.clear()
 

@@ -203,6 +203,9 @@ Windows 用户可从
 `jp2zh字幕工具.exe` 即可启动；系统无需另装 Python、FFmpeg 或 CUDA Toolkit，
 但仍需可用的 NVIDIA 驱动。发布包只包含程序，不包含模型权重或示例视频。
 
+上面的中文 EXE 文件名仅适用于已发布的 Beta 2。当前开发版及下一个绿色测试版统一使用
+`jp2zh-subtitle-tool.exe`，避免文件名依赖界面语言或系统代码页。
+
 从源码运行 GUI 时，图形依赖独立于基础命令行环境：
 
 ```bash

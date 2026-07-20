@@ -286,6 +286,9 @@ The easiest Windows entry point is the portable
    `runtime\Scripts\hf.exe`.
 4. Double-click `jp2zh字幕工具.exe`.
 
+That executable name is specific to the already-published Beta 2 archive. Current development
+builds and the next portable beta use the language-neutral `jp2zh-subtitle-tool.exe` name.
+
 No system Python, FFmpeg, or CUDA Toolkit installation is required. A working NVIDIA driver
 is still required. The release contains no model weights, user or sample videos, subtitles, or
 similar content.

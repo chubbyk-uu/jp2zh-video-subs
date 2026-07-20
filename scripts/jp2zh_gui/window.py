@@ -6,9 +6,10 @@ from pathlib import Path
 import json
 import sys
 
-from PySide6.QtCore import QPoint, QProcess, QSettings, Qt, QUrl
-from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont, QFontDatabase, QGuiApplication
+from PySide6.QtCore import QCoreApplication, QPoint, QProcess, QSettings, Qt, QUrl
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QFont, QGuiApplication
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QColorDialog,
@@ -42,14 +43,13 @@ from PySide6.QtWidgets import (
 
 from portable_runtime import portable_config_path, rebase_portable_path
 from .controller import PipelineController
+from .i18n import LanguageManager
 from .models import (
-    ASR_LABELS,
-    CLEANUP_LABELS,
-    TRANSLATOR_LABELS,
     AsrPreset,
     CleanupPolicy,
     GuiConfig,
     GuiTask,
+    PROJECT_ROOT,
     TaskStatus,
     TranslatorPreset,
     discover_dropped_videos,
@@ -66,21 +66,21 @@ def format_device_status(data: dict[str, object]) -> tuple[str, str]:
     vad_label = {
         "cuda": "✓",
         "cpu": "CPU",
-        "missing_model": "未检测（缺少模型）",
-        "unavailable": "检测失败",
-    }.get(onnx_status, "未知")
+        "missing_model": QCoreApplication.translate("DeviceStatus", "Not detected (model missing)"),
+        "unavailable": QCoreApplication.translate("DeviceStatus", "Probe failed"),
+    }.get(onnx_status, QCoreApplication.translate("DeviceStatus", "Unknown"))
     parts = [
         f"ASR {'✓' if torch_cuda else '✗'}",
-        f"语音切分 {vad_label}",
-        f"翻译 {'✓' if llama_cuda else 'CPU'}",
+        QCoreApplication.translate("DeviceStatus", "VAD {state}").format(state=vad_label),
+        QCoreApplication.translate("DeviceStatus", "Translation {state}").format(state="✓" if llama_cuda else "CPU"),
     ]
     gpu_name = str(data.get("gpu_name") or "CUDA GPU")
     display_gpu_name = gpu_name.removeprefix("NVIDIA GeForce ")
     if torch_cuda and onnx_cuda and llama_cuda:
-        return f"运行设备：CUDA · {display_gpu_name}（ASR ✓ / VAD ✓ / 翻译 ✓）", "#18864b"
+        return QCoreApplication.translate("DeviceStatus", "Device: CUDA · {gpu} (ASR ✓ / VAD ✓ / Translation ✓)").format(gpu=display_gpu_name), "#18864b"
     if torch_cuda:
-        return f"运行设备：部分 CUDA · {display_gpu_name}（{' / '.join(parts)}）", "#a56500"
-    return f"运行设备：CUDA 不可用，ASR 无法启动（{' / '.join(parts)}）", "#c0392b"
+        return QCoreApplication.translate("DeviceStatus", "Device: partial CUDA · {gpu} ({parts})").format(gpu=display_gpu_name, parts=" / ".join(parts)), "#a56500"
+    return QCoreApplication.translate("DeviceStatus", "Device: CUDA unavailable; ASR cannot start ({parts})").format(parts=" / ".join(parts)), "#c0392b"
 
 
 class AutoCloseComboBox(QComboBox):
@@ -173,7 +173,6 @@ class FontComboBox(QFontComboBox):
 class AdvancedSettingsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("高级字幕与翻译设置")
         self.setMinimumSize(560, 440)
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
@@ -183,40 +182,44 @@ class AdvancedSettingsDialog(QDialog):
         translation_form = QFormLayout(translation_tab)
         self.context_spin = QSpinBox()
         self.context_spin.setRange(0, 64)
-        self.context_spin.setToolTip("提供给翻译模型的前文轮数；0 表示逐句独立翻译。")
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(0, 64)
-        self.batch_spin.setToolTip("GalTransl 连续字幕成组翻译的最大条数；不是 GPU 并行数。")
-        translation_form.addRow("翻译上下文", self.context_spin)
-        translation_form.addRow("翻译批大小", self.batch_spin)
-        translation_form.addRow(QLabel("这些参数影响翻译语境和分组，不是显存并行参数。"))
-        tabs.addTab(translation_tab, "翻译设置")
+        self.context_label = QLabel()
+        self.batch_label = QLabel()
+        self.translation_note = QLabel()
+        translation_form.addRow(self.context_label, self.context_spin)
+        translation_form.addRow(self.batch_label, self.batch_spin)
+        translation_form.addRow(self.translation_note)
+        tabs.addTab(translation_tab, "")
 
         style_tab = QWidget()
         style_form = QFormLayout(style_tab)
-        self.wrap_check = QCheckBox("超过指定字数时，按最接近中间的标点分成两行")
+        self.wrap_check = QCheckBox()
         self.wrap_spin = QSpinBox()
         self.wrap_spin.setRange(1, 200)
-        self.wrap_spin.setSuffix(" 字")
-        self.wrap_spin.setToolTip("没有合适标点时不会强行断行；字幕条数和时间轴不变。")
         self.wrap_check.toggled.connect(self.wrap_spin.setEnabled)
         wrap_row = QHBoxLayout()
         wrap_row.addWidget(self.wrap_check)
         wrap_row.addWidget(self.wrap_spin)
-        style_form.addRow("长字幕自动换行", wrap_row)
+        self.wrap_label = QLabel()
+        style_form.addRow(self.wrap_label, wrap_row)
         self.font_combo = FontComboBox()
         self.font_combo.setMaxVisibleItems(18)
-        style_form.addRow("字幕字体", self.font_combo)
+        self.font_label = QLabel()
+        style_form.addRow(self.font_label, self.font_combo)
         self.zh_size_spin = QSpinBox()
         self.zh_size_spin.setRange(1, 200)
         self.ja_size_spin = QSpinBox()
         self.ja_size_spin.setRange(1, 200)
-        style_form.addRow("中文字号", self.zh_size_spin)
-        style_form.addRow("日文字号", self.ja_size_spin)
+        self.zh_size_label = QLabel()
+        self.ja_size_label = QLabel()
+        style_form.addRow(self.zh_size_label, self.zh_size_spin)
+        style_form.addRow(self.ja_size_label, self.ja_size_spin)
 
         self.colour_edits: dict[str, QLineEdit] = {}
         self.colour_buttons: dict[str, QPushButton] = {}
-        for label, key in (("中文颜色", "zh"), ("日文颜色", "ja"), ("男性颜色", "male"), ("女性颜色", "female")):
+        self.colour_labels: dict[str, QLabel] = {}
+        for key in ("zh", "ja", "male", "female"):
             edit = QLineEdit()
             edit.hide()
             button = QPushButton()
@@ -224,22 +227,54 @@ class AdvancedSettingsDialog(QDialog):
             button.clicked.connect(lambda _checked=False, e=edit, b=button: self._choose_colour(e, b))
             self.colour_edits[key] = edit
             self.colour_buttons[key] = button
+            label = QLabel()
+            self.colour_labels[key] = label
             style_form.addRow(label, button)
-        tabs.addTab(style_tab, "字幕样式")
+        tabs.addTab(style_tab, "")
         layout.addWidget(tabs)
 
-        restore_button = QPushButton("恢复默认值")
+        self.restore_button = QPushButton()
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        self.buttons = buttons
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         bottom = QHBoxLayout()
-        bottom.addWidget(restore_button)
+        bottom.addWidget(self.restore_button)
         bottom.addStretch()
         bottom.addWidget(buttons)
         layout.addLayout(bottom)
-        restore_button.clicked.connect(self.restore_defaults)
+        self.restore_button.clicked.connect(self.restore_defaults)
+        self.retranslate_ui()
+
+    def retranslate_ui(self) -> None:
+        self.setWindowTitle(self.tr("Advanced subtitle and translation settings"))
+        self.context_spin.setToolTip(self.tr("Number of preceding lines supplied to the translation model; 0 translates each line independently."))
+        self.batch_spin.setToolTip(self.tr("Maximum number of consecutive subtitles translated together by GalTransl; this is not GPU parallelism."))
+        self.context_label.setText(self.tr("Translation context"))
+        self.batch_label.setText(self.tr("Translation batch size"))
+        self.translation_note.setText(self.tr("These settings affect translation context and grouping, not GPU parallelism."))
+        self.tabs.setTabText(0, self.tr("Translation"))
+        self.wrap_check.setText(self.tr("Split at the punctuation nearest the middle when the character limit is exceeded"))
+        self.wrap_spin.setSuffix(self.tr(" chars"))
+        self.wrap_spin.setToolTip(self.tr("Text is not forcibly wrapped when no suitable punctuation exists; cue count and timing stay unchanged."))
+        self.wrap_label.setText(self.tr("Wrap long subtitles"))
+        self.font_label.setText(self.tr("Subtitle font"))
+        self.zh_size_label.setText(self.tr("Chinese font size"))
+        self.ja_size_label.setText(self.tr("Japanese font size"))
+        colour_names = {
+            "zh": self.tr("Chinese colour"),
+            "ja": self.tr("Japanese colour"),
+            "male": self.tr("Male speaker colour"),
+            "female": self.tr("Female speaker colour"),
+        }
+        for key, label in self.colour_labels.items():
+            label.setText(colour_names[key])
+            if self.colour_edits[key].text():
+                self._refresh_colour_button(self.colour_edits[key], self.colour_buttons[key])
+        self.tabs.setTabText(1, self.tr("Subtitle style"))
+        self.restore_button.setText(self.tr("Restore defaults"))
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(self.tr("OK"))
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(self.tr("Cancel"))
 
     @staticmethod
     def _ass_colour_parts(value: str) -> tuple[int, int, int, str]:
@@ -253,11 +288,11 @@ class AdvancedSettingsDialog(QDialog):
         foreground = "#000000" if brightness >= 128000 else "#ffffff"
         button.setText(rgb)
         button.setStyleSheet(f"background-color: {rgb}; color: {foreground};")
-        button.setToolTip(f"{edit.text()}（点击选择颜色）")
+        button.setToolTip(self.tr("{value} (click to choose a colour)").format(value=edit.text()))
 
     def _choose_colour(self, edit: QLineEdit, button: QPushButton) -> None:
         red, green, blue, alpha = self._ass_colour_parts(edit.text())
-        colour = QColorDialog.getColor(QColor(red, green, blue), self, "选择字幕颜色")
+        colour = QColorDialog.getColor(QColor(red, green, blue), self, self.tr("Choose subtitle colour"))
         if not colour.isValid():
             return
         edit.setText(f"&H{alpha}{colour.blue():02X}{colour.green():02X}{colour.red():02X}")
@@ -304,16 +339,28 @@ class AdvancedSettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     UI_SETTINGS_VERSION = 3
 
-    def __init__(self, controller: PipelineController | None = None, settings: QSettings | None = None) -> None:
+    def __init__(
+        self,
+        controller: PipelineController | None = None,
+        settings: QSettings | None = None,
+        language_manager: LanguageManager | None = None,
+    ) -> None:
         super().__init__()
         self.controller = controller or PipelineController(self)
         self.tasks: list[GuiTask] = []
         self._rows_by_id: dict[str, int] = {}
         self.settings = settings or QSettings("jp2zh-video-subs", "jp2zh-video-subs")
+        application = QApplication.instance()
+        if application is None:
+            raise RuntimeError("QApplication must be created before MainWindow")
+        self.language_manager = language_manager or LanguageManager(application, self.settings)
+        if language_manager is None:
+            self.language_manager.start()
         self._close_when_finished = False
         self._device_probe = QProcess(self)
+        self._last_device_data: dict[str, object] | None = None
+        self._device_probe_state = "idle"
         hide_windows_console(self._device_probe)
-        self.setWindowTitle("日语视频中文字幕工具")
         self.setMinimumSize(1120, 680)
         self.resize(1280, 720)
         self.setAcceptDrops(True)
@@ -321,17 +368,17 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._restore_settings()
+        self.retranslate_ui()
         self._update_model_status()
-        self._start_device_probe()
+        if self.probe_on_startup_action.isChecked():
+            self._start_device_probe()
+        else:
+            self._device_probe_state = "disabled"
+            self._refresh_device_status_text()
 
     def _apply_visual_style(self) -> None:
-        families = set(QFontDatabase.families())
-        family = "Microsoft YaHei UI" if "Microsoft YaHei UI" in families else "Microsoft YaHei" if "Microsoft YaHei" in families else self.font().family()
-        font = QFont(family)
-        font.setPointSize(10)
-        self.setFont(font)
         self.setStyleSheet("""
-            QWidget { font-family: "Microsoft YaHei"; font-size: 10pt; }
+            QWidget { font-size: 10pt; }
             QLineEdit, QComboBox, QSpinBox { min-height: 30px; }
             QPushButton { min-height: 30px; padding: 2px 10px; }
             QPushButton#primaryButton {
@@ -349,53 +396,55 @@ class MainWindow(QMainWindow):
         central = QWidget(self)
         outer = QVBoxLayout(central)
 
-        input_group = QGroupBox("输入任务（可直接拖入视频或文件夹）")
+        input_group = QGroupBox()
+        self.input_group = input_group
         input_layout = QVBoxLayout(input_group)
         self.task_table = QTableWidget(0, 4)
-        self.task_table.setHorizontalHeaderLabels(["视频", "状态", "进度", "输出"])
         self.task_table.horizontalHeader().setStretchLastSection(True)
         self.task_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.task_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.task_table.verticalHeader().setDefaultSectionSize(31)
         input_layout.addWidget(self.task_table)
         queue_buttons = QHBoxLayout()
-        self.add_files_button = QPushButton("添加视频")
-        self.add_folder_button = QPushButton("添加文件夹")
-        self.remove_button = QPushButton("移除选中")
-        self.clear_button = QPushButton("清空")
+        self.add_files_button = QPushButton()
+        self.add_folder_button = QPushButton()
+        self.remove_button = QPushButton()
+        self.clear_button = QPushButton()
         for button in (self.add_files_button, self.add_folder_button, self.remove_button, self.clear_button):
             queue_buttons.addWidget(button)
         queue_buttons.addStretch()
         input_layout.addLayout(queue_buttons)
 
-        settings_group = QGroupBox("模型与常用设置")
+        settings_group = QGroupBox()
         self.settings_group = settings_group
         settings_layout = QVBoxLayout(settings_group)
         model_layout = QGridLayout()
         model_layout.setHorizontalSpacing(8)
         self.asr_combo = AutoCloseComboBox()
         self.asr_combo.setMinimumWidth(150)
-        for preset, label in ASR_LABELS.items():
-            self.asr_combo.addItem(label, preset.value)
+        for preset in AsrPreset:
+            self.asr_combo.addItem("", preset.value)
         self.translator_combo = AutoCloseComboBox()
         self.translator_combo.setMinimumWidth(170)
-        for preset, label in TRANSLATOR_LABELS.items():
-            self.translator_combo.addItem(label, preset.value)
+        for preset in TranslatorPreset:
+            self.translator_combo.addItem("", preset.value)
         self.cleanup_combo = AutoCloseComboBox()
-        for policy, label in CLEANUP_LABELS.items():
-            self.cleanup_combo.addItem(label, policy.value)
+        for policy in CleanupPolicy:
+            self.cleanup_combo.addItem("", policy.value)
         self.model_status_label = QLabel()
-        self.device_status_label = QLabel("运行设备：正在检测 CUDA…")
+        self.device_status_label = QLabel()
         self.device_status_label.setWordWrap(True)
-        self.refresh_device_button = QPushButton("刷新")
-        self.refresh_device_button.setMaximumWidth(72)
+        self.refresh_device_button = QPushButton()
+        self.refresh_device_button.setFixedWidth(90)
         self.output_edit = QLineEdit()
-        self.output_browse = QPushButton("浏览…")
+        self.output_browse = QPushButton()
         self.work_edit = QLineEdit()
-        self.work_browse = QPushButton("浏览…")
-        model_layout.addWidget(QLabel("ASR 模型"), 0, 0)
+        self.work_browse = QPushButton()
+        self.asr_label = QLabel()
+        self.translator_label = QLabel()
+        model_layout.addWidget(self.asr_label, 0, 0)
         model_layout.addWidget(self.asr_combo, 0, 1)
-        model_layout.addWidget(QLabel("翻译模型"), 0, 2)
+        model_layout.addWidget(self.translator_label, 0, 2)
         model_layout.addWidget(self.translator_combo, 0, 3)
         model_layout.setColumnStretch(1, 1)
         model_layout.setColumnStretch(3, 1)
@@ -410,38 +459,34 @@ class MainWindow(QMainWindow):
         settings_layout.addLayout(status_row)
         path_layout = QGridLayout()
         path_layout.setHorizontalSpacing(8)
-        path_layout.addWidget(QLabel("输出目录"), 0, 0)
+        self.output_label = QLabel()
+        self.work_label = QLabel()
+        self.cleanup_label = QLabel()
+        path_layout.addWidget(self.output_label, 0, 0)
         path_layout.addWidget(self.output_edit, 0, 1)
         path_layout.addWidget(self.output_browse, 0, 2)
-        path_layout.addWidget(QLabel("工作目录"), 1, 0)
+        path_layout.addWidget(self.work_label, 1, 0)
         path_layout.addWidget(self.work_edit, 1, 1)
         path_layout.addWidget(self.work_browse, 1, 2)
-        path_layout.addWidget(QLabel("成功后清理"), 2, 0)
+        path_layout.addWidget(self.cleanup_label, 2, 0)
         path_layout.addWidget(self.cleanup_combo, 2, 1, 1, 2)
         path_layout.setColumnStretch(1, 1)
         settings_layout.addLayout(path_layout)
 
-        common_group = QGroupBox("输出与性能")
+        common_group = QGroupBox()
         self.common_group = common_group
         common_layout = QGridLayout(common_group)
-        self.recursive_check = QCheckBox("递归扫描子目录")
-        self.bilingual_check = QCheckBox("生成双语 ASS")
-        self.quality_check = QCheckBox("生成质量报告")
-        self.resume_check = QCheckBox("复用已完成阶段（断点续跑）")
-        self.resume_check.setToolTip("复用已存在的完整 WAV、日语 SRT 和中文翻译；更换模型或参数后应关闭。")
-        self.copy_check = QCheckBox("复制最终字幕到视频目录")
-        self.speaker_check = QCheckBox("按说话人性别着色")
+        self.recursive_check = QCheckBox()
+        self.bilingual_check = QCheckBox()
+        self.quality_check = QCheckBox()
+        self.resume_check = QCheckBox()
+        self.copy_check = QCheckBox()
+        self.speaker_check = QCheckBox()
         self.asr_batch_combo = AutoCloseComboBox()
         self.asr_batch_combo.setMinimumWidth(260)
         self.asr_batch_combo.setMaximumWidth(275)
-        for label, value in (
-            ("性能优先（24，14GB以上显存推荐）", 24),
-            ("均衡（16）", 16),
-            ("低显存（8）", 8),
-            ("稳定优先（4）", 4),
-        ):
-            self.asr_batch_combo.addItem(label, value)
-        self.asr_batch_combo.setToolTip("影响 ASR 速度和显存占用；不同模型和显卡的实际占用不同。")
+        for value in (24, 16, 8, 4):
+            self.asr_batch_combo.addItem("", value)
         self.advanced_dialog = AdvancedSettingsDialog(self)
         self.context_spin = self.advanced_dialog.context_spin
         self.batch_spin = self.advanced_dialog.batch_spin
@@ -461,25 +506,22 @@ class MainWindow(QMainWindow):
         common_layout.addWidget(self.copy_check, 1, 1)
         common_layout.addWidget(self.speaker_check, 1, 2)
         performance_row = QHBoxLayout()
-        performance_row.addWidget(QLabel("ASR 批大小"))
+        self.asr_batch_label = QLabel()
+        performance_row.addWidget(self.asr_batch_label)
         performance_row.addWidget(self.asr_batch_combo)
-        batch_note = QLabel("显存不足时逐档降低；不同模型和显卡的实际占用不同。")
-        batch_note.setStyleSheet("color: #666;")
-        performance_row.addWidget(batch_note)
+        self.batch_note = QLabel()
+        self.batch_note.setStyleSheet("color: #666;")
+        performance_row.addWidget(self.batch_note)
         performance_row.addStretch(1)
         common_layout.addLayout(performance_row, 2, 0, 1, 3)
 
-        self.advanced_button = QPushButton("高级字幕与翻译设置…")
+        self.advanced_button = QPushButton()
         common_layout.addWidget(self.advanced_button, 3, 0, 1, 3)
 
-        guidance_group = QGroupBox("使用提示")
+        guidance_group = QGroupBox()
         self.guidance_group = guidance_group
         guidance_layout = QVBoxLayout(guidance_group)
-        self.guidance_label = QLabel(
-            "可将视频或文件夹直接拖入左侧\n\n"
-            "工作目录保存中间产物，输出目录保存最终字幕\n\n"
-            "更换模型或关键参数后，请勿复用已完成阶段"
-        )
+        self.guidance_label = QLabel()
         self.guidance_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.guidance_label.setWordWrap(True)
         self.guidance_label.setStyleSheet("color: #666;")
@@ -501,10 +543,10 @@ class MainWindow(QMainWindow):
         outer.addWidget(splitter, 1)
 
         progress_row = QHBoxLayout()
-        self.current_label = QLabel("等待任务")
+        self.current_label = QLabel()
         self.overall_progress = QProgressBar()
         self.overall_progress.setRange(0, 100)
-        self.log_toggle = QCheckBox("显示日志")
+        self.log_toggle = QCheckBox()
         self.log_toggle.setChecked(True)
         progress_row.addWidget(self.current_label)
         progress_row.addWidget(self.overall_progress, 1)
@@ -518,17 +560,142 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.log_edit)
 
         action_row = QHBoxLayout()
-        self.start_button = QPushButton("开始处理")
+        self.start_button = QPushButton()
         self.start_button.setObjectName("primaryButton")
-        self.cancel_button = QPushButton("取消")
+        self.cancel_button = QPushButton()
         self.cancel_button.setEnabled(False)
-        self.retry_button = QPushButton("重试失败任务")
-        self.open_output_button = QPushButton("打开输出目录")
+        self.retry_button = QPushButton()
+        self.open_output_button = QPushButton()
         action_row.addStretch()
         for button in (self.start_button, self.cancel_button, self.retry_button, self.open_output_button):
             action_row.addWidget(button)
         outer.addLayout(action_row)
         self.setCentralWidget(central)
+        self._build_language_menu()
+
+    def _build_language_menu(self) -> None:
+        self.settings_menu = self.menuBar().addMenu("")
+        self.language_menu = self.settings_menu.addMenu("")
+        self.language_actions: dict[str, QAction] = {}
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for code in ("system", "zh_CN", "zh_TW", "en"):
+            action = QAction(self)
+            action.setCheckable(True)
+            action.setData(code)
+            action.triggered.connect(lambda _checked=False, value=code: self.language_manager.set_language(value))
+            group.addAction(action)
+            self.language_menu.addAction(action)
+            self.language_actions[code] = action
+        self.settings_menu.addSeparator()
+        self.behaviour_menu = self.settings_menu.addMenu("")
+        self.probe_on_startup_action = QAction(self)
+        self.probe_on_startup_action.setCheckable(True)
+        self.probe_on_startup_action.setChecked(True)
+        self.open_output_on_finish_action = QAction(self)
+        self.open_output_on_finish_action.setCheckable(True)
+        self.behaviour_menu.addAction(self.probe_on_startup_action)
+        self.behaviour_menu.addAction(self.open_output_on_finish_action)
+        self.settings_menu.addSeparator()
+        self.open_config_action = self.settings_menu.addAction("")
+        self.reset_settings_action = self.settings_menu.addAction("")
+
+        self.help_menu = self.menuBar().addMenu("")
+        self.user_guide_action = self.help_menu.addAction("")
+        self.help_menu.addSeparator()
+        self.about_action = self.help_menu.addAction("")
+
+    @staticmethod
+    def _replace_combo_labels(combo: QComboBox, labels: dict[str | int, str]) -> None:
+        current = combo.currentData()
+        for index in range(combo.count()):
+            value = combo.itemData(index)
+            if value in labels:
+                combo.setItemText(index, labels[value])
+        restored = combo.findData(current)
+        if restored >= 0:
+            combo.setCurrentIndex(restored)
+
+    def retranslate_ui(self) -> None:
+        self.setWindowTitle(self.tr("Japanese Video Subtitle Tool"))
+        self.input_group.setTitle(self.tr("Input tasks (drop videos or folders here)"))
+        self.task_table.setHorizontalHeaderLabels([
+            self.tr("Video"), self.tr("Status"), self.tr("Progress"), self.tr("Output")
+        ])
+        self.add_files_button.setText(self.tr("Add videos"))
+        self.add_folder_button.setText(self.tr("Add folder"))
+        self.remove_button.setText(self.tr("Remove selected"))
+        self.clear_button.setText(self.tr("Clear"))
+        self.settings_group.setTitle(self.tr("Models and common settings"))
+        self.asr_label.setText(self.tr("ASR model"))
+        self.translator_label.setText(self.tr("Translation model"))
+        self._replace_combo_labels(self.asr_combo, {
+            AsrPreset.ANIME.value: self.tr("Anime (recommended)"),
+            AsrPreset.QWEN.value: "Qwen",
+        })
+        self._replace_combo_labels(self.translator_combo, {
+            TranslatorPreset.GALTRANSL.value: self.tr("GalTransl 7B (recommended)"),
+            TranslatorPreset.SAKURA.value: "Sakura 14B",
+        })
+        self.refresh_device_button.setText(self.tr("Probing…") if self._device_probe_state == "running" else self.tr("Refresh"))
+        self.output_label.setText(self.tr("Output folder"))
+        self.work_label.setText(self.tr("Work folder"))
+        self.cleanup_label.setText(self.tr("After success"))
+        self.output_browse.setText(self.tr("Browse…"))
+        self.work_browse.setText(self.tr("Browse…"))
+        self._replace_combo_labels(self.cleanup_combo, {
+            CleanupPolicy.KEEP_ALL.value: self.tr("Keep all intermediate files"),
+            CleanupPolicy.DELETE_AUDIO.value: self.tr("Delete WAV after success"),
+            CleanupPolicy.FINAL_ONLY.value: self.tr("Keep only final subtitles, QC report, and logs"),
+        })
+        self.common_group.setTitle(self.tr("Output and performance"))
+        self.recursive_check.setText(self.tr("Scan subfolders"))
+        self.bilingual_check.setText(self.tr("Generate bilingual ASS"))
+        self.quality_check.setText(self.tr("Generate quality report"))
+        self.resume_check.setText(self.tr("Resume completed stages"))
+        self.resume_check.setToolTip(self.tr("Reuse complete WAV, Japanese SRT, and Chinese translation files; disable this after changing models or key settings."))
+        self.copy_check.setText(self.tr("Copy subtitles beside video"))
+        self.speaker_check.setText(self.tr("Colour by speaker gender"))
+        self.asr_batch_label.setText(self.tr("ASR batch size"))
+        self._replace_combo_labels(self.asr_batch_combo, {
+            24: self.tr("Performance (24; 14 GB+ VRAM)"),
+            16: self.tr("Balanced (16)"),
+            8: self.tr("Low VRAM (8)"),
+            4: self.tr("Stability (4)"),
+        })
+        self.asr_batch_combo.setToolTip(self.tr("Affects ASR speed and VRAM usage; actual usage varies by model and GPU."))
+        self.batch_note.setText(self.tr("Lower if VRAM is insufficient; usage varies by model and GPU."))
+        self.advanced_button.setText(self.tr("Advanced subtitle and translation settings…"))
+        self.guidance_group.setTitle(self.tr("Tips"))
+        self.guidance_label.setText(self.tr(
+            "Drop videos or folders into the left panel\n\n"
+            "The work folder stores intermediate files; the output folder stores final subtitles\n\n"
+            "Do not reuse completed stages after changing models or key settings"
+        ))
+        self.log_toggle.setText(self.tr("Show logs"))
+        self.start_button.setText(self.tr("Start"))
+        self.cancel_button.setText(self.tr("Cancel"))
+        self.retry_button.setText(self.tr("Retry failed tasks"))
+        self.open_output_button.setText(self.tr("Open output folder"))
+        self.settings_menu.setTitle(self.tr("Settings"))
+        self.language_menu.setTitle(self.tr("Language"))
+        self.language_actions["system"].setText(self.tr("System language"))
+        for code in ("zh_CN", "zh_TW", "en"):
+            self.language_actions[code].setText(self.language_manager.specs[code].name)
+        self.language_actions[self.language_manager.requested_code].setChecked(True)
+        self.behaviour_menu.setTitle(self.tr("Startup and behaviour"))
+        self.probe_on_startup_action.setText(self.tr("Probe device at startup"))
+        self.open_output_on_finish_action.setText(self.tr("Open output folder when queue finishes"))
+        self.open_config_action.setText(self.tr("Open configuration folder"))
+        self.reset_settings_action.setText(self.tr("Restore all defaults…"))
+        self.help_menu.setTitle(self.tr("Help"))
+        self.user_guide_action.setText(self.tr("User guide"))
+        self.about_action.setText(self.tr("About"))
+        self.advanced_dialog.retranslate_ui()
+        self._refresh_device_status_text()
+        self._rerender_tasks()
+        if not self.tasks:
+            self.current_label.setText(self.tr("Waiting for tasks"))
 
     def _connect_signals(self) -> None:
         self.add_files_button.clicked.connect(self._choose_files)
@@ -555,6 +722,17 @@ class MainWindow(QMainWindow):
         self.controller.overall_progress_changed.connect(self.overall_progress.setValue)
         self.controller.running_changed.connect(self._set_running)
         self.controller.queue_finished.connect(self._queue_finished)
+        self.language_manager.language_changed.connect(lambda _code: self.retranslate_ui())
+        self.probe_on_startup_action.toggled.connect(
+            lambda checked: self.settings.setValue("probe_device_on_startup", checked)
+        )
+        self.open_output_on_finish_action.toggled.connect(
+            lambda checked: self.settings.setValue("open_output_on_finish", checked)
+        )
+        self.open_config_action.triggered.connect(self._open_config_folder)
+        self.reset_settings_action.triggered.connect(self._restore_all_defaults)
+        self.user_guide_action.triggered.connect(self._open_user_guide)
+        self.about_action.triggered.connect(self._show_about)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):
@@ -581,14 +759,72 @@ class MainWindow(QMainWindow):
             added += 1
         return added
 
+    def _task_status_text(self, task: GuiTask) -> str:
+        if task.status == TaskStatus.RUNNING and task.stage:
+            details = {
+                "prepare_asr": self.tr("Preparing Japanese ASR"),
+                "load_translation": self.tr("Loading translation model"),
+                "generate_ass": self.tr("Generating bilingual ASS"),
+                "generate_quality": self.tr("Generating quality report"),
+                "anime_loading": self.tr("Loading Anime model"),
+                "anime_recognising": self.tr("Running Anime recognition ({current}/{total})"),
+                "forced_alignment": self.tr("Running forced alignment ({current}/{total})"),
+                "qwen_recognising": self.tr("Running Qwen recognition ({current}/{total})"),
+                "semantic_scenes": self.tr("Analysing semantic scenes"),
+                "speech_segments": self.tr("Analysing speech segments"),
+                "qwen_running": self.tr("Running Qwen Japanese ASR"),
+                "asr_finalising": self.tr("Finalising Japanese subtitles"),
+                "translating": self.tr("Translating subtitles ({current}/{total})"),
+            }
+            if task.detail_key in details:
+                return details[task.detail_key].format(**task.detail_args)
+            if task.detail:
+                return task.detail
+            stages = {
+                "extract": self.tr("Extracting audio"),
+                "asr": self.tr("Japanese ASR"),
+                "translate": self.tr("Chinese translation"),
+                "ass": self.tr("Generating ASS"),
+                "quality": self.tr("Quality check"),
+                "cleanup": self.tr("Cleaning intermediate files"),
+            }
+            return stages.get(task.stage, task.stage)
+        statuses = {
+            TaskStatus.WAITING: self.tr("Waiting"),
+            TaskStatus.RUNNING: self.tr("Processing"),
+            TaskStatus.COMPLETED: self.tr("Completed"),
+            TaskStatus.FAILED: self.tr("Failed"),
+            TaskStatus.CANCELLED: self.tr("Cancelled"),
+        }
+        return statuses[task.status]
+
+    def _task_error_text(self, task: GuiTask) -> str:
+        if task.error:
+            return task.error
+        errors = {
+            "stage_failed": self.tr("Pipeline stage failed"),
+            "job_failed": self.tr("Task failed"),
+            "process_crashed": self.tr("Pipeline process crashed"),
+            "exit_code": self.tr("Pipeline exit code: {code}"),
+            "failed_to_start": self.tr("Could not start the pipeline process"),
+        }
+        if task.error_key in errors:
+            return errors[task.error_key].format(**task.error_args)
+        return ""
+
+    def _rerender_tasks(self) -> None:
+        for task in self.tasks:
+            self._update_task_row(task)
+
     def _append_task_row(self, task: GuiTask) -> None:
         row = self.task_table.rowCount()
         self.task_table.insertRow(row)
         self._rows_by_id[task.task_id] = row
         video_item = QTableWidgetItem(str(task.video))
         video_item.setToolTip(str(task.video))
-        status_item = QTableWidgetItem(task.status_text)
-        status_item.setToolTip(task.status_text)
+        task_text = self._task_status_text(task)
+        status_item = QTableWidgetItem(task_text)
+        status_item.setToolTip(task_text)
         self.task_table.setItem(row, 0, video_item)
         self.task_table.setItem(row, 1, status_item)
         self.task_table.setItem(row, 2, QTableWidgetItem(f"{task.progress_percent}%"))
@@ -598,7 +834,9 @@ class MainWindow(QMainWindow):
         row = self._rows_by_id.get(task.task_id)
         if row is None:
             return
-        status_text = task.status_text if not task.error else f"{task.status_text}：{task.error}"
+        task_text = self._task_status_text(task)
+        error_text = self._task_error_text(task)
+        status_text = task_text if not error_text else self.tr("{status}: {error}").format(status=task_text, error=error_text)
         self.task_table.item(row, 1).setText(status_text)
         self.task_table.item(row, 1).setToolTip(status_text)
         self.task_table.item(row, 2).setText(f"{task.progress_percent}%")
@@ -607,21 +845,21 @@ class MainWindow(QMainWindow):
         self.task_table.item(row, 3).setText(output_text)
         self.task_table.item(row, 3).setToolTip(output_text)
         if task.status == TaskStatus.RUNNING:
-            self.current_label.setText(f"{task.video.name} — {task.status_text}")
+            self.current_label.setText(self.tr("{video} — {status}").format(video=task.video.name, status=task_text))
         elif task.status == TaskStatus.FAILED:
             self.log_toggle.setChecked(True)
 
     def _choose_files(self) -> None:
-        names, _ = QFileDialog.getOpenFileNames(self, "选择视频", "", "视频文件 (*.mp4 *.mkv *.mov *.avi *.wmv *.flv *.webm *.m4v *.ts)")
+        names, _ = QFileDialog.getOpenFileNames(self, self.tr("Select videos"), "", self.tr("Video files (*.mp4 *.mkv *.mov *.avi *.wmv *.flv *.webm *.m4v *.ts)"))
         self.add_paths([Path(name) for name in names])
 
     def _choose_folder(self) -> None:
-        name = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
+        name = QFileDialog.getExistingDirectory(self, self.tr("Select video folder"))
         if name:
             self.add_paths([Path(name)])
 
     def _choose_directory(self, target: QLineEdit) -> None:
-        name = QFileDialog.getExistingDirectory(self, "选择目录", target.text())
+        name = QFileDialog.getExistingDirectory(self, self.tr("Select folder"), target.text())
         if name:
             target.setText(name)
             target.setCursorPosition(0)
@@ -634,30 +872,51 @@ class MainWindow(QMainWindow):
     def _start_device_probe(self) -> None:
         if self._device_probe.state() != QProcess.ProcessState.NotRunning:
             return
-        self.device_status_label.setText("运行设备：正在检测 CUDA…")
+        self._device_probe_state = "running"
+        self._last_device_data = None
+        self.device_status_label.setText(self.tr("Device: probing CUDA…"))
         self.device_status_label.setStyleSheet("color: #555;")
-        self.refresh_device_button.setText("检测中…")
+        self.refresh_device_button.setText(self.tr("Probing…"))
         probe_script = Path(__file__).with_name("device_probe.py")
         self._device_probe.start(sys.executable, [str(probe_script)])
 
     def _device_probe_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
-        self.refresh_device_button.setText("刷新")
+        self.refresh_device_button.setText(self.tr("Refresh"))
         if exit_code != 0:
+            self._device_probe_state = "failed"
             detail = bytes(self._device_probe.readAllStandardError()).decode("utf-8", errors="replace").strip()
-            self.device_status_label.setText("运行设备：检测失败")
+            self.device_status_label.setText(self.tr("Device: probe failed"))
             self.device_status_label.setStyleSheet("color: #c0392b;")
             self.device_status_label.setToolTip(detail)
             return
         try:
             data = json.loads(bytes(self._device_probe.readAllStandardOutput()).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            self.device_status_label.setText("运行设备：检测结果无法解析")
+            self._device_probe_state = "invalid"
+            self.device_status_label.setText(self.tr("Device: could not parse probe result"))
             self.device_status_label.setStyleSheet("color: #c0392b;")
             return
+        self._device_probe_state = "ready"
+        self._last_device_data = data
         text, colour = format_device_status(data)
         self.device_status_label.setText(text)
         self.device_status_label.setStyleSheet(f"color: {colour};")
         self.device_status_label.setToolTip(str(data.get("details") or ""))
+
+    def _refresh_device_status_text(self) -> None:
+        if self._device_probe_state == "running":
+            self.device_status_label.setText(self.tr("Device: probing CUDA…"))
+        elif self._device_probe_state == "disabled":
+            self.device_status_label.setText(self.tr("Device: automatic startup probe disabled"))
+            self.device_status_label.setStyleSheet("color: #555;")
+        elif self._device_probe_state == "failed":
+            self.device_status_label.setText(self.tr("Device: probe failed"))
+        elif self._device_probe_state == "invalid":
+            self.device_status_label.setText(self.tr("Device: could not parse probe result"))
+        elif self._last_device_data is not None:
+            text, colour = format_device_status(self._last_device_data)
+            self.device_status_label.setText(text)
+            self.device_status_label.setStyleSheet(f"color: {colour};")
 
     def _remove_selected(self) -> None:
         if self.controller.is_running:
@@ -708,17 +967,35 @@ class MainWindow(QMainWindow):
 
     def _start(self) -> None:
         if not any(task.status == TaskStatus.WAITING for task in self.tasks):
-            QMessageBox.information(self, "没有任务", "请先添加视频，或重试失败任务。")
+            QMessageBox.information(self, self.tr("No tasks"), self.tr("Add a video first, or retry failed tasks."))
             return
         config = self._config_from_ui()
         errors = config.validate()
         if errors:
-            QMessageBox.warning(self, "参数错误", "\n".join(errors))
+            messages = {
+                "asr_batch_positive": self.tr("ASR batch size must be greater than 0."),
+                "context_nonnegative": self.tr("Translation context cannot be negative."),
+                "translate_batch_nonnegative": self.tr("Translation batch size cannot be negative."),
+                "wrap_nonnegative": self.tr("Maximum characters per line cannot be negative."),
+                "subtitle_size_positive": self.tr("Subtitle font sizes must be greater than 0."),
+                "subtitle_font_required": self.tr("Subtitle font cannot be empty."),
+            }
+            colour_names = {
+                "zh": self.tr("Chinese colour"), "ja": self.tr("Japanese colour"),
+                "male": self.tr("Male speaker colour"), "female": self.tr("Female speaker colour"),
+            }
+            rendered = []
+            for issue in errors:
+                if issue.code == "ass_colour_format":
+                    rendered.append(self.tr("{field} must use ASS &HAABBGGRR format.").format(field=colour_names[str(issue.params["field"])]))
+                else:
+                    rendered.append(messages.get(issue.code, issue.code))
+            QMessageBox.warning(self, self.tr("Invalid settings"), "\n".join(rendered))
             return
         missing = missing_model_files(config)
         if missing:
             preview = "\n".join(str(path) for path in missing[:8])
-            QMessageBox.warning(self, "模型不完整", f"所选模型缺少文件：\n{preview}")
+            QMessageBox.warning(self, self.tr("Models incomplete"), self.tr("The selected models are missing files:\n{files}").format(files=preview))
             return
         self._save_settings()
         self.controller.start(self.tasks, config)
@@ -734,15 +1011,58 @@ class MainWindow(QMainWindow):
     def _open_output(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self.output_edit.text()).expanduser().resolve())))
 
+    def _open_config_folder(self) -> None:
+        config_folder = Path(self.settings.fileName()).expanduser().resolve().parent
+        config_folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_folder)))
+
+    def _open_user_guide(self) -> None:
+        filename = "README-CN.md" if self.language_manager.current_code.startswith("zh") else "README.md"
+        candidates = (PROJECT_ROOT / filename, PROJECT_ROOT / "app" / filename)
+        guide = next((path for path in candidates if path.is_file()), None)
+        if guide is None:
+            QMessageBox.warning(
+                self,
+                self.tr("User guide unavailable"),
+                self.tr("The local user guide could not be found."),
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(guide.resolve())))
+
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self,
+            self.tr("About jp2zh Subtitle Tool"),
+            self.tr(
+                "<b>jp2zh Subtitle Tool</b><br><br>"
+                "Generate Simplified-Chinese subtitles from Japanese videos with local models.<br><br>"
+                '<a href="https://github.com/chubbyk-uu/jp2zh-video-subs">Project on GitHub</a>'
+            ),
+        )
+
+    def _restore_all_defaults(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            self.tr("Restore all defaults"),
+            self.tr("Reset all GUI settings, including paths, models, appearance, and language?"),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.settings.clear()
+        self.language_manager.set_language("system")
+        self._restore_settings()
+        self.retranslate_ui()
+        self._update_model_status()
+
     def _update_model_status(self) -> None:
         config = self._config_from_ui()
         missing = missing_model_files(config)
         if missing:
-            self.model_status_label.setText(f"缺少 {len(missing)} 个模型文件")
+            self.model_status_label.setText(self.tr("{count} model files missing").format(count=len(missing)))
             self.model_status_label.setStyleSheet("color: #c0392b;")
             self.model_status_label.setToolTip("\n".join(str(path) for path in missing))
         else:
-            self.model_status_label.setText("所选模型文件完整")
+            self.model_status_label.setText(self.tr("Selected model files are complete"))
             self.model_status_label.setStyleSheet("color: #18864b;")
             self.model_status_label.setToolTip("")
 
@@ -761,6 +1081,7 @@ class MainWindow(QMainWindow):
             self.settings_group, self.common_group,
         ):
             widget.setEnabled(not running)
+        self.reset_settings_action.setEnabled(not running)
 
     def _restore_settings(self) -> None:
         defaults = GuiConfig()
@@ -796,6 +1117,12 @@ class MainWindow(QMainWindow):
         self.copy_check.setChecked(defaults.copy_to_video_dir if migrate_common_defaults else self.settings.value("copy", defaults.copy_to_video_dir, bool))
         self.speaker_check.setChecked(self.settings.value("speaker", defaults.colour_by_speaker, bool))
         self.log_toggle.setChecked(self.settings.value("show_log", True, bool))
+        self.probe_on_startup_action.setChecked(
+            self.settings.value("probe_device_on_startup", True, bool)
+        )
+        self.open_output_on_finish_action.setChecked(
+            self.settings.value("open_output_on_finish", False, bool)
+        )
         self._set_asr_batch_value(self.settings.value("asr_batch", defaults.asr_batch_size, int))
         self.context_spin.setValue(self.settings.value("context", defaults.context_size, int))
         self.batch_spin.setValue(self.settings.value("batch", defaults.translate_batch_size, int))
@@ -850,6 +1177,8 @@ class MainWindow(QMainWindow):
             "zh_colour": config.bilingual_zh_colour, "ja_colour": config.bilingual_ja_colour,
             "male_colour": config.bilingual_male_colour, "female_colour": config.bilingual_female_colour,
             "show_log": self.log_toggle.isChecked(),
+            "probe_device_on_startup": self.probe_on_startup_action.isChecked(),
+            "open_output_on_finish": self.open_output_on_finish_action.isChecked(),
         }
         for key, value in values.items():
             self.settings.setValue(key, value)
@@ -867,13 +1196,13 @@ class MainWindow(QMainWindow):
     def _set_asr_batch_value(self, value: int) -> None:
         index = self.asr_batch_combo.findData(value)
         if index < 0:
-            self.asr_batch_combo.addItem(f"自定义（批大小 {value}）", value)
+            self.asr_batch_combo.addItem(self.tr("Custom (batch size {value})").format(value=value), value)
             index = self.asr_batch_combo.count() - 1
         self.asr_batch_combo.setCurrentIndex(index)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.controller.is_running:
-            answer = QMessageBox.question(self, "任务仍在运行", "取消当前任务并退出吗？")
+            answer = QMessageBox.question(self, self.tr("Task still running"), self.tr("Cancel the current task and exit?"))
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
@@ -888,7 +1217,9 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _queue_finished(self) -> None:
-        self.current_label.setText("队列处理结束")
+        self.current_label.setText(self.tr("Queue finished"))
         if self._close_when_finished:
             self._close_when_finished = False
             self.close()
+        elif self.open_output_on_finish_action.isChecked():
+            self._open_output()

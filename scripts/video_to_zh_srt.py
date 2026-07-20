@@ -594,7 +594,13 @@ def run_stage_command(
         "ass": "正在生成双语 ASS",
         "quality": "正在生成质量报告",
     }.get(stage)
-    events.emit("stage_started", status=initial_status, **fields)
+    initial_status_key = {
+        "asr": "prepare_asr",
+        "translate": "load_translation",
+        "ass": "generate_ass",
+        "quality": "generate_quality",
+    }.get(stage)
+    events.emit("stage_started", status=initial_status, status_key=initial_status_key, status_args={}, **fields)
 
     translation_total = srt_cue_count(Path(command[2])) if stage == "translate" and len(command) > 2 else -1
     translation_done = 0
@@ -602,40 +608,59 @@ def run_stage_command(
     def report_output(line: str) -> None:
         nonlocal translation_done
         status: str | None = None
+        status_key: str | None = None
+        status_args: dict[str, int] = {}
         progress: float | None = None
         match = re.search(r"\[anime-gen\]\s+(\d+)/(\d+)", line)
         if match:
             current, total = map(int, match.groups())
             status = f"正在进行 Anime 识别（{current}/{total}）"
+            status_key, status_args = "anime_recognising", {"current": current, "total": total}
             progress = 0.15 + 0.55 * current / max(1, total)
         match = re.search(r"\[anime-align\]\s+(\d+)/(\d+)", line)
         if match:
             current, total = map(int, match.groups())
             status = f"正在进行强制对齐（{current}/{total}）"
+            status_key, status_args = "forced_alignment", {"current": current, "total": total}
             progress = 0.72 + 0.23 * current / max(1, total)
         match = re.search(r"\[(?:main|retry)\]\s+(\d+)/(\d+)", line)
         if match:
             current, total = map(int, match.groups())
             status = f"正在进行 Qwen 识别（{current}/{total}）"
+            status_key, status_args = "qwen_recognising", {"current": current, "total": total}
             progress = 0.18 + 0.72 * current / max(1, total)
         if line.startswith("semantic scenes:"):
             status, progress = "正在分析语义场景", 0.04
+            status_key = "semantic_scenes"
         elif line.startswith("WhisperSeg ready:"):
             status, progress = "正在分析语音片段", 0.08
+            status_key = "speech_segments"
         elif line.startswith("anime ASR:"):
             status, progress = "正在加载 Anime 模型", 0.12
+            status_key = "anime_loading"
         elif line.startswith("Qwen ASR:"):
             status, progress = "正在运行 Qwen 日语识别", 0.15
+            status_key = "qwen_running"
         elif line.startswith("anime done:"):
             status, progress = "正在整理日语字幕", 0.97
+            status_key = "asr_finalising"
         elif stage == "translate" and translation_total > 0:
             translated = re.match(r"(\d+):\s", line)
             if translated:
                 translation_done = min(translation_total, translation_done + 1)
                 status = f"正在翻译字幕（{translation_done}/{translation_total}）"
+                status_key = "translating"
+                status_args = {"current": translation_done, "total": translation_total}
                 progress = translation_done / translation_total
         if status is not None:
-            events.emit("stage_progress", status=status, progress=progress, **fields)
+            events.emit(
+                "stage_progress",
+                status=status,
+                status_key=status_key,
+                status_args=status_args,
+                progress=progress,
+                **fields,
+            )
 
     try:
         run(command, log, cancel_token, report_output)

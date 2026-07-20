@@ -505,6 +505,9 @@ git diff --check
 | 原生 EXE | PASS：`jp2zh字幕工具.exe` 返回 0 并启动包内 `pythonw.exe`；GUI 进程有有效窗口句柄且可正常关闭 |
 | 当前边界 | 仅 RTX 5080 一台 Windows 电脑；无第二块 NVIDIA 显卡的原生兼容性数据，因此定位为测试版候选 |
 
+上述原生 EXE 文件名是 Beta 2 的历史测试记录。国际化开发版已将后续绿色包入口改为
+`jp2zh-subtitle-tool.exe`；发布新测试版时需按新名称重新执行本节验证。
+
 ### RUN-20260717-14：Windows CUDA Beta 1 发布
 
 | 项目 | 记录值 |

@@ -68,9 +68,9 @@ class PipelineController(QObject):
             self.cancel_path.parent.mkdir(parents=True, exist_ok=True)
             self.cancel_path.touch(exist_ok=True)
         except OSError as exc:
-            self.log_received.emit(f"\n无法写入取消文件：{exc}\n")
+            self.log_received.emit("\n" + self.tr("Could not write cancellation file: {error}").format(error=exc) + "\n")
             return
-        self.log_received.emit("\n已请求取消，正在等待当前阶段安全退出……\n")
+        self.log_received.emit("\n" + self.tr("Cancellation requested; waiting for the current stage to exit safely…") + "\n")
 
     def _start_next_task(self) -> None:
         if self._stop_after_current:
@@ -85,9 +85,13 @@ class PipelineController(QObject):
         self.current_task = task
         task.status = TaskStatus.RUNNING
         task.error = ""
+        task.error_key = ""
+        task.error_args.clear()
         task.stage = None
         task.stage_index = 0
         task.completed_stages = 0
+        task.detail_key = ""
+        task.detail_args.clear()
         self.event_path = self._runtime_dir / f"{task.task_id}.events.jsonl"
         self.cancel_path = self._runtime_dir / f"{task.task_id}.cancel.requested"
         self.event_path.unlink(missing_ok=True)
@@ -113,7 +117,7 @@ class PipelineController(QObject):
         process.errorOccurred.connect(self._process_error)
         self.process = process
         self._event_timer.start()
-        self.log_received.emit(f"\n▶ 开始处理：{task.video}\n")
+        self.log_received.emit("\n" + self.tr("▶ Starting: {video}").format(video=task.video) + "\n")
         process.start(command[0], command[1:])
 
     def _read_process_output(self) -> None:
@@ -143,7 +147,7 @@ class PipelineController(QObject):
             try:
                 payload = json.loads(raw_line.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                self.log_received.emit(f"\n事件解析失败：{exc}\n")
+                self.log_received.emit("\n" + self.tr("Could not parse pipeline event: {error}").format(error=exc) + "\n")
                 continue
             self._apply_event(payload)
 
@@ -157,6 +161,8 @@ class PipelineController(QObject):
             task.stage_index = int(payload.get("stage_index", task.stage_index))
             task.stage_total = int(payload.get("stage_total", task.stage_total))
             task.stage_progress = 0.0
+            task.detail_key = str(payload.get("status_key") or "")
+            task.detail_args = dict(payload.get("status_args") or {})
             task.detail = str(payload.get("status") or "")
         elif event == "stage_progress":
             task.stage = payload.get("stage", task.stage)
@@ -166,6 +172,8 @@ class PipelineController(QObject):
                 task.stage_progress,
                 min(1.0, max(0.0, float(payload.get("progress", task.stage_progress)))),
             )
+            task.detail_key = str(payload.get("status_key") or task.detail_key)
+            task.detail_args = dict(payload.get("status_args") or task.detail_args)
             task.detail = str(payload.get("status") or task.detail)
         elif event in ("stage_completed", "stage_skipped"):
             task.stage = payload.get("stage")
@@ -173,15 +181,19 @@ class PipelineController(QObject):
             task.stage_total = int(payload.get("stage_total", task.stage_total))
             task.completed_stages = max(task.completed_stages, task.stage_index)
             task.stage_progress = 1.0
+            task.detail_key = str(payload.get("status_key") or "")
+            task.detail_args = dict(payload.get("status_args") or {})
             task.detail = str(payload.get("status") or "")
         elif event == "stage_failed":
-            task.error = str(payload.get("error", "流水线阶段失败"))
+            task.error_key = "stage_failed"
+            task.error = str(payload.get("error") or "")
         elif event == "stage_cancelled":
             task.status = TaskStatus.CANCELLED
         elif event == "job_completed":
             task.outputs = {key: Path(value) for key, value in payload.get("outputs", {}).items()}
         elif event == "job_failed":
-            task.error = str(payload.get("error", "任务失败"))
+            task.error_key = "job_failed"
+            task.error = str(payload.get("error") or "")
         self.task_updated.emit(task)
         self._emit_overall_progress()
 
@@ -194,7 +206,7 @@ class PipelineController(QObject):
             if exit_status == QProcess.ExitStatus.CrashExit:
                 task.status = TaskStatus.FAILED
                 if not task.error:
-                    task.error = "流水线进程异常崩溃"
+                    task.error_key = "process_crashed"
             elif exit_code == 0:
                 task.status = TaskStatus.COMPLETED
                 task.completed_stages = task.stage_total
@@ -204,7 +216,8 @@ class PipelineController(QObject):
             else:
                 task.status = TaskStatus.FAILED
                 if not task.error:
-                    task.error = f"流水线退出码：{exit_code}"
+                    task.error_key = "exit_code"
+                    task.error_args = {"code": exit_code}
             self.task_updated.emit(task)
         self.process = None
         process = self.sender()
@@ -219,7 +232,7 @@ class PipelineController(QObject):
             return
         task = self.current_task
         task.status = TaskStatus.FAILED
-        task.error = "无法启动流水线进程"
+        task.error_key = "failed_to_start"
         self.task_updated.emit(task)
         self._event_timer.stop()
         if self.process is not None:
@@ -257,4 +270,4 @@ class PipelineController(QObject):
         except FileNotFoundError:
             pass
         except OSError as exc:
-            self.log_received.emit(f"\n无法清理 GUI 运行时文件：{exc}\n")
+            self.log_received.emit("\n" + self.tr("Could not clean GUI runtime files: {error}").format(error=exc) + "\n")

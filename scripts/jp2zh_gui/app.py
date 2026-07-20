@@ -3,11 +3,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, QSettings
+from PySide6.QtCore import QCoreApplication, QLockFile, QSettings
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from portable_runtime import portable_config_path, single_instance_lock_path
+from .i18n import LanguageManager
 from .window import MainWindow
 
 
@@ -24,17 +25,23 @@ def main() -> int:
     application.setApplicationName("jp2zh-video-subs")
     icon_path = Path(__file__).with_name("assets") / "app-icon.png"
     application.setWindowIcon(QIcon(str(icon_path)))
-    instance_lock = acquire_instance_lock()
-    if instance_lock is None:
-        QMessageBox.warning(None, "程序已在运行", "jp2zh 字幕工具已经在运行。")
-        return 1
     config_path = portable_config_path()
     settings = (
         QSettings(str(config_path), QSettings.Format.IniFormat)
         if config_path is not None
         else QSettings("jp2zh-video-subs", "jp2zh-video-subs")
     )
-    window = MainWindow(settings=settings)
+    language_manager = LanguageManager(application, settings)
+    language_manager.start()
+    instance_lock = acquire_instance_lock()
+    if instance_lock is None:
+        QMessageBox.warning(
+            None,
+            QCoreApplication.translate("Application", "Application already running"),
+            QCoreApplication.translate("Application", "jp2zh Subtitle Tool is already running."),
+        )
+        return 1
+    window = MainWindow(settings=settings, language_manager=language_manager)
     window.show()
     # Keep the QLockFile alive until the QApplication event loop exits.
     return application.exec()

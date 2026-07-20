@@ -43,6 +43,13 @@ rsync -a --delete \
     --exclude '*.pyc' \
     "$source_root/scripts/" "$package_root/app/scripts/"
 
+for catalog in languages.json jp2zh_zh_CN.qm jp2zh_zh_TW.qm; do
+    if [[ ! -f "$package_root/app/scripts/jp2zh_gui/translations/$catalog" ]]; then
+        echo "Missing GUI language catalog: $catalog" >&2
+        exit 5
+    fi
+done
+
 install -m 0644 "$source_root/README.md" "$package_root/app/README.md"
 install -m 0644 "$source_root/README-CN.md" "$package_root/app/README-CN.md"
 install -m 0644 "$source_root/THIRD_PARTY_NOTICES.md" "$package_root/app/THIRD_PARTY_NOTICES.md"
@@ -51,9 +58,14 @@ install -m 0644 "$source_root/requirements.txt" "$package_root/app/requirements.
 install -m 0644 "$source_root/requirements-gui.txt" "$package_root/app/requirements-gui.txt"
 install -m 0644 "$source_root/packaging/windows/runtime-versions.txt" "$package_root/config/runtime-versions.txt"
 install -m 0644 "$source_root/packaging/windows/runtime-lock.txt" "$package_root/config/runtime-lock.txt"
-install -m 0644 "$source_root/packaging/windows/launch.cmd" "$package_root/启动字幕工具.cmd"
-install -m 0644 "$source_root/packaging/windows/launch-debug.cmd" "$package_root/启动字幕工具-调试.cmd"
+install -m 0644 "$source_root/packaging/windows/launch.cmd" "$package_root/launch.cmd"
+install -m 0644 "$source_root/packaging/windows/launch-debug.cmd" "$package_root/launch-debug.cmd"
 install -m 0644 "$source_root/packaging/windows/launch-env.cmd" "$package_root/launch-env.cmd"
 "$source_root/packaging/windows/build-launcher.sh" "$source_root" "$package_root"
+for legacy_entry in "$package_root/启动字幕工具.cmd" "$package_root/启动字幕工具-调试.cmd"; do
+    if [[ -e "$legacy_entry" ]]; then
+        unlink "$legacy_entry"
+    fi
+done
 
 printf 'Portable layout staged at %s\n' "$package_root"

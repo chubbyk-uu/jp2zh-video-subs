@@ -264,6 +264,9 @@ Windows 上最直接的入口是
    `INSTALL-CN.txt` 使用包内 `runtime\Scripts\hf.exe` 下载必需模型。
 4. 双击 `jp2zh字幕工具.exe`。
 
+这个文件名仅适用于已经发布的 Beta 2 压缩包。当前开发版及下一个绿色测试版改用与界面语言无关的
+`jp2zh-subtitle-tool.exe`。
+
 不需要安装系统 Python、FFmpeg 或 CUDA Toolkit，但必须有正常的 NVIDIA 显卡驱动。
 Release 不包含模型权重、用户或示例视频、字幕等内容。第一次启动时，模型完整性提示会列出尚未下载的文件。
 `models\whisperseg\model.onnx` 缺失时，设备栏会显示“语音切分 未检测（缺少模型）”，不再猜测为

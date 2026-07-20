@@ -1,3 +1,44 @@
-#define IDI_APP_ICON 101
+#include <windows.h>
+#include "launcher_resources.h"
+#pragma code_page(65001)
 
 IDI_APP_ICON ICON "../../scripts/jp2zh_gui/assets/app-icon.ico"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE "jp2zh Subtitle Tool"
+    IDS_ERROR_EXE_DIR "Could not determine the application folder."
+    IDS_ERROR_INVALID_PATH "The launcher path is invalid."
+    IDS_ERROR_PATH_TOO_LONG "The portable folder path is too long."
+    IDS_ERROR_INCOMPLETE "The portable folder is incomplete: embedded Python or the GUI script is missing."
+    IDS_ERROR_ENVIRONMENT "Could not initialise the portable runtime environment."
+    IDS_ERROR_START_FORMAT "Could not start the GUI (Windows error %lu)."
+    IDS_ERROR_START_GENERIC "Could not start the GUI."
+END
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE "jp2zh 字幕工具"
+    IDS_ERROR_EXE_DIR "无法确定程序所在目录。"
+    IDS_ERROR_INVALID_PATH "启动路径无效。"
+    IDS_ERROR_PATH_TOO_LONG "绿色目录路径过长。"
+    IDS_ERROR_INCOMPLETE "绿色版文件不完整：找不到内置 Python 或 GUI 脚本。"
+    IDS_ERROR_ENVIRONMENT "无法初始化绿色版运行环境。"
+    IDS_ERROR_START_FORMAT "无法启动 GUI（Windows 错误 %lu）。"
+    IDS_ERROR_START_GENERIC "无法启动 GUI。"
+END
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE "jp2zh 字幕工具"
+    IDS_ERROR_EXE_DIR "無法判斷程式所在資料夾。"
+    IDS_ERROR_INVALID_PATH "啟動路徑無效。"
+    IDS_ERROR_PATH_TOO_LONG "免安裝版資料夾路徑過長。"
+    IDS_ERROR_INCOMPLETE "免安裝版檔案不完整：找不到內建 Python 或 GUI 指令碼。"
+    IDS_ERROR_ENVIRONMENT "無法初始化免安裝版執行環境。"
+    IDS_ERROR_START_FORMAT "無法啟動 GUI（Windows 錯誤 %lu）。"
+    IDS_ERROR_START_GENERIC "無法啟動 GUI。"
+END

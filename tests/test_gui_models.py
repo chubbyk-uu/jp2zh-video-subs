@@ -53,10 +53,13 @@ def test_gui_config_builds_pipeline_command(tmp_path):
 
 def test_gui_config_rejects_invalid_common_values():
     config = GuiConfig(context_size=-1, translate_batch_size=-2, display_wrap_max_chars=-3, bilingual_font="")
-    with pytest.raises(ValueError, match="上下文"):
+    assert {issue.code for issue in config.validate()} == {
+        "context_nonnegative", "translate_batch_nonnegative", "wrap_nonnegative", "subtitle_font_required"
+    }
+    with pytest.raises(ValueError, match="context_nonnegative"):
         config.build_command(Path("a.mp4"), Path("events"), Path("cancel"))
 
-    with pytest.raises(ValueError, match="ASS"):
+    with pytest.raises(ValueError, match="ass_colour_format"):
         GuiConfig(bilingual_zh_colour="#ffff00").build_command(Path("a.mp4"), Path("events"), Path("cancel"))
 
 

@@ -100,7 +100,8 @@ args, _ = p.parse_known_args()
 events = [
     {'event': 'stage_started', 'stage': 'asr', 'stage_index': 2, 'stage_total': 6},
     {'event': 'stage_progress', 'stage': 'asr', 'stage_index': 2, 'stage_total': 6,
-     'progress': 0.5, 'status': '正在进行 Anime 识别（5/10）'},
+     'progress': 0.5, 'status': '正在进行 Anime 识别（5/10）',
+     'status_key': 'anime_recognising', 'status_args': {'current': 5, 'total': 10}},
     {'event': 'stage_completed', 'stage': 'asr', 'stage_index': 2, 'stage_total': 6},
     {'event': 'stage_skipped', 'stage': 'translate', 'stage_index': 3, 'stage_total': 6},
     {'event': 'stage_skipped', 'stage': 'ass', 'stage_index': 4, 'stage_total': 6},
@@ -143,7 +144,9 @@ def test_controller_applies_detailed_status_and_monotonic_stage_progress(tmp_pat
     task = GuiTask(tmp_path / "one.mp4")
     controller = PipelineController(pipeline_script=fake_pipeline)
     seen = []
-    controller.task_updated.connect(lambda updated: seen.append((updated.status_text, updated.progress_percent)))
+    controller.task_updated.connect(
+        lambda updated: seen.append((updated.detail_key, dict(updated.detail_args), updated.progress_percent))
+    )
 
     controller.start(
         [task],
@@ -151,7 +154,7 @@ def test_controller_applies_detailed_status_and_monotonic_stage_progress(tmp_pat
     )
 
     assert wait_for_queue(controller)
-    assert ("正在进行 Anime 识别（5/10）", 32) in seen
+    assert ("anime_recognising", {"current": 5, "total": 10}, 32) in seen
     assert task.status == TaskStatus.COMPLETED
 
 
@@ -183,7 +186,8 @@ def test_controller_treats_crash_exit_as_failure_even_with_zero_exit_code(tmp_pa
     controller._process_finished(0, QProcess.ExitStatus.CrashExit)
 
     assert task.status == TaskStatus.FAILED
-    assert task.error == "流水线进程异常崩溃"
+    assert task.error_key == "process_crashed"
+    assert task.error == ""
 
 
 def test_controller_removes_its_runtime_directory_after_queue(tmp_path):

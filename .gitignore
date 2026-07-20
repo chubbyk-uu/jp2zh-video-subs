@@ -16,6 +16,7 @@ outputs/*
 *.webm
 *.m4v
 *.ts
+!scripts/jp2zh_gui/translations/*.ts
 
 # Python
 __pycache__/
