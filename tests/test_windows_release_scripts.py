@@ -46,3 +46,12 @@ def test_portable_setup_guides_are_current_and_staged():
         assert "jp2zh-subtitle-tool.exe" in guide
         assert "jp2zh字幕工具.exe" not in guide
         assert "Sugoi-14B-Ultra-Q4_K_M.gguf" in guide
+
+
+def test_program_only_release_can_be_extracted_without_model_archives():
+    extract = script_text("extract-release-candidate.sh")
+    assert "[program|all]" in extract
+    assert 'if [[ "$target" == all ]]' in extract
+    assert 'INSTALL-CN.txt' in extract
+    assert 'INSTALL-EN.txt' in extract
+    assert 'find "$extract_root/jp2zh-video-subs/models"' in extract
