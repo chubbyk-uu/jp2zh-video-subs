@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文说明
 
-这个项目用于从本地日语视频生成简体中文、繁体中文或英文 SRT，并默认生成“译文在上、日文在下”的双语 ASS。下载好模型后，推理过程全部在本地完成。
+这个项目用于从本地日语视频生成简体中文、繁体中文或实验性英文 SRT，并默认生成“译文在上、日文在下”的双语 ASS。下载好模型后，推理过程全部在本地完成。
 
 Windows 用户建议直接使用
 [`v0.1.0 Beta 2` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.2)。
@@ -19,10 +19,10 @@ Windows 用户建议直接使用
 
 - **`galtransl`（默认）**——`Sakura-GalTransl-7B-v3.7`，针对视觉小说台词做了 GRPO 强化训练的日译中模型。比 Sakura-14B 更小更快、译文更口语，原生支持 `src->dst #备注` 格式的术语表。
 - **`sakura`**——`Sakura-14B-Qwen2.5-v1.0`，更大的轻小说/galgame 模型，更重，但在长难句上可作第二意见。
-- **`sugoi`**——`Sugoi-14B-Ultra`，日译英后端。默认按带编号的 10 条批量翻译，严格校验编号，并带拆分重试和逐条兜底。
+- **`sugoi`（实验性）**——`Sugoi-14B-Ultra`，日译英后端。默认按带编号的 10 条批量翻译，严格校验编号，并带拆分重试和逐条兜底。英文输出仍需人工复核，尤其是人名、说话方向和 ASR 已经听错的台词。
 
 `galtransl`/`sakura` 先生成简体中文；繁体中文随后使用包内 OpenCC 的通用 `s2t`
-转换。英文只使用 `sugoi`。GUI 会自动限制为兼容组合。
+转换。实验性英文只使用 `sugoi`。GUI 会自动限制为兼容组合。
 
 逐项对比与选型建议见 [docs/BACKENDS.md](docs/BACKENDS.md)。
 
@@ -138,7 +138,7 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 可选对比模型：
 
 - Qwen 对比线：[`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
-- 英文翻译：[`sugoitoolkit/Sugoi-14B-Ultra-GGUF`](https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF)
+- 实验性英文翻译：[`sugoitoolkit/Sugoi-14B-Ultra-GGUF`](https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF)
 
 `hf` 命令由 `requirements.txt` 里的 `huggingface-hub` 提供。下载到脚本默认目录：
 
@@ -197,7 +197,7 @@ hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
   --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
-英文输出（`--target-language en`）需要 Sugoi 14B Ultra：
+实验性英文输出（`--target-language en`）需要 Sugoi 14B Ultra：
 
 ```bash
 hf download sugoitoolkit/Sugoi-14B-Ultra-GGUF \
@@ -246,7 +246,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
 # 繁体中文（中文模型输出后使用通用 OpenCC s2t）
 python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language zh-Hant
 
-# 英文（兼容后端为 Sugoi）
+# 实验性英文（兼容后端为 Sugoi，建议人工复核）
 python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language en --translator sugoi
 ```
 
@@ -295,8 +295,8 @@ Release 不包含模型权重、用户或示例视频、字幕等内容。第一
 `models\whisperseg\model.onnx` 缺失时，设备栏会显示“语音切分 未检测（缺少模型）”，不再猜测为
 CPU。模型存在时才通过真实 ONNX Runtime 会话显示 CUDA、CPU 或检测失败；更改模型文件后点击“刷新”重新检测。
 
-GUI 支持拖入视频或文件夹、可见任务队列、Anime/Qwen 识别、独立的简体中文/繁体中文/英文字幕目标、兼容的 GalTransl/Sakura/Sugoi 模型选择、
-常用字幕参数、总体进度与详细阶段状态、可折叠日志、取消、失败重试、设置记忆、模型文件检查，
+GUI 支持拖入视频或文件夹、可见任务队列、Anime/Qwen 识别、独立的简体中文/繁体中文/实验性英文字幕目标、兼容的 GalTransl/Sakura/Sugoi 模型选择、
+常用字幕参数、总体进度与详细阶段状态、可折叠日志、取消、设置记忆、模型文件检查，
 以及成功后的中间产物清理。文件夹会展开为视频列表并逐个处理，避免多个模型实例叠加显存。
 
 Windows 包内置 Python 3.12、FFmpeg、PyTorch CUDA、ONNX Runtime CUDA 和启用 CUDA 的

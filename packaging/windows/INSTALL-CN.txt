@@ -1,0 +1,55 @@
+jp2zh-video-subs Windows CUDA 绿色版安装说明
+================================================
+
+程序包不包含模型权重、用户视频或示例字幕。解压后无需另装 Python、FFmpeg 或 CUDA Toolkit，
+但 Windows 必须已安装可用的 NVIDIA 驱动。
+
+1. 解压程序包
+
+- 下载 jp2zh-video-subs-windows-x64-cuda-program.7z.001 及所有同名后续分卷。
+- 将 .001、.002 等全部分卷放在同一目录。
+- 使用 7-Zip 或 NanaZip，只解压 .7z.001；不要单独解压 .002。
+
+例如解压到 D:\Tools 后，程序根目录为：
+
+D:\Tools\jp2zh-video-subs\
+
+2. 下载默认模型
+
+在程序根目录的文件资源管理器地址栏输入 cmd 并回车，然后逐条执行：
+
+runtime\Scripts\hf.exe download litagin/anime-whisper --local-dir models\anime-whisper
+
+runtime\Scripts\hf.exe download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx model.onnx --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c --local-dir models\whisperseg
+
+runtime\Scripts\hf.exe download Qwen/Qwen3-ForcedAligner-0.6B --local-dir models\Qwen3-ForcedAligner-0.6B
+
+runtime\Scripts\hf.exe download SakuraLLM/Sakura-GalTransl-7B-v3.7 Sakura-Galtransl-7B-v3.7.gguf --local-dir models\Sakura-GalTransl-7B-v3.7-GGUF
+
+默认 Anime + GalTransl 简体中文/繁体中文流程需要上述四个模型。
+
+3. 可选模型
+
+Qwen ASR：
+runtime\Scripts\hf.exe download Qwen/Qwen3-ASR-1.7B --local-dir models\Qwen3-ASR-1.7B
+
+Sakura 14B 中文翻译：
+runtime\Scripts\hf.exe download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF sakura-14b-qwen2.5-v1.0-iq4xs.gguf --local-dir models\Sakura-14B-Qwen2.5-v1.0-GGUF
+
+Sugoi 14B 实验性英文翻译（英文输出建议人工复核）：
+runtime\Scripts\hf.exe download sugoitoolkit/Sugoi-14B-Ultra-GGUF Sugoi-14B-Ultra-Q4_K_M.gguf --local-dir models\Sugoi-14B-Ultra-GGUF
+
+说话人性别着色：
+runtime\Scripts\hf.exe download JaesungHuh/voice-gender-classifier --local-dir models\voice-gender-classifier
+
+4. 启动
+
+双击 jp2zh-subtitle-tool.exe。
+
+界面可切换简体中文、繁体中文和英文。字幕目标支持简体中文、繁体中文及实验性英文；
+英文目标会使用 Sugoi，且翻译结果建议人工复核。
+
+5. 校验
+
+- SHA256SUMS 用于校验按顺序重组后的原始 .7z 程序包。
+- SHA256SUMS.parts 用于直接校验下载的各个分卷。

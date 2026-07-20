@@ -1,0 +1,56 @@
+jp2zh-video-subs Windows CUDA Portable Setup
+================================================
+
+The application archive contains no model weights, user videos, or sample subtitles. It needs no
+system Python, FFmpeg, or CUDA Toolkit, but Windows must have a working NVIDIA driver.
+
+1. Extract the application
+
+- Download jp2zh-video-subs-windows-x64-cuda-program.7z.001 and every following volume with the same base name.
+- Place .001, .002, and all other volumes in the same directory.
+- With 7-Zip or NanaZip, extract only .7z.001. Do not extract .002 separately.
+
+For example, after extracting to D:\Tools, the application root is:
+
+D:\Tools\jp2zh-video-subs\
+
+2. Download the default models
+
+Open the application root in File Explorer, type cmd in the address bar, press Enter, and run each command:
+
+runtime\Scripts\hf.exe download litagin/anime-whisper --local-dir models\anime-whisper
+
+runtime\Scripts\hf.exe download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx model.onnx --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c --local-dir models\whisperseg
+
+runtime\Scripts\hf.exe download Qwen/Qwen3-ForcedAligner-0.6B --local-dir models\Qwen3-ForcedAligner-0.6B
+
+runtime\Scripts\hf.exe download SakuraLLM/Sakura-GalTransl-7B-v3.7 Sakura-Galtransl-7B-v3.7.gguf --local-dir models\Sakura-GalTransl-7B-v3.7-GGUF
+
+The default Anime + GalTransl Simplified/Traditional Chinese workflow requires all four models above.
+
+3. Optional models
+
+Qwen ASR:
+runtime\Scripts\hf.exe download Qwen/Qwen3-ASR-1.7B --local-dir models\Qwen3-ASR-1.7B
+
+Sakura 14B Chinese translation:
+runtime\Scripts\hf.exe download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF sakura-14b-qwen2.5-v1.0-iq4xs.gguf --local-dir models\Sakura-14B-Qwen2.5-v1.0-GGUF
+
+Sugoi 14B experimental English translation (manual review recommended):
+runtime\Scripts\hf.exe download sugoitoolkit/Sugoi-14B-Ultra-GGUF Sugoi-14B-Ultra-Q4_K_M.gguf --local-dir models\Sugoi-14B-Ultra-GGUF
+
+Speaker-gender colouring:
+runtime\Scripts\hf.exe download JaesungHuh/voice-gender-classifier --local-dir models\voice-gender-classifier
+
+4. Start the application
+
+Double-click jp2zh-subtitle-tool.exe.
+
+The interface supports Simplified Chinese, Traditional Chinese, and English. Subtitle targets are
+Simplified Chinese, Traditional Chinese, and experimental English. English uses Sugoi and should be
+reviewed manually.
+
+5. Verify downloads
+
+- SHA256SUMS verifies the original .7z application archive after its volumes are reassembled in order.
+- SHA256SUMS.parts verifies the downloaded split volumes directly.

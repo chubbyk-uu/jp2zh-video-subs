@@ -12,7 +12,7 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from jp2zh_gui.i18n import LanguageManager, load_language_specs, resolve_language_code
-from jp2zh_gui.models import AsrPreset, GuiTask, TaskStatus
+from jp2zh_gui.models import AsrPreset, GuiTask, TargetLanguage, TaskStatus
 import jp2zh_gui.window as window_module
 from jp2zh_gui.window import MainWindow
 
@@ -78,17 +78,25 @@ def test_runtime_language_switch_preserves_values_and_rerenders_tasks(tmp_path):
     try:
         assert window.windowTitle() == "日语视频中文字幕工具"
         assert "正在进行 Anime 识别" in window.task_table.item(0, 1).text()
+        english_index = window.target_language_combo.findData(TargetLanguage.ENGLISH.value)
+        assert window.target_language_combo.itemText(english_index) == "英文（实验性）"
 
         manager.set_language("en")
         app.processEvents()
         assert window.windowTitle() == "Japanese Video Subtitle Tool"
         assert "Running Anime recognition" in window.task_table.item(0, 1).text()
+        assert window.target_language_combo.itemText(english_index) == "English (Experimental)"
         assert window.asr_combo.currentData() == AsrPreset.QWEN.value
         assert task.detail_args == {"current": 5, "total": 12}
 
         manager.set_language("zh_TW")
         app.processEvents()
         assert window.windowTitle() == "日文影片中文字幕工具"
+        assert window.target_language_combo.itemText(english_index) == "英文（實驗性）"
+        assert window.open_work_button.text() == "開啟工作資料夾"
+        assert window.open_output_button.text() == "開啟輸出資料夾"
+        assert "工作資料夾" in window.guidance_label.text()
+        assert "輸出資料夾" in window.guidance_label.text()
         assert window.language_actions["zh_TW"].isChecked()
     finally:
         window.close()

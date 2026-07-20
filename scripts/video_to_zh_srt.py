@@ -1090,7 +1090,7 @@ def main() -> None:
         "--target-language",
         choices=tuple(item.value for item in TargetLanguage),
         default=TargetLanguage.SIMPLIFIED_CHINESE.value,
-        help="Subtitle output language: zh-Hans, zh-Hant, or en (default zh-Hans)",
+        help="Subtitle output language: zh-Hans, zh-Hant, or experimental en (default zh-Hans)",
     )
     parser.add_argument(
         "--translator",
@@ -1099,7 +1099,7 @@ def main() -> None:
         help="Translation backend (default galtransl). 'galtransl' uses "
         "Sakura-GalTransl-7B-v3.7 (visual-novel dialogue, smaller/faster, more "
         "colloquial); 'sakura' uses Sakura-14B-Qwen2.5-v1.0 (light-novel style); "
-        "'sugoi' translates Japanese to English with Sugoi 14B Ultra.",
+        "'sugoi' provides experimental Japanese-to-English translation with Sugoi 14B Ultra.",
     )
     parser.add_argument(
         "--asr",

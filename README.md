@@ -2,7 +2,7 @@
 
 English | [Chinese](README-CN.md)
 
-This project generates Simplified Chinese, Traditional Chinese, or English SRT subtitles
+This project generates Simplified Chinese, Traditional Chinese, or experimental English SRT subtitles
 from local Japanese video files and writes a target-language/Japanese bilingual ASS by
 default. Inference runs fully offline after the required models are downloaded.
 
@@ -22,10 +22,10 @@ It ships two transcription backends, selectable with `--asr`:
 
 - **`galtransl` (default)** — `Sakura-GalTransl-7B-v3.7`, a Japanese→Chinese model GRPO-tuned for visual-novel dialogue. Smaller and faster than Sakura-14B with more colloquial output; follows a terminology table natively in its native `src->dst #note` format.
 - **`sakura`** — `Sakura-14B-Qwen2.5-v1.0`, a larger light-novel/galgame model. Heavier but a useful second opinion on long, complex lines.
-- **`sugoi`** — `Sugoi-14B-Ultra`, the Japanese→English backend. It translates numbered batches of ten with strict identifier validation, split/retry, and per-line fallback.
+- **`sugoi` (experimental)** — `Sugoi-14B-Ultra`, the Japanese→English backend. It translates numbered batches of ten with strict identifier validation, split/retry, and per-line fallback. English output still needs manual review, especially for names, speaker direction, and ASR-corrupted dialogue.
 
 `galtransl` and `sakura` produce Simplified Chinese; Traditional Chinese applies bundled
-OpenCC `s2t` conversion afterward. English requires `sugoi`. The GUI enforces these compatible
+OpenCC `s2t` conversion afterward. Experimental English requires `sugoi`. The GUI enforces these compatible
 combinations automatically.
 
 See [docs/BACKENDS.md](docs/BACKENDS.md) (Chinese) for feature-by-feature backend comparisons.
@@ -155,7 +155,7 @@ Default one-command models:
 Optional comparison models:
 
 - Qwen ASR comparison: [`Qwen/Qwen3-ASR-1.7B`](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
-- English translation: [`sugoitoolkit/Sugoi-14B-Ultra-GGUF`](https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF)
+- Experimental English translation: [`sugoitoolkit/Sugoi-14B-Ultra-GGUF`](https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF)
 
 The `hf` command is installed by `huggingface-hub` from `requirements.txt`. Download
 models to the default paths:
@@ -215,7 +215,7 @@ hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
   --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
-English output (`--target-language en`) needs Sugoi 14B Ultra:
+Experimental English output (`--target-language en`) needs Sugoi 14B Ultra:
 
 ```bash
 hf download sugoitoolkit/Sugoi-14B-Ultra-GGUF \
@@ -266,7 +266,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
 # Traditional Chinese (GalTransl/Sakura output followed by generic OpenCC s2t)
 python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language zh-Hant
 
-# English (Sugoi is the compatible backend)
+# Experimental English (Sugoi is the compatible backend; manual review recommended)
 python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language en --translator sugoi
 ```
 
@@ -323,8 +323,8 @@ CUDA, CPU, or a probe failure from a real ONNX Runtime session; use **Refresh** 
 model files.
 
 The GUI supports video/folder drag-and-drop, a visible task queue, Anime/Qwen ASR, independent
-Simplified Chinese/Traditional Chinese/English subtitle targets, compatible GalTransl/Sakura/Sugoi selection, common subtitle settings, live overall progress with detailed stage
-status, collapsible logs, cancellation, retry, remembered settings, model-file checks, and
+Simplified Chinese/Traditional Chinese/experimental English subtitle targets, compatible GalTransl/Sakura/Sugoi selection, common subtitle settings, live overall progress with detailed stage
+status, collapsible logs, cancellation, remembered settings, model-file checks, and
 successful-job cleanup policies. Expanded videos run sequentially so multiple model instances
 do not stack their VRAM usage.
 

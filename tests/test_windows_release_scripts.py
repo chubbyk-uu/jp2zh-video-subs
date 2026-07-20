@@ -29,3 +29,13 @@ def test_sugoi_model_package_is_supported_across_release_lifecycle():
 def test_program_stage_still_excludes_all_model_weights():
     prepare = script_text("prepare-release-candidate.sh")
     assert "--exclude '/models/***'" in prepare
+
+
+def test_portable_setup_guides_are_current_and_staged():
+    stage = script_text("stage-portable.sh")
+    for name in ("INSTALL-CN.txt", "INSTALL-EN.txt"):
+        guide = script_text(name)
+        assert name in stage
+        assert "jp2zh-subtitle-tool.exe" in guide
+        assert "jp2zh字幕工具.exe" not in guide
+        assert "Sugoi-14B-Ultra-Q4_K_M.gguf" in guide

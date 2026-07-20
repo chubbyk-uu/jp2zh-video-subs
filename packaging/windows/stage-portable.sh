@@ -52,6 +52,8 @@ done
 
 install -m 0644 "$source_root/README.md" "$package_root/app/README.md"
 install -m 0644 "$source_root/README-CN.md" "$package_root/app/README-CN.md"
+install -m 0644 "$source_root/packaging/windows/INSTALL-CN.txt" "$package_root/INSTALL-CN.txt"
+install -m 0644 "$source_root/packaging/windows/INSTALL-EN.txt" "$package_root/INSTALL-EN.txt"
 install -m 0644 "$source_root/THIRD_PARTY_NOTICES.md" "$package_root/app/THIRD_PARTY_NOTICES.md"
 install -m 0644 "$source_root/THIRD_PARTY_NOTICES.md" "$package_root/THIRD_PARTY_NOTICES.md"
 install -m 0644 "$source_root/requirements.txt" "$package_root/app/requirements.txt"

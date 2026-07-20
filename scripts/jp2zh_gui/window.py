@@ -746,7 +746,7 @@ class MainWindow(QMainWindow):
         self._replace_combo_labels(self.target_language_combo, {
             TargetLanguage.SIMPLIFIED_CHINESE.value: self.tr("Simplified Chinese"),
             TargetLanguage.TRADITIONAL_CHINESE.value: self.tr("Traditional Chinese"),
-            TargetLanguage.ENGLISH.value: self.tr("English"),
+            TargetLanguage.ENGLISH.value: self.tr("English (Experimental)"),
         })
         self.refresh_device_button.setText(self.tr("Probing…") if self._device_probe_state == "running" else self.tr("Refresh"))
         self.output_label.setText(self.tr("Output folder"))
@@ -1248,7 +1248,7 @@ class MainWindow(QMainWindow):
             self.tr("About jp2zh Subtitle Tool"),
             self.tr(
                 "<b>jp2zh Subtitle Tool</b><br><br>"
-                "Generate Chinese or English subtitles from Japanese videos with local models.<br><br>"
+                "Generate Chinese or experimental English subtitles from Japanese videos with local models.<br><br>"
                 '<a href="https://github.com/chubbyk-uu/jp2zh-video-subs">Project on GitHub</a>'
             ),
         )

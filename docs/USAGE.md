@@ -50,7 +50,7 @@ TOML 必须是扁平结构；`[asr]`、`[translation]` 这类 section 会被拒�
 - 语气词重复拼接折叠：共享 qwen/anime 子脚本默认开启，但只折叠至少 3 次、且每次都由明确标点分隔的失控 filler loop。无标点重复和正常双重复（如「ふふっ」「ねえねえ」「あ、ああ」）保留。anime 可用 `--no-anime-collapse-filler-repetition` 做 A/B，qwen 用 `--no-qwen-collapse-filler-repetition`。
 - 通用失控重复折叠：共享 qwen/anime 子脚本默认开启。类似「行く」连续重复很多次的短语 flood 会在最终字幕前折成两个，普通 2-3 次强调会保留。
 - 翻译后端：`galtransl`（`models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf`）；用 `--translator sakura` 切 Sakura-14B
-- 字幕目标：默认简体中文 `zh-Hans`；`zh-Hant` 在中文翻译后使用 OpenCC 通用 `s2t`；`en` 使用 `sugoi`
+- 字幕目标：默认简体中文 `zh-Hans`；`zh-Hant` 在中文翻译后使用 OpenCC 通用 `s2t`；实验性 `en` 使用 `sugoi`
 - 识别语言：日语 `ja`
 - 翻译上下文：GalTransl/Sakura 默认前 6 轮；设为 0 则逐句独立翻译。Sugoi 不支持该参数，GUI 会禁用它，CLI 显式传入会在启动时拒绝。
 - 批量翻译：GalTransl 默认 8 条，Sugoi 默认 10 条；`0` 和 `1` 都表示逐条翻译；Sakura 不使用该参数。GalTransl 依赖逐行契约并拆分重试；Sugoi 使用严格编号校验、拆分重试和逐条兜底。两者都不会因批量结构错误而丢失输出槽位。
@@ -121,7 +121,7 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --asr qwen
 python scripts/video_to_zh_srt.py path/to/input.mp4 --translator sakura
 ```
 
-输出繁体中文或英文：
+输出繁体中文或实验性英文（英文建议人工复核）：
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/input.mp4 --target-language zh-Hant
@@ -228,8 +228,8 @@ python scripts/run_gui.py
 主窗口支持：
 
 - 拖入一个或多个视频、拖入文件夹并可选递归扫描；
-- 任务去重、移除、清空，以及失败/取消任务重试；
-- Anime/Qwen ASR 和 GalTransl/Sakura 翻译模型选择及本地文件完整性提示；
+- 任务去重、移除和清空；失败或取消的任务可移除后重新加入；
+- Anime/Qwen ASR、简体中文/繁体中文/实验性英文字幕目标、兼容的 GalTransl/Sakura/Sugoi 翻译模型选择及本地文件完整性提示；
 - 输出/工作目录、双语 ASS、质量报告、断点续跑、字幕复制，以及直接影响 ASR 显存与速度的
   批大小策略（性能优先 24、均衡 16、低显存 8、稳定优先 4；默认 24，建议 14 GB 以上
   显存使用，显存不足时逐档降低）；
@@ -354,7 +354,7 @@ python scripts/translate_srt_sakura.py work/input/input.ja.srt \
   --min-display-seconds 1.5
 ```
 
-已有日语 SRT，用 Sugoi 翻译为英文：
+已有日语 SRT，用 Sugoi 翻译为实验性英文（建议人工复核）：
 
 ```bash
 python scripts/translate_srt_sugoi.py work/input/input.ja.srt \
