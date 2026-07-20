@@ -10,7 +10,7 @@ from PySide6.QtCore import QProcess, QSettings, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QListWidget, QMessageBox
 
-from jp2zh_gui.models import CleanupPolicy, GuiTask, TaskStatus
+from jp2zh_gui.models import CleanupPolicy, GuiTask, TaskStatus, TranslatorPreset
 import jp2zh_gui.window as window_module
 from jp2zh_gui.window import MainWindow, format_device_status
 
@@ -153,6 +153,29 @@ def test_advanced_wrap_can_be_disabled(tmp_path):
         window.advanced_dialog.wrap_check.setChecked(True)
         window.wrap_spin.setValue(20)
         assert window._config_from_ui().display_wrap_max_chars == 20
+    finally:
+        window.close()
+
+
+def test_translation_batch_is_disabled_for_sakura(tmp_path):
+    application()
+    window = MainWindow(settings=window_settings(tmp_path))
+    try:
+        assert window.translator_combo.currentData() == TranslatorPreset.GALTRANSL.value
+        assert window.batch_spin.isEnabled()
+        assert window.advanced_dialog.batch_label.text() == "翻译批大小（仅 GalTransl 生效）"
+
+        window.translator_combo.setCurrentIndex(
+            window.translator_combo.findData(TranslatorPreset.SAKURA.value)
+        )
+        assert not window.batch_spin.isEnabled()
+        assert not window.advanced_dialog.batch_label.isEnabled()
+
+        window.translator_combo.setCurrentIndex(
+            window.translator_combo.findData(TranslatorPreset.GALTRANSL.value)
+        )
+        assert window.batch_spin.isEnabled()
+        assert window.advanced_dialog.batch_label.isEnabled()
     finally:
         window.close()
 

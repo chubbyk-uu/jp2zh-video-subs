@@ -286,7 +286,7 @@ class AdvancedSettingsDialog(QDialog):
         self.context_spin.setToolTip(self.tr("Number of preceding lines supplied to the translation model; 0 translates each line independently."))
         self.batch_spin.setToolTip(self.tr("Maximum number of consecutive subtitles translated together by GalTransl; this is not GPU parallelism."))
         self.context_label.setText(self.tr("Translation context"))
-        self.batch_label.setText(self.tr("Translation batch size"))
+        self.batch_label.setText(self.tr("Translation batch size (GalTransl only)"))
         self.translation_note.setText(self.tr("These settings affect translation context and grouping, not GPU parallelism."))
         self.tabs.setTabText(0, self.tr("Translation"))
         self.wrap_check.setText(self.tr("Wrap long subtitles"))
@@ -311,6 +311,12 @@ class AdvancedSettingsDialog(QDialog):
         self.restore_button.setText(self.tr("Restore defaults"))
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(self.tr("OK"))
         self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(self.tr("Cancel"))
+
+    def set_translator(self, translator: str) -> None:
+        """Enable translator-specific controls without discarding saved values."""
+        batch_supported = translator == TranslatorPreset.GALTRANSL.value
+        self.batch_label.setEnabled(batch_supported)
+        self.batch_spin.setEnabled(batch_supported)
 
     @staticmethod
     def _ass_colour_parts(value: str) -> tuple[int, int, int, str]:
@@ -782,6 +788,7 @@ class MainWindow(QMainWindow):
         self.user_guide_action.setText(self.tr("User guide"))
         self.about_action.setText(self.tr("About"))
         self.advanced_dialog.retranslate_ui()
+        self.advanced_dialog.set_translator(str(self.translator_combo.currentData()))
         self._align_settings_form_columns()
         self._update_model_status()
         self._refresh_device_status_text()
@@ -801,7 +808,7 @@ class MainWindow(QMainWindow):
         self.retry_button.clicked.connect(self._retry_failed)
         self.open_output_button.clicked.connect(self._open_output)
         self.asr_combo.currentIndexChanged.connect(self._update_model_status)
-        self.translator_combo.currentIndexChanged.connect(self._update_model_status)
+        self.translator_combo.currentIndexChanged.connect(self._translator_changed)
         self.speaker_check.toggled.connect(self._update_model_status)
         self.advanced_button.clicked.connect(self._show_advanced_settings)
         self.refresh_device_button.clicked.connect(self._start_device_probe)
@@ -825,6 +832,10 @@ class MainWindow(QMainWindow):
         self.reset_settings_action.triggered.connect(self._restore_all_defaults)
         self.user_guide_action.triggered.connect(self._open_user_guide)
         self.about_action.triggered.connect(self._show_about)
+
+    def _translator_changed(self) -> None:
+        self.advanced_dialog.set_translator(str(self.translator_combo.currentData()))
+        self._update_model_status()
 
     def _update_log_splitter_floor(self) -> int | None:
         if not hasattr(self, "log_splitter"):
