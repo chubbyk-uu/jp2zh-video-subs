@@ -355,7 +355,7 @@ python -m pytest tests/ -q
 
 建议提交：
 
-- `README.md`、`README-CN.md`、`docs/` 下已跟踪的公开文档、`requirements.txt`
+- `README.md`、`README-CN.md`、`LICENSE`、`docs/` 下已跟踪的公开文档、`requirements.txt`
 - `scripts/`
 - `tests/`
 - `.gitignore` 与目录占位文件
@@ -368,6 +368,13 @@ python -m pytest tests/ -q
 - 生成的 `outputs/`
 - 本地项目计划 `docs/PLAN.md`
 - 虚拟环境和 `__pycache__/`
+
+## 许可证
+
+本仓库原创代码采用 [MIT License](LICENSE)。第三方代码、依赖库、FFmpeg
+构建和模型权重继续适用各自的许可证，详见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。其中，MIT 许可证不会覆盖或
+取消 GalTransl、Sakura 翻译模型的非商业使用限制。
 
 ## 后续改进
 

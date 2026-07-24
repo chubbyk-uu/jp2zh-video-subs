@@ -219,7 +219,11 @@ if [[ "$target" == all || "$target" == program ]]; then
     # fail the whole scan and report a clean result.
     leak_pattern='jp2zh-win-portable-lab|/mnt/[a-z]/|\\\\wsl\\.localhost'
     leak_paths=("$program_stage/app" "$program_stage/config")
-    for root_file in "$program_stage"/*.cmd "$program_stage"/*.txt "$program_stage"/*.md; do
+    for root_file in \
+        "$program_stage"/LICENSE \
+        "$program_stage"/*.cmd \
+        "$program_stage"/*.txt \
+        "$program_stage"/*.md; do
         if [[ -f "$root_file" ]]; then
             leak_paths+=("$root_file")
         fi

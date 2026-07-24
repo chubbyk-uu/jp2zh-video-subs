@@ -48,6 +48,21 @@ def test_portable_setup_guides_are_current_and_staged():
         assert "Sugoi-14B-Ultra-Q4_K_M.gguf" in guide
 
 
+def test_project_mit_license_is_staged_and_validated():
+    stage = script_text("stage-portable.sh")
+    prepare = script_text("prepare-release-candidate.sh")
+    extract = script_text("extract-release-candidate.sh")
+    license_text = (PROJECT_ROOT / "LICENSE").read_text(encoding="utf-8")
+
+    assert license_text.startswith("MIT License\n")
+    assert "jp2zh-video-subs contributors" in license_text
+    assert '"$package_root/LICENSE"' in stage
+    assert '"$package_root/app/LICENSE"' in stage
+    assert '"$program_stage"/LICENSE' in prepare
+    assert 'jp2zh-video-subs/LICENSE' in extract
+    assert 'jp2zh-video-subs/app/LICENSE' in extract
+
+
 def test_program_only_release_can_be_extracted_without_model_archives():
     extract = script_text("extract-release-candidate.sh")
     assert "[program|all]" in extract
@@ -69,4 +84,6 @@ def test_dev_path_scan_covers_setup_guides_at_the_package_root():
         assert f'"$package_root/{root_file}"' in stage
         scanned_glob = f'"$program_stage"/*{Path(root_file).suffix}'
         assert scanned_glob in prepare, f"{root_file} ships unscanned"
+    assert '"$package_root/LICENSE"' in stage
+    assert '"$program_stage"/LICENSE' in prepare
     assert '"$program_stage"/*.cmd' in prepare

@@ -1,5 +1,9 @@
 # Third-Party Notices
 
+The original jp2zh-video-subs code is licensed under the repository's
+[MIT License](LICENSE). That license does not replace or modify the terms of
+the third-party components listed below.
+
 This project incorporates code adapted from third-party open-source projects.
 
 ## Optional GUI dependency

@@ -59,6 +59,8 @@ test ! -e "$extract_root/jp2zh-video-subs/启动字幕工具.cmd"
 test ! -e "$extract_root/jp2zh-video-subs/启动字幕工具-调试.cmd"
 test -f "$extract_root/jp2zh-video-subs/INSTALL-CN.txt"
 test -f "$extract_root/jp2zh-video-subs/INSTALL-EN.txt"
+test -f "$extract_root/jp2zh-video-subs/LICENSE"
+test -f "$extract_root/jp2zh-video-subs/app/LICENSE"
 if [[ "$target" == all ]]; then
     test -f "$extract_root/jp2zh-video-subs/models/anime-whisper/model.safetensors"
     test -f "$extract_root/jp2zh-video-subs/models/Qwen3-ASR-1.7B/config.json"

@@ -398,7 +398,7 @@ python -m pytest tests/ -q
 
 Commit source files and documentation:
 
-- `README.md`, `README-CN.md`, tracked public documents under `docs/`, `requirements.txt`
+- `README.md`, `README-CN.md`, `LICENSE`, tracked public documents under `docs/`, `requirements.txt`
 - `scripts/`
 - `tests/`
 - `.gitignore` and placeholder files
@@ -411,6 +411,15 @@ Do not commit:
 - generated `outputs/`
 - the local project plan `docs/PLAN.md`
 - virtual environments and `__pycache__/`
+
+## License
+
+The original code in this repository is licensed under the
+[MIT License](LICENSE). Third-party code, libraries, FFmpeg builds, and model
+weights remain subject to their own licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). In particular, the MIT
+license does not override the non-commercial terms of the GalTransl and Sakura
+translation models.
 
 ## Future Work
 
