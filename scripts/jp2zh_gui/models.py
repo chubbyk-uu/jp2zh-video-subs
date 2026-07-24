@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -10,6 +9,15 @@ from pathlib import Path
 from typing import Iterable
 from uuid import uuid4
 
+from pipeline_configs import (
+    AnimeAsrConfig,
+    BilingualAssConfig,
+    GalTranslTranslateConfig,
+    QwenAsrConfig,
+    validate_asr_config,
+    validate_bilingual_config,
+    validate_translation_config,
+)
 from pipeline_runtime import PIPELINE_STAGES, VIDEO_EXTENSIONS
 from portable_runtime import project_root, scripts_dir
 from target_languages import (
@@ -130,26 +138,54 @@ class GuiConfig:
         errors: list[ValidationIssue] = []
         if not translator_supports_target(self.translator.value, self.target_language):
             errors.append(ValidationIssue("translator_target_incompatible"))
-        if self.asr_batch_size <= 0:
+        asr_cls = AnimeAsrConfig if self.asr == AsrPreset.ANIME else QwenAsrConfig
+        asr_issues = validate_asr_config(asr_cls(batch_size=self.asr_batch_size))
+        if any(issue.field == "batch_size" for issue in asr_issues):
             errors.append(ValidationIssue("asr_batch_positive"))
-        if self.context_size < 0:
+        # Validate both persisted numeric controls even when the selected backend
+        # currently ignores one of them; switching models later must not revive an
+        # invalid saved value.
+        translate_cfg = GalTranslTranslateConfig(
+            context_size=self.context_size,
+            batch_size=self.translate_batch_size,
+        )
+        translate_issues = validate_translation_config(translate_cfg)
+        if any(issue.field == "context_size" for issue in translate_issues):
             errors.append(ValidationIssue("context_nonnegative"))
-        if self.translate_batch_size < 0:
+        if any(issue.field == "batch_size" for issue in translate_issues):
             errors.append(ValidationIssue("translate_batch_nonnegative"))
         if self.display_wrap_max_chars < 0:
             errors.append(ValidationIssue("wrap_nonnegative"))
-        if self.bilingual_zh_font_size <= 0 or self.bilingual_ja_font_size <= 0:
+        bilingual_issues = validate_bilingual_config(
+            BilingualAssConfig(
+                font=self.bilingual_font,
+                ja_font=self.bilingual_ja_font,
+                zh_font_size=self.bilingual_zh_font_size,
+                ja_font_size=self.bilingual_ja_font_size,
+                zh_colour=self.bilingual_zh_colour,
+                ja_colour=self.bilingual_ja_colour,
+                male_colour=self.bilingual_male_colour,
+                female_colour=self.bilingual_female_colour,
+            )
+        )
+        if any(issue.field in {"zh_font_size", "ja_font_size"} for issue in bilingual_issues):
             errors.append(ValidationIssue("subtitle_size_positive"))
-        if not self.bilingual_font.strip() or not self.bilingual_ja_font.strip():
+        if any(issue.field in {"font", "ja_font"} for issue in bilingual_issues):
             errors.append(ValidationIssue("subtitle_font_required"))
-        for field_name, value in (
-            ("zh", self.bilingual_zh_colour),
-            ("ja", self.bilingual_ja_colour),
-            ("male", self.bilingual_male_colour),
-            ("female", self.bilingual_female_colour),
-        ):
-            if not re.fullmatch(r"&H[0-9A-Fa-f]{8}", value):
-                errors.append(ValidationIssue("ass_colour_format", {"field": field_name}))
+        colour_codes = {
+            "zh_colour": "zh",
+            "ja_colour": "ja",
+            "male_colour": "male",
+            "female_colour": "female",
+        }
+        for issue in bilingual_issues:
+            if issue.field in colour_codes:
+                errors.append(
+                    ValidationIssue(
+                        "ass_colour_format",
+                        {"field": colour_codes[issue.field]},
+                    )
+                )
         return errors
 
     def build_command(

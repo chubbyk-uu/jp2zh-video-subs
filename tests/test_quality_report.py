@@ -11,6 +11,7 @@ from quality_report import (
     reference_recall,
     reference_segments,
 )
+from transcribe_ja_srt_qwen import ChunkResult, production_metadata_chunks
 
 
 def test_percentile():
@@ -155,19 +156,35 @@ def test_build_report_can_use_metadata_speech_regions_for_audio_gaps(tmp_path):
         encoding="utf-8",
     )
     qwen_meta = tmp_path / "candidate.ja.srt.meta.json"
+    metadata_chunks = production_metadata_chunks(
+        {
+            "chunks": [
+                {
+                    "start": 2.0,
+                    "end": 5.0,
+                    "text": "抜け候補",
+                    "speech_regions": [[0.5, 2.5]],
+                    "sentinel": {"status": "OK"},
+                    "recovery": {"applied": False},
+                }
+            ]
+        },
+        [
+            ChunkResult(
+                start=2.0,
+                end=5.0,
+                language="ja",
+                text="抜け候補",
+                segments=1,
+                seconds=0.1,
+            )
+        ],
+    )
     qwen_meta.write_text(
         json.dumps(
             {
-                "chunks": [
-                    {
-                        "start": 2.0,
-                        "end": 5.0,
-                        "text": "抜け候補",
-                        "segments": 1,
-                        "seconds": 0.1,
-                        "speech_regions": [[0.5, 2.5]],
-                    }
-                ]
+                "schema_version": 2,
+                "chunks": metadata_chunks,
             },
             ensure_ascii=False,
         ),
@@ -189,6 +206,8 @@ def test_build_report_can_use_metadata_speech_regions_for_audio_gaps(tmp_path):
     assert "subtitle_gaps_with_vad_speech: 1" in report
     assert metrics["vad_backend"] == "metadata"
     assert metrics["gaps_with_vad_speech"] == 1
+    assert metadata_chunks[0]["sentinel"] == {"status": "OK"}
+    assert metadata_chunks[0]["recovery"] == {"applied": False}
 
 
 def test_reference_recall_uses_reading_normalization():

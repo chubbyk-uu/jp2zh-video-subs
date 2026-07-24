@@ -9,8 +9,12 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from cli_config import add_dataclass_arguments
-from pipeline_configs import QualityReportConfig
+from cli_config import add_dataclass_arguments, config_from_namespace
+from pipeline_configs import (
+    QualityReportConfig,
+    raise_for_config_issues,
+    validate_quality_config,
+)
 from srt_utils import (
     Interval,
     compact_text,
@@ -553,6 +557,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    raise_for_config_issues(
+        validate_quality_config(config_from_namespace(args, QualityReportConfig))
+    )
 
     metrics: dict = {}
     report = build_report(args, metrics)

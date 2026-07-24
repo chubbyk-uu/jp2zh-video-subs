@@ -5,8 +5,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from cli_config import add_dataclass_arguments
-from pipeline_configs import BilingualAssConfig
+from cli_config import add_dataclass_arguments, config_from_namespace
+from pipeline_configs import (
+    BilingualAssConfig,
+    raise_for_config_issues,
+    validate_bilingual_config,
+)
 from portable_runtime import project_root
 from srt_utils import parse_time
 
@@ -206,6 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    raise_for_config_issues(
+        validate_bilingual_config(config_from_namespace(args, BilingualAssConfig))
+    )
 
     zh_entries = parse_srt(args.target_srt)
     ja_by_index = {entry.index: entry.text for entry in parse_srt(args.ja_srt)}

@@ -126,6 +126,54 @@ def test_run_pipeline_raises_without_continue_on_error():
         run_pipeline([0, 1, 2], lambda job: None, process, continue_on_error=False)
 
 
+def test_run_pipeline_fail_fast_cancels_inflight_prefetch_and_preserves_error(
+    tmp_path, monkeypatch
+):
+    import video_to_zh_srt as pipeline
+
+    token = CancellationToken()
+    prefetch_started = threading.Event()
+    prefetch_stopped = threading.Event()
+
+    def fake_run(command, _log, cancel_token):
+        partial = Path(command[-1])
+        partial.write_bytes(b"partial")
+        if partial.name.startswith("1.wav"):
+            prefetch_started.set()
+            while not cancel_token.is_cancelled():
+                time.sleep(0.01)
+            prefetch_stopped.set()
+            raise PipelineCancelled("prefetch cancelled")
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+
+    def extract(job):
+        pipeline.extract_audio(
+            tmp_path / f"{job}.mp4",
+            tmp_path / f"{job}.wav",
+            cancel_token=token,
+        )
+
+    def process(job):
+        if job == 0:
+            assert prefetch_started.wait(timeout=2)
+            raise RuntimeError("GPU stage failed")
+
+    with pytest.raises(RuntimeError, match="GPU stage failed"):
+        run_pipeline(
+            [0, 1, 2],
+            extract,
+            process,
+            continue_on_error=False,
+            cancel_token=token,
+        )
+
+    assert token.is_cancelled()
+    assert prefetch_stopped.wait(timeout=1)
+    assert not (tmp_path / "1.wav.part").exists()
+    assert not (tmp_path / "1.wav").exists()
+
+
 def test_run_pipeline_cancellation_stops_prefetch_without_deadlock():
     token = CancellationToken()
     processed = []
@@ -580,6 +628,24 @@ def test_top_level_rejects_context_for_sugoi():
     )
     with pytest.raises(SystemExit, match="not supported by the Sugoi"):
         validate_runtime_args(args)
+
+
+def test_top_level_rejects_invalid_asr_numeric_before_file_probes(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "video_to_zh_srt.py",
+            "missing-input.mp4",
+            "--asr",
+            "qwen",
+            "--qwen-batch-size",
+            "0",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match=r"--qwen-batch-size must be greater than 0"):
+        main()
 
 
 def test_opencc_dependency_probe_has_actionable_error(monkeypatch):

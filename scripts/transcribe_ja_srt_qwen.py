@@ -27,7 +27,7 @@ from asr_common import (
     write_entries,
 )
 from cli_config import add_dataclass_arguments
-from pipeline_configs import QwenAsrConfig
+from pipeline_configs import QwenAsrConfig, raise_for_config_issues, validate_asr_config
 from portable_runtime import project_root
 from srt_utils import Interval
 
@@ -125,6 +125,47 @@ class ChunkResult:
     text: str
     segments: int
     seconds: float
+    speech_regions: list[list[float]] = field(default_factory=list)
+    sentinel: dict = field(default_factory=dict)
+    recovery: dict = field(default_factory=dict)
+
+
+def production_metadata_chunks(raw: dict, chunk_results: list[ChunkResult]) -> list[dict]:
+    """Build the compact, stable chunk contract consumed by quality_report.py.
+
+    Raw dumps remain diagnostic and may gain fields freely. Production metadata
+    deliberately exposes only timing/text summaries plus VAD and recovery evidence.
+    """
+    raw_chunks = raw.get("chunks", [])
+    if not isinstance(raw_chunks, list):
+        raw_chunks = []
+    count = max(len(raw_chunks), len(chunk_results))
+    chunks: list[dict] = []
+    for index in range(count):
+        raw_chunk = raw_chunks[index] if index < len(raw_chunks) else {}
+        if not isinstance(raw_chunk, dict):
+            raw_chunk = {}
+        if index < len(chunk_results):
+            chunk = asdict(chunk_results[index])
+        else:
+            text = raw_chunk.get("clean_text", raw_chunk.get("text", raw_chunk.get("raw_text", "")))
+            chunk = {
+                "start": raw_chunk.get("start", 0.0),
+                "end": raw_chunk.get("end", 0.0),
+                "language": raw_chunk.get("language", "ja"),
+                "text": text,
+                "segments": raw_chunk.get("segments", 0),
+                "seconds": raw_chunk.get("seconds", 0.0),
+                "speech_regions": [],
+                "sentinel": {},
+                "recovery": {},
+            }
+        for key in ("speech_regions", "sentinel", "recovery"):
+            value = raw_chunk.get(key)
+            if value is not None:
+                chunk[key] = value
+        chunks.append(chunk)
+    return chunks
 
 
 def chunk_ranges(duration: float, chunk_seconds: float, overlap_seconds: float) -> list[tuple[float, float]]:
@@ -1075,6 +1116,7 @@ def _validate_whisperseg_context_args(args: argparse.Namespace) -> tuple[str, fl
 
 def validate_runtime_args(args: argparse.Namespace) -> None:
     """Validate cross-field combinations that argparse choices cannot express."""
+    raise_for_config_issues(validate_asr_config(args))
     if (
         getattr(args, "text_backend", "qwen") == "anime"
         and getattr(args, "whisperseg_context_mode", "none") != "none"
@@ -2043,7 +2085,17 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
             "items": _serialize_items(out_items),
         })
         chunk_results.append(
-            ChunkResult(start=job.start, end=job.end, language="ja", text=raw_texts[i], segments=len(kept), seconds=0.0)
+            ChunkResult(
+                start=job.start,
+                end=job.end,
+                language="ja",
+                text=raw_texts[i],
+                segments=len(kept),
+                seconds=0.0,
+                speech_regions=[[iv.start, iv.end] for iv in job.speech],
+                sentinel=sentinel,
+                recovery=recovery,
+            )
         )
 
     entries.sort(key=lambda e: (e.start, e.end))
@@ -2198,6 +2250,9 @@ def transcribe_qwen(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list
                         text=text,
                         segments=len(kept),
                         seconds=elapsed / len(group),
+                        speech_regions=[[iv.start, iv.end] for iv in job.speech],
+                        sentinel=sentinel,
+                        recovery=recovery,
                     )
                 )
             done = min(group_start + args.batch_size, len(job_list))
@@ -2313,10 +2368,6 @@ def main() -> None:
         needs_forced_aligner = args.timestamp_mode != "vad_only"
         if needs_forced_aligner and not args.forced_aligner.exists():
             raise SystemExit(f"Missing Qwen forced aligner: {args.forced_aligner}")
-        if args.chunk_overlap_seconds >= args.chunk_seconds:
-            raise SystemExit("--chunk-overlap-seconds must be smaller than --chunk-seconds")
-        if 0 < args.vad_context_merge_gap < args.vad_max_cluster_gap:
-            raise SystemExit("--vad-context-merge-gap must be >= --vad-max-cluster-gap (or 0 to disable)")
 
     started = time.time()
     if args.from_raw is not None:
@@ -2347,6 +2398,7 @@ def main() -> None:
             {
                 "audio": str(args.audio),
                 "output": str(args.output),
+                "schema_version": 2,
                 "model": str(args.model),
                 "forced_aligner": str(args.forced_aligner),
                 "chunk_seconds": args.chunk_seconds,
@@ -2379,9 +2431,10 @@ def main() -> None:
                 "whisperseg_context_after_target_gap": float(getattr(args, "whisperseg_context_after_target_gap", 0.2)),
                 "whisperseg_context_hard_max_seconds": float(getattr(args, "whisperseg_context_hard_max_seconds", 15.0)),
                 "scene_asr_pad_seconds": float(getattr(args, "scene_asr_pad_seconds", 0.0)),
+                "mode": raw.get("mode", "n/a"),
                 "entries": len(entries),
                 "elapsed_seconds": time.time() - started,
-                "chunks": [asdict(item) for item in chunk_results],
+                "chunks": production_metadata_chunks(raw, chunk_results),
             },
             ensure_ascii=False,
             indent=2,

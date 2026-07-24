@@ -32,6 +32,10 @@ from pipeline_configs import (
     QwenAsrConfig,
     SakuraTranslateConfig,
     SugoiTranslateConfig,
+    raise_for_config_issues,
+    validate_asr_config,
+    validate_bilingual_config,
+    validate_translation_config,
 )
 from pipeline_runtime import (
     CancellationToken,
@@ -681,6 +685,13 @@ def run_pipeline(
                 if not continue_on_error:
                     raise
                 failures.append((job, exc))
+    except BaseException:
+        # Fail-fast must also stop an ffmpeg extraction already running one job
+        # ahead. Keep the original exception as the caller-visible failure while
+        # the shared token makes run()/extract_audio terminate and remove .wav.part.
+        stop_producer.set()
+        cancel_token.request()
+        raise
     finally:
         stop_producer.set()
         thread.join(timeout=10.0)
@@ -806,8 +817,18 @@ def build_qwen_command(
 
 def validate_runtime_args(args: argparse.Namespace) -> None:
     """Validate cross-field combinations that argparse choices cannot express."""
+    if args.asr not in {"anime", "qwen"}:
+        raise SystemExit("--asr must be one of: anime, qwen")
+    asr_cfg = asr_config_for_command(args)
+    raise_for_config_issues(
+        validate_asr_config(asr_cfg),
+        prefix=f"{args.asr}-",
+        option_overrides={"min_cue_seconds": "--min-cue-seconds"},
+    )
     target = getattr(args, "target_language", TargetLanguage.SIMPLIFIED_CHINESE.value)
     translator = getattr(args, "translator", "galtransl")
+    if translator not in {"sakura", "galtransl", "sugoi"}:
+        raise SystemExit("--translator must be one of: galtransl, sakura, sugoi")
     if not translator_supports_target(translator, target):
         raise SystemExit(
             f"Translator '{translator}' does not support target language '{target}'."
@@ -815,7 +836,7 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
     if translator == "sugoi" and getattr(args, "context_size", None) is not None:
         raise SystemExit("--context-size is not supported by the Sugoi translator.")
     if args.asr == "qwen":
-        cfg = asr_config_for_command(args)
+        cfg = asr_cfg
         if (
             cfg.timestamp_mode == "vad_only"
             and cfg.vad_backend == "whisperseg"
@@ -826,6 +847,44 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
                 "Use --qwen-whisperseg-context-mode none, or use "
                 "--qwen-timestamp-mode aligner_fallback for long-context Qwen recognition."
             )
+
+    settings = resolve_translation_settings(
+        translator,
+        target,
+        context_size=getattr(args, "context_size", None),
+        batch_size=getattr(args, "translate_batch_size", None),
+        wrap_chars=getattr(args, "display_wrap_max_chars", None),
+    )
+    common = {
+        "lead_out_seconds": getattr(args, "lead_out_seconds", 0.5),
+        "min_display_seconds": getattr(args, "min_display_seconds", 1.5),
+    }
+    if translator == "galtransl":
+        translate_cfg = GalTranslTranslateConfig(
+            context_size=settings.context_size,
+            batch_size=settings.batch_size,
+            **common,
+        )
+    elif translator == "sugoi":
+        translate_cfg = SugoiTranslateConfig(batch_size=settings.batch_size, **common)
+    else:
+        translate_cfg = SakuraTranslateConfig(context_size=settings.context_size, **common)
+    raise_for_config_issues(validate_translation_config(translate_cfg))
+
+    bilingual_cfg = config_from_prefixed(
+        args,
+        BilingualAssConfig,
+        prefix="bilingual_",
+        overrides={
+            "colour_by_speaker": getattr(args, "colour_by_speaker", False),
+            "gender_confidence": getattr(args, "gender_confidence", 0.6),
+        },
+    )
+    raise_for_config_issues(
+        validate_bilingual_config(bilingual_cfg),
+        prefix="bilingual-",
+        option_overrides={"gender_confidence": "--gender-confidence"},
+    )
 
 
 def translate_backend(args: argparse.Namespace) -> tuple[Path, Path]:
@@ -1549,11 +1608,11 @@ def main() -> None:
         apply_config_file(parser, config_path)
     args = parser.parse_args()
 
-    validate_runtime_args(args)
     if args.bilingual_font is None:
         args.bilingual_font = (
             "Arial" if args.target_language == TargetLanguage.ENGLISH.value else bilingual_defaults.font
         )
+    validate_runtime_args(args)
 
     if args.print_config:
         # input/output are per-run IO arguments, not reusable configuration; a config
@@ -1565,16 +1624,8 @@ def main() -> None:
 
     if args.keep_audio:
         print("Warning: --keep-audio is deprecated and has no effect (audio is kept by default).", flush=True)
-    if args.lead_out_seconds < 0:
-        raise SystemExit("--lead-out-seconds must be >= 0")
-    if args.min_display_seconds < 0:
-        raise SystemExit("--min-display-seconds must be >= 0")
     if args.display_wrap_max_chars is not None and args.display_wrap_max_chars < 0:
         raise SystemExit("--display-wrap-max-chars must be >= 0")
-    if args.context_size is not None and args.context_size < 0:
-        raise SystemExit("--context-size must be >= 0")
-    if args.translate_batch_size is not None and args.translate_batch_size < 0:
-        raise SystemExit("--translate-batch-size must be >= 0")
     effective_cleanup_policy(args)
     if shutil.which("ffmpeg") is None:
         raise SystemExit("Missing ffmpeg on PATH; install it (e.g. sudo apt install ffmpeg).")

@@ -21,6 +21,10 @@ from pipeline_configs import (
     QwenAsrConfig,
     SakuraTranslateConfig,
     SugoiTranslateConfig,
+    validate_asr_config,
+    validate_bilingual_config,
+    validate_quality_config,
+    validate_translation_config,
 )
 from make_bilingual_ass import build_parser as bilingual_build_parser
 from quality_report import build_parser as quality_build_parser
@@ -254,6 +258,42 @@ def test_quality_config_round_trips_through_subscript_parser():
     cfg = QualityReportConfig(vad_min_silence_ms=500, vad_speech_pad_ms=400, max_samples=15)
     ns = quality_build_parser().parse_args(["--ja-srt", "in.ja.srt", *config_to_cli_args(cfg)])
     assert config_from_namespace(ns, QualityReportConfig) == cfg
+
+
+def test_shared_config_validation_rejects_invalid_numeric_and_relations():
+    asr = QwenAsrConfig(
+        batch_size=0,
+        chunk_seconds=10.0,
+        chunk_overlap_seconds=10.0,
+        scene_min_seconds=20.0,
+        scene_max_seconds=10.0,
+    )
+    assert {issue.field for issue in validate_asr_config(asr)} >= {
+        "batch_size",
+        "chunk_overlap_seconds",
+        "scene_max_seconds",
+    }
+    assert {
+        issue.field
+        for issue in validate_translation_config(
+            GalTranslTranslateConfig(context_size=-1, batch_size=-1)
+        )
+    } == {"context_size", "batch_size"}
+    assert {
+        issue.field
+        for issue in validate_bilingual_config(
+            BilingualAssConfig(zh_font_size=0, zh_colour="yellow")
+        )
+    } == {"zh_font_size", "zh_colour"}
+    assert {
+        issue.field
+        for issue in validate_quality_config(QualityReportConfig(vad_threshold=1.5))
+    } == {"vad_threshold"}
+
+
+def test_shared_config_validation_rejects_nonfinite_values():
+    issues = validate_asr_config(QwenAsrConfig(vad_threshold=float("nan")))
+    assert [issue.field for issue in issues] == ["vad_threshold"]
 
 
 # --- TOML config file (apply_config_file / format_config_toml) ---

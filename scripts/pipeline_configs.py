@@ -7,7 +7,10 @@ flags. Defaults below are the sub-script's canonical defaults — keep them here
 """
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
+from typing import Any
 
 from cli_config import arg_field
 from target_languages import DEFAULT_BATCH_SIZE_BY_TRANSLATOR, DEFAULT_CONTEXT_SIZE
@@ -263,3 +266,216 @@ class QualityReportConfig:
     min_speech_seconds: float = arg_field(2.0, help="Min VAD speech in a gap to flag it")
     subtitle_pad_seconds: float = arg_field(0.5, help="Padding added around cues for coverage")
     max_samples: int = arg_field(20, help="Max sample rows per report section")
+
+
+@dataclass(frozen=True)
+class ConfigValidationIssue:
+    field: str
+    requirement: str
+
+
+def _numeric_issues(
+    config: Any,
+    *,
+    positive: tuple[str, ...] = (),
+    nonnegative: tuple[str, ...] = (),
+    probabilities: tuple[str, ...] = (),
+) -> list[ConfigValidationIssue]:
+    issues: list[ConfigValidationIssue] = []
+    for field_name in positive:
+        value = getattr(config, field_name, None)
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            issues.append(ConfigValidationIssue(field_name, "must be greater than 0"))
+    for field_name in nonnegative:
+        value = getattr(config, field_name, None)
+        if value is not None and (not math.isfinite(value) or value < 0):
+            issues.append(ConfigValidationIssue(field_name, "must be at least 0"))
+    for field_name in probabilities:
+        value = getattr(config, field_name, None)
+        if value is not None and (not math.isfinite(value) or not 0 <= value <= 1):
+            issues.append(ConfigValidationIssue(field_name, "must be between 0 and 1"))
+    return issues
+
+
+def validate_asr_config(config: Any) -> list[ConfigValidationIssue]:
+    issues = _numeric_issues(
+        config,
+        positive=(
+            "batch_size",
+            "max_new_tokens",
+            "chunk_seconds",
+            "vad_window_seconds",
+            "vad_target_context_seconds",
+            "phrase_max_chars",
+            "phrase_max_duration",
+            "phrase_max_char_seconds",
+            "collapse_repeats_threshold",
+            "collapse_repeats_keep",
+            "main_max_compression_ratio",
+            "min_tokens_floor",
+            "repetition_penalty",
+            "whisperseg_max_speech",
+            "whisperseg_hard_max_speech",
+            "whisperseg_max_group",
+            "whisperseg_min_frame_seconds",
+            "whisperseg_context_target_seconds",
+            "whisperseg_context_hard_max_seconds",
+            "scene_min_seconds",
+            "scene_max_seconds",
+            "scene_clustering_threshold",
+            "stepdown_fallback_group",
+        ),
+        nonnegative=(
+            "chunk_overlap_seconds",
+            "vad_window_overlap_seconds",
+            "vad_min_silence_ms",
+            "vad_speech_pad_ms",
+            "vad_max_cluster_gap",
+            "vad_pad_seconds",
+            "vad_min_clip_seconds",
+            "vad_pre_context_seconds",
+            "vad_post_context_seconds",
+            "vad_max_leading_silence",
+            "vad_context_merge_gap",
+            "min_duration",
+            "min_cue_seconds",
+            "isolated_interjection_silence",
+            "isolated_interjection_run",
+            "isolated_interjection_run_gap",
+            "interjection_reply_anchor_lag",
+            "no_repeat_ngram_size",
+            "near_dup_max_gap",
+            "near_dup_squeeze_seconds",
+            "main_min_chars",
+            "main_duplicate_window_seconds",
+            "hallucination_min_repeats",
+            "hallucination_high_risk_max_repeats",
+            "max_tokens_per_second",
+            "whisperseg_soft_split_lookback",
+            "whisperseg_chunk_threshold",
+            "whisperseg_context_merge_gap",
+            "whisperseg_context_after_target_gap",
+            "scene_asr_pad_seconds",
+        ),
+        probabilities=(
+            "vad_threshold",
+            "near_dup_similarity",
+            "hallucination_repeat_no_speech_prob",
+            "whisperseg_threshold",
+        ),
+    )
+    chunk_seconds = getattr(config, "chunk_seconds", None)
+    chunk_overlap = getattr(config, "chunk_overlap_seconds", None)
+    if (
+        chunk_seconds is not None
+        and chunk_overlap is not None
+        and chunk_seconds > 0
+        and chunk_overlap >= chunk_seconds
+    ):
+        issues.append(ConfigValidationIssue("chunk_overlap_seconds", "must be smaller than chunk_seconds"))
+    window = getattr(config, "vad_window_seconds", None)
+    window_overlap = getattr(config, "vad_window_overlap_seconds", None)
+    if window is not None and window_overlap is not None and window > 0 and window_overlap >= window:
+        issues.append(ConfigValidationIssue("vad_window_overlap_seconds", "must be smaller than vad_window_seconds"))
+    context_gap = getattr(config, "vad_context_merge_gap", None)
+    cluster_gap = getattr(config, "vad_max_cluster_gap", None)
+    if context_gap is not None and cluster_gap is not None and 0 < context_gap < cluster_gap:
+        issues.append(ConfigValidationIssue("vad_context_merge_gap", "must be 0 or at least vad_max_cluster_gap"))
+    keep = getattr(config, "collapse_repeats_keep", None)
+    threshold = getattr(config, "collapse_repeats_threshold", None)
+    if keep is not None and threshold is not None and keep > threshold:
+        issues.append(ConfigValidationIssue("collapse_repeats_keep", "must not exceed collapse_repeats_threshold"))
+    context_target = getattr(config, "whisperseg_context_target_seconds", None)
+    context_hard_max = getattr(config, "whisperseg_context_hard_max_seconds", None)
+    if (
+        context_target is not None
+        and context_hard_max is not None
+        and context_hard_max < context_target
+    ):
+        issues.append(
+            ConfigValidationIssue(
+                "whisperseg_context_hard_max_seconds",
+                "must be at least whisperseg_context_target_seconds",
+            )
+        )
+    scene_min = getattr(config, "scene_min_seconds", None)
+    scene_max = getattr(config, "scene_max_seconds", None)
+    if scene_min is not None and scene_max is not None and scene_max < scene_min:
+        issues.append(ConfigValidationIssue("scene_max_seconds", "must be at least scene_min_seconds"))
+    for field_name, choices in (
+        ("dtype", {"bfloat16", "float16", "float32"}),
+        ("text_backend", {"qwen", "anime"}),
+        ("timestamp_mode", {"aligner_fallback", "aligner_only", "vad_only"}),
+        ("vad_backend", {"whisperseg"}),
+        ("whisperseg_context_mode", {"none", "merge"}),
+        ("scene_backend", {"none", "semantic"}),
+    ):
+        value = getattr(config, field_name, None)
+        if value is not None and value not in choices:
+            issues.append(
+                ConfigValidationIssue(
+                    field_name,
+                    f"must be one of: {', '.join(sorted(choices))}",
+                )
+            )
+    return issues
+
+
+def validate_translation_config(
+    config: SakuraTranslateConfig | GalTranslTranslateConfig | SugoiTranslateConfig,
+) -> list[ConfigValidationIssue]:
+    return _numeric_issues(
+        config,
+        nonnegative=("context_size", "batch_size", "lead_out_seconds", "min_display_seconds"),
+    )
+
+
+def validate_bilingual_config(config: BilingualAssConfig) -> list[ConfigValidationIssue]:
+    issues = _numeric_issues(
+        config,
+        positive=("zh_font_size", "ja_font_size", "play_res_x", "play_res_y"),
+        probabilities=("gender_confidence",),
+    )
+    if not config.font.strip():
+        issues.append(ConfigValidationIssue("font", "must not be empty"))
+    if not config.ja_font.strip():
+        issues.append(ConfigValidationIssue("ja_font", "must not be empty"))
+    for field_name in ("zh_colour", "ja_colour", "male_colour", "female_colour"):
+        if not re.fullmatch(r"&H[0-9A-Fa-f]{8}", getattr(config, field_name)):
+            issues.append(ConfigValidationIssue(field_name, "must use ASS &HAABBGGRR format"))
+    return issues
+
+
+def validate_quality_config(config: QualityReportConfig) -> list[ConfigValidationIssue]:
+    return _numeric_issues(
+        config,
+        positive=("whisperseg_max_speech", "whisperseg_hard_max_speech", "whisperseg_max_group"),
+        nonnegative=(
+            "vad_min_silence_ms",
+            "vad_speech_pad_ms",
+            "whisperseg_soft_split_lookback",
+            "whisperseg_chunk_threshold",
+            "whisperseg_min_frame_seconds",
+            "min_gap_seconds",
+            "min_speech_seconds",
+            "subtitle_pad_seconds",
+            "max_samples",
+        ),
+        probabilities=("vad_threshold", "whisperseg_threshold"),
+    )
+
+
+def raise_for_config_issues(
+    issues: list[ConfigValidationIssue],
+    *,
+    prefix: str = "",
+    option_overrides: dict[str, str] | None = None,
+) -> None:
+    if not issues:
+        return
+    issue = issues[0]
+    option = (option_overrides or {}).get(
+        issue.field,
+        f"--{prefix}{issue.field.replace('_', '-')}",
+    )
+    raise SystemExit(f"{option} {issue.requirement}")

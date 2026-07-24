@@ -27,7 +27,9 @@ from transcribe_ja_srt_qwen import (
     drop_isolated_interjections,
     entries_from_raw,
     merge_close_cues,
+    main as transcribe_main,
     normalize_runtime_args,
+    production_metadata_chunks,
     qwen_batch_token_budget,
     qwen_aligner_language,
     reframe_collapsed_jobs,
@@ -81,6 +83,25 @@ def test_merge_close_cues_packs_contiguous_sentences():
     out = merge_close_cues(entries, max_gap=1.5, max_chars=80, max_duration=8.0)
     assert [e.text for e in out] == ["うん。分かった。", "確認しておくね。"]
     assert (out[0].start, out[0].end) == (0.0, 2.4)
+
+
+def test_transcribe_main_rejects_invalid_numeric_before_model_probe(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "transcribe_ja_srt_qwen.py",
+            str(tmp_path / "missing.wav"),
+            str(tmp_path / "out.srt"),
+            "--model",
+            str(tmp_path / "missing-model"),
+            "--batch-size",
+            "0",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match=r"--batch-size must be greater than 0"):
+        transcribe_main()
 
 
 def test_merge_close_cues_respects_char_and_duration_caps():
@@ -1396,6 +1417,37 @@ def test_entries_from_raw_anime_schema():
     # clean_text drove the cue, offset by chunk start (10.0)
     assert entries[0].start >= 10.0
     assert "おはよう" in "".join(e.text for e in entries)
+
+
+def test_production_metadata_chunks_preserves_raw_speech_regions_on_replay():
+    raw = {
+        "chunks": [
+            {
+                "start": 10.0,
+                "end": 14.0,
+                "clean_text": "こんにちは。",
+                "speech_regions": [[0.5, 3.5]],
+                "sentinel": {"status": "COLLAPSED"},
+                "recovery": {"applied": True, "strategy": "vad_guided"},
+            }
+        ]
+    }
+
+    chunks = production_metadata_chunks(raw, [])
+
+    assert chunks == [
+        {
+            "start": 10.0,
+            "end": 14.0,
+            "language": "ja",
+            "text": "こんにちは。",
+            "segments": 0,
+            "seconds": 0.0,
+            "speech_regions": [[0.5, 3.5]],
+            "sentinel": {"status": "COLLAPSED"},
+            "recovery": {"applied": True, "strategy": "vad_guided"},
+        }
+    ]
 
 
 def _aligned_raw(text: str, items: list[dict], *, backend: str = "anime") -> dict:

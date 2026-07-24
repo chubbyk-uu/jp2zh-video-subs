@@ -11,8 +11,12 @@ prepare_llama_cuda_dependencies(Path(__file__))
 
 from llama_cpp import Llama
 
-from cli_config import add_dataclass_arguments
-from pipeline_configs import SugoiTranslateConfig
+from cli_config import add_dataclass_arguments, config_from_namespace
+from pipeline_configs import (
+    SugoiTranslateConfig,
+    raise_for_config_issues,
+    validate_translation_config,
+)
 from target_languages import TargetLanguage, resolve_translation_settings
 from translation_common import HISTORY_RESET_SECONDS, Entry, parse_srt, write_entry
 
@@ -130,13 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    if args.batch_size < 0:
-        raise SystemExit("--batch-size must be >= 0")
+    raise_for_config_issues(
+        validate_translation_config(config_from_namespace(args, SugoiTranslateConfig))
+    )
     batch_size = resolve_translation_settings(
         "sugoi", TargetLanguage.ENGLISH, batch_size=args.batch_size
     ).batch_size
-    if args.lead_out_seconds < 0 or args.min_display_seconds < 0:
-        raise SystemExit("--lead-out-seconds and --min-display-seconds must be >= 0")
     if not args.model_path.exists():
         raise SystemExit(f"Missing Sugoi model: {args.model_path}")
 

@@ -11,8 +11,12 @@ prepare_llama_cuda_dependencies(Path(__file__))
 
 from llama_cpp import Llama
 
-from cli_config import add_dataclass_arguments
-from pipeline_configs import GalTranslTranslateConfig
+from cli_config import add_dataclass_arguments, config_from_namespace
+from pipeline_configs import (
+    GalTranslTranslateConfig,
+    raise_for_config_issues,
+    validate_translation_config,
+)
 from translation_common import (
     DEFAULT_GLOSSARY,
     Entry,
@@ -298,12 +302,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    if args.context_size < 0:
-        raise SystemExit("--context-size must be >= 0")
-    if args.batch_size < 0:
-        raise SystemExit("--batch-size must be >= 0")
-    if args.lead_out_seconds < 0 or args.min_display_seconds < 0:
-        raise SystemExit("--lead-out-seconds and --min-display-seconds must be >= 0")
+    raise_for_config_issues(
+        validate_translation_config(config_from_namespace(args, GalTranslTranslateConfig))
+    )
     if not args.model_path.exists():
         raise SystemExit(f"Missing GalTransl model: {args.model_path}")
 
