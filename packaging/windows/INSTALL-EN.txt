@@ -16,37 +16,46 @@ D:\Tools\jp2zh-video-subs\
 
 2. Download the default models
 
-Open the application root in File Explorer, type cmd in the address bar, press Enter, and run each command:
+Open PowerShell or Command Prompt in the application root and run each command below. Do not mix
+the proxy syntax of the two shells. PowerShell does not search the current directory by default,
+so the commands consistently use .\hf.cmd; that form also works in Command Prompt.
 
-If Hugging Face is slow or blocked, set your Windows proxy in the same Command Prompt first
-(replace the example port with the one used by your proxy application):
+If Hugging Face is slow or blocked, set your Windows proxy in the same terminal first
+(replace the example port with the one used by your proxy application).
+
+PowerShell:
+
+$env:HTTPS_PROXY = "http://127.0.0.1:7890"
+$env:HTTP_PROXY = "http://127.0.0.1:7890"
+
+Command Prompt (CMD):
 
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
 
-hf.cmd download litagin/anime-whisper --local-dir models\anime-whisper
+.\hf.cmd download litagin/anime-whisper --local-dir models\anime-whisper
 
-hf.cmd download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx model.onnx --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c --local-dir models\whisperseg
+.\hf.cmd download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx model.onnx --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c --local-dir models\whisperseg
 
-hf.cmd download Qwen/Qwen3-ForcedAligner-0.6B --local-dir models\Qwen3-ForcedAligner-0.6B
+.\hf.cmd download Qwen/Qwen3-ForcedAligner-0.6B --local-dir models\Qwen3-ForcedAligner-0.6B
 
-hf.cmd download SakuraLLM/Sakura-GalTransl-7B-v3.7 Sakura-Galtransl-7B-v3.7.gguf --local-dir models\Sakura-GalTransl-7B-v3.7-GGUF
+.\hf.cmd download SakuraLLM/Sakura-GalTransl-7B-v3.7 Sakura-Galtransl-7B-v3.7.gguf --local-dir models\Sakura-GalTransl-7B-v3.7-GGUF
 
 The default Anime + GalTransl Simplified/Traditional Chinese workflow requires all four models above.
 
 3. Optional models
 
 Qwen ASR:
-hf.cmd download Qwen/Qwen3-ASR-1.7B --local-dir models\Qwen3-ASR-1.7B
+.\hf.cmd download Qwen/Qwen3-ASR-1.7B --local-dir models\Qwen3-ASR-1.7B
 
 Sakura 14B Chinese translation:
-hf.cmd download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF sakura-14b-qwen2.5-v1.0-iq4xs.gguf --local-dir models\Sakura-14B-Qwen2.5-v1.0-GGUF
+.\hf.cmd download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF sakura-14b-qwen2.5-v1.0-iq4xs.gguf --local-dir models\Sakura-14B-Qwen2.5-v1.0-GGUF
 
 Sugoi 14B experimental English translation (manual review recommended):
-hf.cmd download sugoitoolkit/Sugoi-14B-Ultra-GGUF Sugoi-14B-Ultra-Q4_K_M.gguf --local-dir models\Sugoi-14B-Ultra-GGUF
+.\hf.cmd download sugoitoolkit/Sugoi-14B-Ultra-GGUF Sugoi-14B-Ultra-Q4_K_M.gguf --local-dir models\Sugoi-14B-Ultra-GGUF
 
 Speaker-gender colouring:
-hf.cmd download JaesungHuh/voice-gender-classifier --local-dir models\voice-gender-classifier
+.\hf.cmd download JaesungHuh/voice-gender-classifier --local-dir models\voice-gender-classifier
 
 4. Start the application
 

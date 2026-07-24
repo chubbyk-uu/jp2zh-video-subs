@@ -16,37 +16,46 @@ D:\Tools\jp2zh-video-subs\
 
 2. 下载默认模型
 
-在程序根目录的文件资源管理器地址栏输入 cmd 并回车，然后逐条执行：
+在程序根目录打开 PowerShell 或命令提示符，然后逐条执行。不要混用两种终端的
+代理设置语法。PowerShell 默认不从当前目录查找命令，因此下面统一使用 .\hf.cmd；
+该写法在命令提示符中也可用。
 
-如果直连 Hugging Face 较慢或无法访问，可先在同一个命令提示符中设置 Windows
-代理（端口请按代理软件的实际设置修改）：
+如果直连 Hugging Face 较慢或无法访问，可先在同一个终端中设置 Windows 代理
+（端口请按代理软件的实际设置修改）。
+
+PowerShell：
+
+$env:HTTPS_PROXY = "http://127.0.0.1:7890"
+$env:HTTP_PROXY = "http://127.0.0.1:7890"
+
+命令提示符（CMD）：
 
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
 
-hf.cmd download litagin/anime-whisper --local-dir models\anime-whisper
+.\hf.cmd download litagin/anime-whisper --local-dir models\anime-whisper
 
-hf.cmd download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx model.onnx --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c --local-dir models\whisperseg
+.\hf.cmd download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx model.onnx --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c --local-dir models\whisperseg
 
-hf.cmd download Qwen/Qwen3-ForcedAligner-0.6B --local-dir models\Qwen3-ForcedAligner-0.6B
+.\hf.cmd download Qwen/Qwen3-ForcedAligner-0.6B --local-dir models\Qwen3-ForcedAligner-0.6B
 
-hf.cmd download SakuraLLM/Sakura-GalTransl-7B-v3.7 Sakura-Galtransl-7B-v3.7.gguf --local-dir models\Sakura-GalTransl-7B-v3.7-GGUF
+.\hf.cmd download SakuraLLM/Sakura-GalTransl-7B-v3.7 Sakura-Galtransl-7B-v3.7.gguf --local-dir models\Sakura-GalTransl-7B-v3.7-GGUF
 
 默认 Anime + GalTransl 简体中文/繁体中文流程需要上述四个模型。
 
 3. 可选模型
 
 Qwen ASR：
-hf.cmd download Qwen/Qwen3-ASR-1.7B --local-dir models\Qwen3-ASR-1.7B
+.\hf.cmd download Qwen/Qwen3-ASR-1.7B --local-dir models\Qwen3-ASR-1.7B
 
 Sakura 14B 中文翻译：
-hf.cmd download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF sakura-14b-qwen2.5-v1.0-iq4xs.gguf --local-dir models\Sakura-14B-Qwen2.5-v1.0-GGUF
+.\hf.cmd download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF sakura-14b-qwen2.5-v1.0-iq4xs.gguf --local-dir models\Sakura-14B-Qwen2.5-v1.0-GGUF
 
 Sugoi 14B 实验性英文翻译（英文输出建议人工复核）：
-hf.cmd download sugoitoolkit/Sugoi-14B-Ultra-GGUF Sugoi-14B-Ultra-Q4_K_M.gguf --local-dir models\Sugoi-14B-Ultra-GGUF
+.\hf.cmd download sugoitoolkit/Sugoi-14B-Ultra-GGUF Sugoi-14B-Ultra-Q4_K_M.gguf --local-dir models\Sugoi-14B-Ultra-GGUF
 
 说话人性别着色：
-hf.cmd download JaesungHuh/voice-gender-classifier --local-dir models\voice-gender-classifier
+.\hf.cmd download JaesungHuh/voice-gender-classifier --local-dir models\voice-gender-classifier
 
 4. 启动
 

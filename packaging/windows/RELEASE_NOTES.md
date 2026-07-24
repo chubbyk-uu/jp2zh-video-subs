@@ -19,6 +19,10 @@ Face with the relocatable root-level `hf.cmd`.
 See `INSTALL-EN.txt` for complete English setup instructions or `INSTALL-CN.txt` for Chinese
 instructions.
 
+Shell note: PowerShell users must set proxy variables with `$env:HTTPS_PROXY` /
+`$env:HTTP_PROXY` and run the downloader as `.\hf.cmd`. Command Prompt users must use `set`
+instead. The standalone installation guides attached to this release show both forms.
+
 Changes since Beta 4:
 
 - Replace the non-relocatable pip-generated `runtime\Scripts\hf.exe` instructions with a

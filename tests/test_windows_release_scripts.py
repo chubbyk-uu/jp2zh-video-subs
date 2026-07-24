@@ -51,6 +51,9 @@ def test_portable_setup_guides_are_current_and_staged():
         assert "jp2zh-subtitle-tool.exe" in guide
         assert "jp2zh字幕工具.exe" not in guide
         assert "hf.cmd download" in guide
+        assert r".\hf.cmd download" in guide
+        assert "$env:HTTPS_PROXY" in guide
+        assert "set HTTPS_PROXY=" in guide
         assert r"runtime\Scripts\hf.exe" not in guide
         assert "Sugoi-14B-Ultra-Q4_K_M.gguf" in guide
 
