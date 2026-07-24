@@ -593,6 +593,22 @@ git diff --check
 | 运行时与 GUI | PASS：解压后的 PyTorch 2.11.0+cu128 识别 RTX 5080 CUDA；CLI 帮助和非法后端组合提前拒绝正常；隔离配置 GUI 显示 2 个 ASR、3 种字幕目标并正常退出 |
 | 远端资产 | PASS：两个程序分卷、两份安装说明和两份 SHA-256 文件均为 `uploaded`，名称和字节数与本地一致；四个小型资产重新下载后逐字节匹配 |
 
+### RUN-20260724-20：Windows CUDA Beta 5 下载器热修复发布
+
+| 项目 | 记录值 |
+|---|---|
+| Release | `v0.1.0-beta.5` 已作为 GitHub prerelease 发布，tag 指向 `934ed5f`；Beta 4 已标记为 superseded |
+| 修复原因 | Beta 4 安装说明调用 pip 生成的 `runtime\Scripts\hf.exe`，其中嵌入打包机 Python 绝对路径，绿色目录移动后无法启动 |
+| 修复内容 | 根目录新增可迁移 `hf.cmd`，通过相对路径调用随包 Python，并在模型下载期间清除推理专用 offline 环境变量；中英文安装命令全部改用该入口 |
+| 源码验证 | PASS：`403 passed`；Ruff、Shell 语法和 `git diff --check` 通过 |
+| 增量 staging | PASS：只同步程序层并输出 `Reusing unchanged staged runtime`；不重建 runtime、不复制或归档模型 |
+| 原始程序归档 | 3,284,128,470 B；SHA-256 为 `79c7b4ff2af8d91f5002aff910fdad2907a0987f220b46ea082a4d90b5710648` |
+| 程序分卷 | `.001` 1,992,294,400 B，SHA-256 `454b50d6282b5c229821be425c200d1389efe5c3683de69cf5ef9bd0993063d3`；`.002` 1,291,834,070 B，SHA-256 `f07e9070b7905bd1d34bb267ff8467b0e32f532871430d13e77be536631e75b5` |
+| 完整性 | PASS：原始归档和两个分卷各自通过 SHA-256；顺序拼接结果与原始归档哈希一致；原始归档 `7z t` 无错误 |
+| 全新解压 | PASS：28,140 个文件、8,202,711,989 B 完整解压；Transformers 实际导入成功；`hf.cmd version` 返回 huggingface_hub 0.36.2 |
+| 联网安装 | PASS：从全新解压目录通过 Windows 本机 HTTP 代理调用 `hf.cmd`，实际下载 `litagin/anime-whisper` 的 1,268 B `config.json` |
+| 远端资产 | PASS：两个程序分卷、两份安装说明和两份 SHA-256 文件均为 `uploaded`；GitHub 返回的大小和 SHA-256 digest 与本地一致 |
+
 ## 14. 当前剩余人工验收
 
 以下项目尚未用真实桌面手工操作逐项勾选，保留 `NOT RUN`：系统文件对话框、真实桌面
