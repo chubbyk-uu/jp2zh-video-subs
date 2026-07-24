@@ -83,7 +83,9 @@ test ! -e "$extract_root/jp2zh-video-subs/config/jp2zh-video-subs.lock"
 test -z "$(find "$extract_root/jp2zh-video-subs/outputs" "$extract_root/jp2zh-video-subs/work" -type f -print -quit)"
 "$extract_root/jp2zh-video-subs/runtime/python.exe" -c \
     "from transformers import WhisperForConditionalGeneration, WhisperProcessor; print('Extracted Transformers runtime OK')"
-cmd.exe /d /c \
-    "call \"$(wslpath -w "$extract_root/jp2zh-video-subs/hf.cmd")\" version"
+# Pass the batch file path as its own argv item. Embedding escaped quotes in the
+# /c command string makes cmd.exe treat those quotes as part of the command name.
+cmd.exe /d /c call \
+    "$(wslpath -w "$extract_root/jp2zh-video-subs/hf.cmd")" version
 
 printf 'Fresh extracted candidate: %s\n' "$extract_root/jp2zh-video-subs"

@@ -78,6 +78,8 @@ def test_program_only_release_can_be_extracted_without_model_archives():
     assert 'INSTALL-EN.txt' in extract
     assert 'jp2zh-video-subs/hf.cmd' in extract
     assert "cmd.exe /d /c" in extract
+    assert "cmd.exe /d /c call" in extract
+    assert r'call \"$(wslpath' not in extract
     assert 'wslpath -w "$extract_root/jp2zh-video-subs/hf.cmd"' in extract
     assert 'find "$extract_root/jp2zh-video-subs/models"' in extract
     # A missing models directory must not pass as "ships no weights".
