@@ -65,6 +65,7 @@ install -m 0644 "$source_root/packaging/windows/runtime-lock.txt" "$package_root
 install -m 0644 "$source_root/packaging/windows/launch.cmd" "$package_root/launch.cmd"
 install -m 0644 "$source_root/packaging/windows/launch-debug.cmd" "$package_root/launch-debug.cmd"
 install -m 0644 "$source_root/packaging/windows/launch-env.cmd" "$package_root/launch-env.cmd"
+install -m 0644 "$source_root/packaging/windows/hf.cmd" "$package_root/hf.cmd"
 "$source_root/packaging/windows/build-launcher.sh" "$source_root" "$package_root"
 for legacy_entry in "$package_root/启动字幕工具.cmd" "$package_root/启动字幕工具-调试.cmd"; do
     if [[ -e "$legacy_entry" ]]; then

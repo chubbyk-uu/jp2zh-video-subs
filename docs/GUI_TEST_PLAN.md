@@ -3,7 +3,7 @@
 状态：执行中
 适用范围：源码开发版 GUI，以及后续 Windows CUDA 绿色目录版  
 基线提交：`b6cec92 Add source GUI for subtitle pipeline`  
-最近自动测试基线：`401 passed`
+最近自动测试基线：`403 passed`
 
 ## 1. 目标
 

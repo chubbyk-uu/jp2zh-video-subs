@@ -219,10 +219,10 @@ python scripts/video_to_zh_srt.py path/to/videos/ \
 ### 桌面 GUI
 
 Windows 用户可从
-[`v0.1.0 Beta 4`](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.4)
+[`v0.1.0 Beta 5`](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.5)
 下载绿色版。下载全部 `jp2zh-video-subs-windows-x64-cuda-program.7z.*`
 分卷，放在同一目录并从 `.7z.001` 解压，然后按 Release 内的
-`INSTALL-CN.txt` 使用包内 `runtime\Scripts\hf.exe` 下载模型。双击
+`INSTALL-CN.txt` 使用程序根目录下可迁移的 `hf.cmd` 下载模型。双击
 `jp2zh-subtitle-tool.exe` 即可启动；系统无需另装 Python、FFmpeg 或 CUDA Toolkit，
 但仍需可用的 NVIDIA 驱动。发布包只包含程序，不包含模型权重或示例视频。
 

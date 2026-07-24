@@ -54,6 +54,7 @@ fi
 test -x "$extract_root/jp2zh-video-subs/runtime/python.exe"
 test -x "$extract_root/jp2zh-video-subs/bin/ffmpeg.exe"
 test -x "$extract_root/jp2zh-video-subs/jp2zh-subtitle-tool.exe"
+test -f "$extract_root/jp2zh-video-subs/hf.cmd"
 test ! -e "$extract_root/jp2zh-video-subs/jp2zh字幕工具.exe"
 test ! -e "$extract_root/jp2zh-video-subs/启动字幕工具.cmd"
 test ! -e "$extract_root/jp2zh-video-subs/启动字幕工具-调试.cmd"
@@ -82,5 +83,7 @@ test ! -e "$extract_root/jp2zh-video-subs/config/jp2zh-video-subs.lock"
 test -z "$(find "$extract_root/jp2zh-video-subs/outputs" "$extract_root/jp2zh-video-subs/work" -type f -print -quit)"
 "$extract_root/jp2zh-video-subs/runtime/python.exe" -c \
     "from transformers import WhisperForConditionalGeneration, WhisperProcessor; print('Extracted Transformers runtime OK')"
+cmd.exe /d /c \
+    "call \"$(wslpath -w "$extract_root/jp2zh-video-subs/hf.cmd")\" version"
 
 printf 'Fresh extracted candidate: %s\n' "$extract_root/jp2zh-video-subs"
