@@ -9,6 +9,7 @@ import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from atomic_io import atomic_write_text
 from alignment_recovery import (
     assess_alignment_quality,
     items_to_words,
@@ -2340,7 +2341,8 @@ def main() -> None:
 
     meta_output = args.meta_output or args.output.with_suffix(args.output.suffix + ".meta.json")
     meta_output.parent.mkdir(parents=True, exist_ok=True)
-    meta_output.write_text(
+    atomic_write_text(
+        meta_output,
         json.dumps(
             {
                 "audio": str(args.audio),
@@ -2383,8 +2385,7 @@ def main() -> None:
             },
             ensure_ascii=False,
             indent=2,
-        ),
-        encoding="utf-8",
+        ) + "\n",
     )
     print(f"Wrote: {args.output}", flush=True)
     print(f"Meta: {meta_output}", flush=True)

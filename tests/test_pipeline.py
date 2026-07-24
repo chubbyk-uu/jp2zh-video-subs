@@ -7,9 +7,15 @@ from pathlib import Path
 
 import pytest
 
+from atomic_io import atomic_text_writer
 from pipeline_runtime import CancellationToken, EventWriter, PipelineCancelled
 from video_to_zh_srt import (
     JobLog,
+    VideoJob,
+    asr_manifest_path,
+    asr_provenance_matches,
+    audio_manifest_path,
+    audio_provenance_matches,
     cleanup_intermediate_files,
     effective_cleanup_policy,
     main,
@@ -21,6 +27,9 @@ from video_to_zh_srt import (
     srt_cue_count,
     translation_is_complete,
     translation_provenance_matches,
+    validate_job_paths,
+    write_asr_provenance,
+    write_audio_provenance,
     write_translation_provenance,
 )
 
@@ -191,6 +200,19 @@ def test_extract_audio_removes_partial_file_when_cancelled(tmp_path, monkeypatch
     assert not audio.exists()
 
 
+def test_atomic_text_writer_keeps_previous_output_when_write_fails(tmp_path):
+    final = tmp_path / "result.srt"
+    partial = tmp_path / "result.srt.part"
+    final.write_text("previous", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        with atomic_text_writer(final) as output:
+            output.write("broken")
+            raise RuntimeError("interrupted")
+
+    assert final.read_text(encoding="utf-8") == "previous"
+    assert not partial.exists()
+
+
 def test_run_stage_command_emits_completed_event_sequence(tmp_path):
     event_path = tmp_path / "events.jsonl"
     log = JobLog(tmp_path / "pipeline.log")
@@ -341,14 +363,27 @@ def test_process_video_stages_emits_skips_for_resumed_and_disabled_stages(tmp_pa
     job_dir = tmp_path / "work"
     job_dir.mkdir()
     audio = job_dir / "sample.wav"
+    audio.write_bytes(b"audio")
+    video.write_bytes(b"video")
     output = tmp_path / "sample.zh.srt"
     ja_srt = job_dir / "sample.ja.srt"
     ja_srt.write_text(SRT_TWO_CUES, encoding="utf-8")
     output.write_text(SRT_TWO_CUES, encoding="utf-8")
+    qwen_model = tmp_path / "qwen-model.bin"
+    aligner_model = tmp_path / "aligner-model.bin"
+    translate_model = tmp_path / "translate-model.gguf"
+    for model in (qwen_model, aligner_model, translate_model):
+        model.write_bytes(b"model")
+    monkeypatch.setattr(pipeline, "QWEN_ASR_MODEL", qwen_model)
+    monkeypatch.setattr(pipeline, "QWEN_ALIGNER_MODEL", aligner_model)
+    monkeypatch.setattr(pipeline, "GALTRANSL_MODEL", translate_model)
     monkeypatch.setattr(pipeline, "build_qwen_command", lambda *_args: ["unused-asr"])
     monkeypatch.setattr(pipeline, "build_translate_command", lambda *_args: ["unused-translate"])
 
     args = argparse.Namespace(
+        asr="qwen",
+        translator="galtransl",
+        target_language="zh-Hans",
         resume=True,
         bilingual=False,
         quality_report=False,
@@ -357,7 +392,12 @@ def test_process_video_stages_emits_skips_for_resumed_and_disabled_stages(tmp_pa
         no_copy_to_video_dir=True,
         display_wrap_max_chars=0,
     )
-    write_translation_provenance(job_dir / "sample.zh-Hans.translation.json", args)
+    ja_meta = ja_srt.with_suffix(".srt.meta.json")
+    ja_meta.write_text("{}", encoding="utf-8")
+    write_asr_provenance(asr_manifest_path(ja_srt), args, audio, ja_srt, ja_meta)
+    write_translation_provenance(
+        job_dir / "sample.zh-Hans.translation.json", args, ja_srt, output
+    )
     event_path = tmp_path / "events.jsonl"
     log = JobLog(job_dir / "pipeline.log")
     try:
@@ -443,6 +483,78 @@ def test_translation_provenance_rejects_target_or_backend_change(tmp_path):
     assert not translation_provenance_matches(path, args)
 
 
+def test_translation_provenance_rejects_same_cue_count_with_changed_source(tmp_path):
+    import argparse
+
+    path = tmp_path / "translation.json"
+    ja = tmp_path / "sample.ja.srt"
+    output = tmp_path / "sample.zh-s.srt"
+    ja.write_text(SRT_TWO_CUES, encoding="utf-8")
+    output.write_text(SRT_TWO_CUES, encoding="utf-8")
+    args = argparse.Namespace(
+        translator="galtransl",
+        target_language="zh-Hans",
+        context_size=6,
+        translate_batch_size=8,
+        lead_out_seconds=0.5,
+        min_display_seconds=1.5,
+    )
+    write_translation_provenance(path, args, ja, output)
+    assert translation_provenance_matches(path, args, ja, output)
+
+    ja.write_text(SRT_TWO_CUES.replace("こんにちは", "こんばんは"), encoding="utf-8")
+    assert srt_cue_count(ja) == 2
+    assert not translation_provenance_matches(path, args, ja, output)
+
+
+def test_audio_provenance_rejects_replaced_input_or_audio(tmp_path):
+    video = tmp_path / "sample.mp4"
+    audio = tmp_path / "sample.wav"
+    manifest = audio_manifest_path(audio)
+    video.write_bytes(b"video-v1")
+    audio.write_bytes(b"audio-v1")
+    write_audio_provenance(manifest, video, audio)
+    assert audio_provenance_matches(manifest, video, audio)
+
+    video.write_bytes(b"video-v2-longer")
+    assert not audio_provenance_matches(manifest, video, audio)
+    video.write_bytes(b"video-v1")
+    write_audio_provenance(manifest, video, audio)
+    audio.write_bytes(b"audio-v2")
+    assert not audio_provenance_matches(manifest, video, audio)
+
+
+def test_asr_provenance_rejects_config_change(tmp_path, monkeypatch):
+    import argparse
+    import video_to_zh_srt as pipeline
+
+    audio = tmp_path / "sample.wav"
+    ja = tmp_path / "sample.ja.srt"
+    meta = tmp_path / "sample.ja.srt.meta.json"
+    manifest = asr_manifest_path(ja)
+    qwen_model = tmp_path / "qwen-model.bin"
+    aligner_model = tmp_path / "aligner-model.bin"
+    for path, data in (
+        (audio, b"audio"),
+        (ja, b"subtitle"),
+        (meta, b"{}"),
+        (qwen_model, b"qwen"),
+        (aligner_model, b"aligner"),
+    ):
+        path.write_bytes(data)
+    monkeypatch.setattr(pipeline, "QWEN_ASR_MODEL", qwen_model)
+    monkeypatch.setattr(pipeline, "QWEN_ALIGNER_MODEL", aligner_model)
+    args = argparse.Namespace(asr="qwen", language="ja", min_cue_seconds=0.3)
+    write_asr_provenance(manifest, args, audio, ja, meta)
+    assert asr_provenance_matches(manifest, args, audio, ja, meta)
+
+    args.qwen_batch_size = 8
+    assert not asr_provenance_matches(manifest, args, audio, ja, meta)
+    args.qwen_batch_size = 24
+    qwen_model.write_bytes(b"changed-qwen-model")
+    assert not asr_provenance_matches(manifest, args, audio, ja, meta)
+
+
 def test_sugoi_provenance_normalizes_batch_zero_and_ignores_context(tmp_path):
     import argparse
 
@@ -482,15 +594,43 @@ def test_opencc_dependency_probe_has_actionable_error(monkeypatch):
 @pytest.mark.parametrize(
     ("policy", "remaining"),
     [
-        ("keep_all", {"sample.wav", "sample.ja.srt", "sample.ja.srt.meta.json", "pipeline.log", "sample.quality.txt"}),
-        ("delete_audio", {"sample.ja.srt", "sample.ja.srt.meta.json", "pipeline.log", "sample.quality.txt"}),
+        (
+            "keep_all",
+            {
+                "sample.wav",
+                "sample.wav.manifest.json",
+                "sample.ja.srt",
+                "sample.ja.srt.meta.json",
+                "sample.ja.srt.manifest.json",
+                "pipeline.log",
+                "sample.quality.txt",
+            },
+        ),
+        (
+            "delete_audio",
+            {
+                "sample.ja.srt",
+                "sample.ja.srt.meta.json",
+                "sample.ja.srt.manifest.json",
+                "pipeline.log",
+                "sample.quality.txt",
+            },
+        ),
         ("final_only", {"pipeline.log", "sample.quality.txt"}),
     ],
 )
 def test_cleanup_intermediate_files_deletes_only_known_files(tmp_path, policy, remaining):
     audio = tmp_path / "sample.wav"
     ja_srt = tmp_path / "sample.ja.srt"
-    for name in ("sample.wav", "sample.ja.srt", "sample.ja.srt.meta.json", "pipeline.log", "sample.quality.txt"):
+    for name in (
+        "sample.wav",
+        "sample.wav.manifest.json",
+        "sample.ja.srt",
+        "sample.ja.srt.meta.json",
+        "sample.ja.srt.manifest.json",
+        "pipeline.log",
+        "sample.quality.txt",
+    ):
         (tmp_path / name).write_text("x", encoding="utf-8")
 
     cleanup_intermediate_files(policy, audio, ja_srt)
@@ -524,6 +664,52 @@ def test_output_path_for_keeps_flat_directory_names(tmp_path):
     video = input_dir / "sample.mp4"
 
     assert output_path_for(video, input_dir, output_dir, recursive=False) == (output_dir / "sample.zh-s.srt").resolve()
+
+
+def test_validate_job_paths_rejects_non_srt_explicit_output(tmp_path):
+    import argparse
+
+    video = tmp_path / "sample.mp4"
+    job = VideoJob(1, video, tmp_path / "output.txt", tmp_path / "work", tmp_path / "work" / "sample.wav")
+    args = argparse.Namespace(target_language="zh-Hans", bilingual=False, no_copy_to_video_dir=True)
+
+    with pytest.raises(SystemExit, match=r"--output must use the \.srt extension"):
+        validate_job_paths([job], args, explicit_output=True)
+
+
+def test_validate_job_paths_rejects_output_equal_to_input_video(tmp_path):
+    import argparse
+
+    video = tmp_path / "sample.mp4"
+    job = VideoJob(1, video, video, tmp_path / "work", tmp_path / "work" / "sample.wav")
+    args = argparse.Namespace(target_language="zh-Hans", bilingual=False, no_copy_to_video_dir=True)
+
+    with pytest.raises(SystemExit, match="input video and output SRT"):
+        validate_job_paths([job], args)
+
+
+def test_validate_job_paths_rejects_output_collision_with_intermediate(tmp_path):
+    import argparse
+
+    video = tmp_path / "sample.mp4"
+    work = tmp_path / "work"
+    job = VideoJob(1, video, work / "sample.ja.srt", work, work / "sample.wav")
+    args = argparse.Namespace(target_language="zh-Hans", bilingual=False, no_copy_to_video_dir=True)
+
+    with pytest.raises(SystemExit, match="output SRT and Japanese SRT"):
+        validate_job_paths([job], args, explicit_output=True)
+
+
+def test_validate_job_paths_uses_windows_case_insensitive_comparison(tmp_path):
+    import argparse
+
+    video = tmp_path / "sample.mp4"
+    work = tmp_path / "work"
+    job = VideoJob(1, video, work / "SAMPLE.JA.SRT", work, work / "sample.wav")
+    args = argparse.Namespace(target_language="zh-Hans", bilingual=False, no_copy_to_video_dir=True)
+
+    with pytest.raises(SystemExit, match="collision"):
+        validate_job_paths([job], args, explicit_output=True, case_insensitive=True)
 
 
 @pytest.mark.parametrize(

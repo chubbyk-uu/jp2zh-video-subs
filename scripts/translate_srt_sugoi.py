@@ -4,6 +4,7 @@ import argparse
 import re
 from pathlib import Path
 
+from atomic_io import atomic_text_writer
 from portable_runtime import prepare_llama_cuda_dependencies, project_root
 
 prepare_llama_cuda_dependencies(Path(__file__))
@@ -146,7 +147,7 @@ def main() -> None:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fallback_slots = 0
-    with args.output.open("w", encoding="utf-8") as output:
+    with atomic_text_writer(args.output) as output:
         index = 0
         while index < len(entries):
             block = [entries[index]]

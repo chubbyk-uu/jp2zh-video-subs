@@ -89,6 +89,10 @@ Qwen 字幕时保持默认的 `aligner_fallback + context none` 路径，除非�
 python scripts/video_to_zh_srt.py path/to/input.mp4 --output outputs/input.zh-s.srt
 ```
 
+显式 `--output` 必须使用 `.srt` 扩展名。流水线会在启动任何子进程前检查输入视频、
+最终 SRT/ASS、工作目录中间产物、清单和临时文件的路径；存在覆盖输入或产物互撞风险时
+会直接拒绝运行。Windows 下路径比较不区分大小写。
+
 批量处理时指定输出目录：
 
 ```bash
@@ -176,9 +180,16 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --cleanup-policy final_only
 python scripts/video_to_zh_srt.py path/to/input.mp4 --reuse-existing-audio
 ```
 
-从中断处续跑——跳过产物已存在且完整的阶段：转写（日语 SRT 存在且非空）、翻译（译文 SRT
-条数与源日语 SRT 一致，且目标语言、后端、prompt schema、上下文/批量和换行设置的 provenance 一致）、音频抽取（WAV 存在且非空）。ASS 始终重新生成（耗时极短，
-不占 GPU）；如果加了 `--quality-report`，质量报告也会重新生成。`--resume` 隐含 `--reuse-existing-audio`：
+从中断处续跑时，`--resume` 只跳过清单验证通过的阶段。音频清单绑定输入视频身份、
+抽取参数和 WAV 哈希；ASR 清单绑定 WAV、识别后端、完整有效参数、模型身份、日语 SRT
+及 metadata 哈希；翻译清单绑定日语 SRT 内容、目标语言、翻译后端、模型、prompt schema、
+上下文/批量/换行设置和最终 SRT 哈希。旧工作目录里没有新版清单的产物会自动重跑一次，
+之后才可安全复用。ASR 与翻译 SRT、metadata 和清单均通过临时文件原子替换，失败或取消
+不会用半成品覆盖已有最终文件。
+
+ASS 始终重新生成（耗时极短，不占 GPU）；如果加了 `--quality-report`，质量报告也会重新
+生成。`--resume` 会在音频清单有效时复用 WAV；单独使用 `--reuse-existing-audio` 仍保留
+显式强制复用现有 WAV 的兼容行为：
 
 ```bash
 python scripts/video_to_zh_srt.py path/to/videos/ --bilingual --resume
@@ -244,9 +255,9 @@ NVIDIA 显卡仍缺少实机兼容性证据。缺少 `models\whisperseg\model.on
 时，设备栏显示“语音切分 未检测（缺少模型）”；模型存在时才创建真实 ONNX Runtime
 会话并区分 CUDA、CPU 和检测失败。更改模型文件后点击“刷新”重新检测。
 
-“复用已完成阶段（断点续跑）”会跳过完整存在的 WAV、日语 SRT，以及条数与 provenance
-（目标语言、翻译后端和关键翻译/换行设置）均匹配的译文字幕。
-更换模型或识别参数后应关闭它，以免继续复用旧的识别结果。长字幕自动换行的默认阈值 20
+“复用已完成阶段（断点续跑）”会验证输入、模型、完整阶段参数和产物哈希清单，只跳过
+全部匹配的 WAV、日语 SRT 和译文字幕；更换模型或识别/翻译参数会自动使对应阶段失效，
+不需要手动关闭断点续跑。旧产物没有清单时会重跑一次。长字幕自动换行的默认阈值 20
 表示超过 20 个可见字符时尝试在靠近中间的句末标点处分成两行；没有合适标点时不会硬拆，
 关闭该开关等价于 `--display-wrap-max-chars 0`。
 

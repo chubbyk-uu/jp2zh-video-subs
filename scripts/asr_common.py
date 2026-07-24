@@ -5,6 +5,7 @@ import difflib
 from dataclasses import dataclass
 from pathlib import Path
 
+from atomic_io import atomic_text_writer
 from hallucination_filters import (
     exceeds_compression_ratio,
     is_duplicate_of_nearby,
@@ -242,7 +243,7 @@ def resolve_overlaps(entries: list[SubtitleEntry]) -> list[SubtitleEntry]:
 
 
 def write_entries(entries: list[SubtitleEntry], output_path: Path) -> None:
-    with output_path.open("w", encoding="utf-8") as f:
+    with atomic_text_writer(output_path) as f:
         for index, entry in enumerate(entries, start=1):
             f.write(f"{index}\n")
             f.write(f"{srt_time(entry.start)} --> {srt_time(entry.end)}\n")

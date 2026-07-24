@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from atomic_io import atomic_write_text
+
 
 @dataclass
 class Interval:
@@ -96,7 +98,7 @@ def wrap_srt_display_file(path: Path, max_chars: int, target_language: str = "zh
         if display != text:
             wrapped += 1
         out.append("\n".join([*lines[:2], *display.splitlines()]))
-    path.write_text("\n\n".join(out) + trailing_newline, encoding="utf-8")
+    atomic_write_text(path, "\n\n".join(out) + trailing_newline)
     return wrapped
 
 

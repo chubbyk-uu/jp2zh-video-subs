@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
 import os
@@ -11,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
@@ -68,6 +69,12 @@ GALTRANSL_MODEL = PROJECT_ROOT / "models" / "Sakura-GalTransl-7B-v3.7-GGUF" / "S
 SUGOI_MODEL = PROJECT_ROOT / "models" / "Sugoi-14B-Ultra-GGUF" / "Sugoi-14B-Ultra-Q4_K_M.gguf"
 ANIME_PREFIX_SKIP = {"language", "min_cue_seconds", "text_backend"}
 CLEANUP_POLICIES = ("keep_all", "delete_audio", "final_only")
+MANIFEST_SCHEMA = 2
+FFMPEG_AUDIO_SETTINGS = {
+    "channels": 1,
+    "sample_rate": 16000,
+    "format": "wav",
+}
 
 
 class JobLog:
@@ -185,6 +192,81 @@ def require_python_module(module: str, label: str) -> None:
         raise SystemExit(f"Missing {label} Python package ({module}): {exc}") from exc
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_stat_identity(path: Path) -> dict[str, object]:
+    """Cheap identity for large source/model files; subtitle/audio outputs also carry hashes."""
+    resolved = path.resolve()
+    stat = resolved.stat()
+    return {
+        "path": str(resolved),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def model_identity(path: Path) -> dict[str, object]:
+    """Identify a model without hashing multi-gigabyte weights on every run."""
+    resolved = path.resolve()
+    if resolved.is_file():
+        return {"kind": "file", **file_stat_identity(resolved)}
+    entries: list[tuple[str, int, int]] = []
+    for child in sorted(item for item in resolved.rglob("*") if item.is_file()):
+        stat = child.stat()
+        entries.append((child.relative_to(resolved).as_posix(), stat.st_size, stat.st_mtime_ns))
+    digest = hashlib.sha256(
+        json.dumps(entries, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {"kind": "directory", "path": str(resolved), "files": len(entries), "metadata_sha256": digest}
+
+
+def atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + ".part")
+    try:
+        partial.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        partial.replace(path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def read_json_object(path: Path) -> dict[str, object] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def hashed_output_identity(path: Path) -> dict[str, object]:
+    identity = file_stat_identity(path)
+    identity["sha256"] = sha256_file(path)
+    return identity
+
+
+def output_identity_matches(path: Path, stored: object) -> bool:
+    if not isinstance(stored, dict) or not path.is_file():
+        return False
+    try:
+        stat = path.stat()
+        if stored.get("size") != stat.st_size or stored.get("mtime_ns") != stat.st_mtime_ns:
+            return False
+        expected_hash = stored.get("sha256")
+        return isinstance(expected_hash, str) and sha256_file(path) == expected_hash
+    except OSError:
+        return False
+
+
 def srt_cue_count(path: Path) -> int:
     try:
         text = path.read_text(encoding="utf-8")
@@ -201,7 +283,11 @@ def translation_is_complete(zh_srt: Path, ja_srt: Path) -> bool:
     return count > 0 and count == srt_cue_count(ja_srt)
 
 
-def translation_provenance(args: argparse.Namespace) -> dict[str, object]:
+def translation_provenance(
+    args: argparse.Namespace,
+    ja_srt: Path | None = None,
+    output_srt: Path | None = None,
+) -> dict[str, object]:
     """Settings that make a translated SRT unsafe to reuse across configurations."""
     translator = getattr(args, "translator", "galtransl")
     target = getattr(args, "target_language", TargetLanguage.SIMPLIFIED_CHINESE.value)
@@ -212,8 +298,9 @@ def translation_provenance(args: argparse.Namespace) -> dict[str, object]:
         batch_size=getattr(args, "translate_batch_size", None),
         wrap_chars=getattr(args, "display_wrap_max_chars", None),
     )
-    return {
-        "schema": 1,
+    payload: dict[str, object] = {
+        "schema": MANIFEST_SCHEMA,
+        "stage": "translation",
         "translator": translator,
         "translator_prompt_schema": {
             "galtransl": "galtransl-v3-project-1",
@@ -228,21 +315,134 @@ def translation_provenance(args: argparse.Namespace) -> dict[str, object]:
         "lead_out_seconds": getattr(args, "lead_out_seconds", 0.5),
         "min_display_seconds": getattr(args, "min_display_seconds", 1.5),
     }
+    if ja_srt is not None:
+        payload["input"] = hashed_output_identity(ja_srt)
+    if output_srt is not None:
+        payload["output"] = hashed_output_identity(output_srt)
+    _, translate_model = translate_backend(args)
+    if translate_model.exists():
+        payload["model"] = model_identity(translate_model)
+    return payload
 
 
-def translation_provenance_matches(path: Path, args: argparse.Namespace) -> bool:
-    try:
-        stored = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+def translation_provenance_matches(
+    path: Path,
+    args: argparse.Namespace,
+    ja_srt: Path | None = None,
+    output_srt: Path | None = None,
+) -> bool:
+    stored = read_json_object(path)
+    if stored is None:
         return False
-    return stored == translation_provenance(args)
+    try:
+        return stored == translation_provenance(args, ja_srt, output_srt)
+    except OSError:
+        return False
 
 
-def write_translation_provenance(path: Path, args: argparse.Namespace) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_name(path.name + ".part")
-    partial.write_text(json.dumps(translation_provenance(args), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    partial.replace(path)
+def write_translation_provenance(
+    path: Path,
+    args: argparse.Namespace,
+    ja_srt: Path | None = None,
+    output_srt: Path | None = None,
+) -> None:
+    atomic_write_json(path, translation_provenance(args, ja_srt, output_srt))
+
+
+def audio_manifest_path(audio: Path) -> Path:
+    return audio.with_suffix(audio.suffix + ".manifest.json")
+
+
+def asr_manifest_path(ja_srt: Path) -> Path:
+    return ja_srt.with_suffix(ja_srt.suffix + ".manifest.json")
+
+
+def audio_provenance(video: Path, audio: Path | None = None) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema": MANIFEST_SCHEMA,
+        "stage": "audio",
+        "input": file_stat_identity(video),
+        "settings": FFMPEG_AUDIO_SETTINGS,
+    }
+    if audio is not None:
+        payload["output"] = hashed_output_identity(audio)
+    return payload
+
+
+def write_audio_provenance(path: Path, video: Path, audio: Path) -> None:
+    atomic_write_json(path, audio_provenance(video, audio))
+
+
+def audio_provenance_matches(path: Path, video: Path, audio: Path) -> bool:
+    stored = read_json_object(path)
+    if stored is None:
+        return False
+    try:
+        expected = audio_provenance(video)
+    except OSError:
+        return False
+    return (
+        stored.get("schema") == expected["schema"]
+        and stored.get("stage") == expected["stage"]
+        and stored.get("input") == expected["input"]
+        and stored.get("settings") == expected["settings"]
+        and output_identity_matches(audio, stored.get("output"))
+    )
+
+
+def asr_provenance(
+    args: argparse.Namespace,
+    audio: Path,
+    ja_srt: Path | None = None,
+    meta_output: Path | None = None,
+) -> dict[str, object]:
+    cfg = asr_config_for_command(args)
+    payload: dict[str, object] = {
+        "schema": MANIFEST_SCHEMA,
+        "stage": "asr",
+        "backend": args.asr,
+        "settings": asdict(cfg),
+        "input": hashed_output_identity(audio),
+        "models": {
+            "text": model_identity(Path(cfg.text_model) if args.asr == "anime" else QWEN_ASR_MODEL),
+            "forced_aligner": (
+                model_identity(QWEN_ALIGNER_MODEL)
+                if cfg.timestamp_mode != "vad_only"
+                else None
+            ),
+        },
+    }
+    if ja_srt is not None:
+        payload["output"] = hashed_output_identity(ja_srt)
+    if meta_output is not None:
+        payload["metadata"] = hashed_output_identity(meta_output)
+    return payload
+
+
+def write_asr_provenance(
+    path: Path,
+    args: argparse.Namespace,
+    audio: Path,
+    ja_srt: Path,
+    meta_output: Path,
+) -> None:
+    atomic_write_json(path, asr_provenance(args, audio, ja_srt, meta_output))
+
+
+def asr_provenance_matches(
+    path: Path,
+    args: argparse.Namespace,
+    audio: Path,
+    ja_srt: Path,
+    meta_output: Path,
+) -> bool:
+    stored = read_json_object(path)
+    if stored is None:
+        return False
+    try:
+        return stored == asr_provenance(args, audio, ja_srt, meta_output)
+    except OSError:
+        return False
 
 
 def effective_cleanup_policy(args: argparse.Namespace) -> str:
@@ -260,9 +460,13 @@ def cleanup_intermediate_files(policy: str, audio: Path, ja_srt: Path) -> list[P
         raise ValueError(f"Unknown cleanup policy: {policy}")
     candidates: list[Path] = []
     if policy in ("delete_audio", "final_only"):
-        candidates.append(audio)
+        candidates.extend((audio, audio_manifest_path(audio)))
     if policy == "final_only":
-        candidates.extend((ja_srt, ja_srt.with_suffix(ja_srt.suffix + ".meta.json")))
+        candidates.extend((
+            ja_srt,
+            ja_srt.with_suffix(ja_srt.suffix + ".meta.json"),
+            asr_manifest_path(ja_srt),
+        ))
 
     removed: list[Path] = []
     for path in candidates:
@@ -272,15 +476,6 @@ def cleanup_intermediate_files(policy: str, audio: Path, ja_srt: Path) -> list[P
     return removed
 
 
-def resume_skip(args: argparse.Namespace, path: Path, log: JobLog, label: str) -> bool:
-    """Whether --resume can skip a stage whose output is written in one shot at the
-    end of the stage (transcription), making existence proof of completeness."""
-    if args.resume and path.exists() and path.stat().st_size > 0:
-        log.print(f"Resume: skipping {label}, reusing {path}")
-        return True
-    return False
-
-
 @dataclass
 class VideoJob:
     index: int
@@ -288,6 +483,92 @@ class VideoJob:
     output: Path
     job_dir: Path
     audio: Path
+
+
+def _path_key(path: Path, *, case_insensitive: bool | None = None) -> str:
+    value = str(path.resolve())
+    if case_insensitive is None:
+        case_insensitive = os.name == "nt"
+    return value.casefold() if case_insensitive else value
+
+
+def job_artifact_paths(
+    job: VideoJob,
+    args: argparse.Namespace,
+) -> dict[str, Path]:
+    """All paths a job may read, create, replace, or copy to."""
+    stem = job.video.stem
+    ja_srt = job.job_dir / f"{stem}.ja.srt"
+    target = getattr(args, "target_language", TargetLanguage.SIMPLIFIED_CHINESE.value)
+    translated_output = (
+        job.job_dir / f"{stem}.zh-s.srt"
+        if target == TargetLanguage.TRADITIONAL_CHINESE.value
+        else job.output
+    )
+    paths = {
+        "input video": job.video,
+        "work directory": job.job_dir,
+        "output SRT": job.output,
+        "output SRT partial": job.output.with_name(job.output.name + ".part"),
+        "audio": job.audio,
+        "audio partial": job.audio.with_name(job.audio.name + ".part"),
+        "audio manifest": audio_manifest_path(job.audio),
+        "Japanese SRT": ja_srt,
+        "Japanese SRT partial": ja_srt.with_name(ja_srt.name + ".part"),
+        "ASR metadata": ja_srt.with_suffix(ja_srt.suffix + ".meta.json"),
+        "ASR metadata partial": ja_srt.with_suffix(ja_srt.suffix + ".meta.json.part"),
+        "ASR manifest": asr_manifest_path(ja_srt),
+        "translation manifest": job.job_dir / f"{stem}.{target}.translation.json",
+        "pipeline log": job.job_dir / "pipeline.log",
+        "quality report": job.job_dir / f"{stem}.quality.txt",
+    }
+    if translated_output != job.output:
+        paths["Simplified Chinese intermediate"] = translated_output
+        paths["Simplified Chinese intermediate partial"] = translated_output.with_name(
+            translated_output.name + ".part"
+        )
+    if getattr(args, "bilingual", False):
+        paths["bilingual ASS"] = job.output.with_suffix(".ass")
+    if not getattr(args, "no_copy_to_video_dir", False):
+        source = job.output.with_suffix(".ass") if getattr(args, "bilingual", False) else job.output
+        destination = job.video.parent / source.name
+        if destination != source:
+            paths["subtitle copied next to video"] = destination
+    return paths
+
+
+def validate_job_paths(
+    jobs: Iterable[VideoJob],
+    args: argparse.Namespace,
+    *,
+    explicit_output: bool = False,
+    case_insensitive: bool | None = None,
+) -> None:
+    """Reject path mappings that could overwrite an input or another stage's artifact."""
+    claimed: dict[str, tuple[Path, str, Path]] = {}
+    for job in jobs:
+        if explicit_output and job.output.suffix.lower() != ".srt":
+            raise SystemExit(f"--output must use the .srt extension: {job.output}")
+        local: dict[str, tuple[str, Path]] = {}
+        for label, path in job_artifact_paths(job, args).items():
+            key = _path_key(path, case_insensitive=case_insensitive)
+            previous = local.get(key)
+            if previous is not None:
+                previous_label, previous_path = previous
+                raise SystemExit(
+                    f"Unsafe path collision for {job.video}: "
+                    f"{previous_label} and {label} both map to {previous_path}"
+                )
+            local[key] = (label, path)
+
+            other = claimed.get(key)
+            if other is not None and other[0] != job.video:
+                other_video, other_label, other_path = other
+                raise SystemExit(
+                    f"Unsafe path collision: {other_video} ({other_label}) and "
+                    f"{job.video} ({label}) both map to {other_path}"
+                )
+            claimed[key] = (job.video, label, path)
 
 
 def extract_audio(
@@ -495,14 +776,19 @@ def asr_config_for_command(args: argparse.Namespace) -> QwenAsrConfig | AnimeAsr
     )
 
 
-def build_qwen_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> list[str]:
+def build_qwen_command(
+    args: argparse.Namespace,
+    audio: Path,
+    ja_srt: Path,
+    meta_output: Path | None = None,
+) -> list[str]:
     """Assemble the Qwen transcription sub-command.
 
     The qwen and anime backends share the same sub-script but use separate top-level
     config surfaces, so backend defaults cannot leak across lines.
     """
     cfg = asr_config_for_command(args)
-    return [
+    command = [
         sys.executable,
         str(QWEN_TRANSCRIBE_SCRIPT),
         str(audio),
@@ -513,6 +799,9 @@ def build_qwen_command(args: argparse.Namespace, audio: Path, ja_srt: Path) -> l
         str(QWEN_ALIGNER_MODEL),
         *config_to_cli_args(cfg),
     ]
+    if meta_output is not None:
+        command.extend(["--meta-output", str(meta_output)])
+    return command
 
 
 def validate_runtime_args(args: argparse.Namespace) -> None:
@@ -540,9 +829,10 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
 
 
 def translate_backend(args: argparse.Namespace) -> tuple[Path, Path]:
-    if args.translator == "sakura":
+    translator = getattr(args, "translator", "galtransl")
+    if translator == "sakura":
         return SAKURA_TRANSLATE_SCRIPT, SAKURA_MODEL
-    if args.translator == "sugoi":
+    if translator == "sugoi":
         return SUGOI_TRANSLATE_SCRIPT, SUGOI_MODEL
     return GALTRANSL_TRANSLATE_SCRIPT, GALTRANSL_MODEL
 
@@ -835,17 +1125,32 @@ def process_video_stages(
     log.print(f"\n==> Processing {video}")
     output.parent.mkdir(parents=True, exist_ok=True)
     ja_srt = job_dir / f"{video.stem}.ja.srt"
+    ja_meta = ja_srt.with_suffix(ja_srt.suffix + ".meta.json")
+    asr_manifest = asr_manifest_path(ja_srt)
     translate_input_srt = ja_srt
     target_language = getattr(args, "target_language", TargetLanguage.SIMPLIFIED_CHINESE.value)
     translation_manifest = job_dir / f"{video.stem}.{target_language}.translation.json"
 
-    transcribe_command = build_qwen_command(args, audio, ja_srt)
-    if resume_skip(args, ja_srt, log, "transcription"):
+    transcribe_command = build_qwen_command(args, audio, ja_srt, ja_meta)
+    if (
+        args.resume
+        and asr_provenance_matches(asr_manifest, args, audio, ja_srt, ja_meta)
+    ):
+        log.print(f"Resume: skipping transcription, reusing {ja_srt}")
         events.emit("stage_skipped", reason="resume", **_stage_fields(video, job_index, job_total, "asr"))
     else:
+        asr_manifest.unlink(missing_ok=True)
         run_stage_command(
-            "asr", transcribe_command, log, events, cancel_token, video, job_index, job_total
+            "asr",
+            transcribe_command,
+            log,
+            events,
+            cancel_token,
+            video,
+            job_index,
+            job_total,
         )
+        write_asr_provenance(asr_manifest, args, audio, ja_srt, ja_meta)
 
     # Traditional Chinese is deliberately derived from the Chinese translator's
     # Simplified output. Keep that intermediate in the job directory, then convert
@@ -867,17 +1172,21 @@ def process_video_stages(
     if (
         args.resume
         and translation_is_complete(output, translate_input_srt)
-        and translation_provenance_matches(translation_manifest, args)
+        and translation_provenance_matches(
+            translation_manifest, args, translate_input_srt, output
+        )
     ):
         log.print(f"Resume: skipping translation, reusing {output}")
         events.emit("stage_skipped", reason="resume", **_stage_fields(video, job_index, job_total, "translate"))
+        translation_ran = False
     else:
+        translation_manifest.unlink(missing_ok=True)
         run_stage_command(
             "translate", translate_command, log, events, cancel_token, video, job_index, job_total,
             post_commands=translate_post_commands,
             progress_total=srt_cue_count(translate_input_srt),
         )
-        write_translation_provenance(translation_manifest, args)
+        translation_ran = True
 
     wrap_max_chars = resolve_translation_settings(
         getattr(args, "translator", "galtransl"),
@@ -886,7 +1195,11 @@ def process_video_stages(
         batch_size=getattr(args, "translate_batch_size", None),
         wrap_chars=getattr(args, "display_wrap_max_chars", None),
     ).wrap_chars
-    wrapped = wrap_srt_display_file(output, wrap_max_chars, target_language)
+    wrapped = (
+        wrap_srt_display_file(output, wrap_max_chars, target_language)
+        if translation_ran
+        else 0
+    )
     if wrapped:
         log.print(
             f"Display wrapping: {wrapped} cues split for display "
@@ -899,6 +1212,10 @@ def process_video_stages(
                 f"Display warning: {overlong} English cues cannot fit within "
                 f"two lines of {wrap_max_chars} characters; kept as balanced two-line subtitles."
             )
+    if translation_ran:
+        write_translation_provenance(
+            translation_manifest, args, translate_input_srt, output
+        )
 
     bilingual_output: Path | None = None
     if args.bilingual:
@@ -1023,7 +1340,7 @@ def main() -> None:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Skip finished stages: reuse existing audio, transcription, and complete translations. "
+        help="Skip stages only when their manifest, upstream input, settings, model identity, and output hashes match. "
         "The ASS stage always reruns (cheap, no model); quality report reruns only when --quality-report is set.",
     )
     parser.add_argument("--quality-report", action="store_true", help="Write a quality report and append metrics (off by default)")
@@ -1246,9 +1563,6 @@ def main() -> None:
         sys.stdout.write(format_config_toml(values))
         return
 
-    if args.resume:
-        args.reuse_existing_audio = True
-
     if args.keep_audio:
         print("Warning: --keep-audio is deprecated and has no effect (audio is kept by default).", flush=True)
     if args.lead_out_seconds < 0:
@@ -1310,18 +1624,7 @@ def main() -> None:
         job_dir = work_dir_for(video, input_path, args.work_dir, args.recursive)
         jobs.append(VideoJob(index, video, output, job_dir, job_dir / f"{video.stem}.wav"))
 
-    # Paths derive from the stem only, so videos differing just by extension
-    # (a.mp4 + a.mkv) would share one work dir/WAV and one output; the look-ahead
-    # extractor would then overwrite the WAV while the previous job still reads it.
-    claimed: dict[Path, Path] = {}
-    for job in jobs:
-        for path in (job.output, job.job_dir):
-            other = claimed.setdefault(path, job.video)
-            if other != job.video:
-                raise SystemExit(
-                    f"{other} and {job.video} map to the same path: {path}\n"
-                    "Rename one of them (same stem with different extensions is not supported)."
-                )
+    validate_job_paths(jobs, args, explicit_output=args.output is not None)
 
     total = len(jobs)
     cancel_token = CancellationToken(args.cancel_file)
@@ -1343,13 +1646,25 @@ def main() -> None:
             events.emit("stage_started", **stage_fields)
             log = JobLog(job.job_dir / "pipeline.log")
             try:
+                manifest = audio_manifest_path(job.audio)
+                resume_audio = (
+                    args.resume
+                    and audio_provenance_matches(manifest, job.video, job.audio)
+                )
+                if args.resume and not resume_audio:
+                    manifest.unlink(missing_ok=True)
                 extracted = extract_audio(
                     job.video,
                     job.audio,
-                    reuse_existing=args.reuse_existing_audio,
+                    reuse_existing=(
+                        resume_audio
+                        or (args.reuse_existing_audio and not args.resume)
+                    ),
                     log=log,
                     cancel_token=cancel_token,
                 )
+                if extracted:
+                    write_audio_provenance(manifest, job.video, job.audio)
             except PipelineCancelled:
                 events.emit("stage_cancelled", **stage_fields)
                 events.emit("job_cancelled", **job_fields)
