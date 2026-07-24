@@ -578,6 +578,21 @@ git diff --check
 | 远端资产 | PASS：两个程序分卷、两份安装说明和两份 SHA-256 文件均为 `uploaded`；release 非 draft 且为 prerelease |
 | 延续证据 | 简体、繁体和实验性英文的 Windows CUDA 完整流程沿用 RUN-20260720-17 的同代码 package 验证；最终归档后的变更仅为发布文档 |
 
+### RUN-20260724-19：Windows CUDA Beta 4 发布
+
+| 项目 | 记录值 |
+|---|---|
+| Release | `v0.1.0-beta.4` 已作为 GitHub prerelease 发布，tag 指向 `fbccddc` |
+| 源码验证 | PASS：`401 passed`；Ruff、Python 编译、依赖一致性、Shell 语法、Markdown 链接和 `git diff --check` 均通过 |
+| 增量 staging | PASS：只同步程序层并输出 `Reusing unchanged staged runtime`；没有重建 runtime 或打包模型 |
+| 原始程序归档 | 3,284,128,574 B；SHA-256 为 `0ed529675342f095411f63b7d5fa33b674497012c06357a8e3a951e26ada0f6b` |
+| 程序分卷 | `.001` 1,992,294,400 B，SHA-256 `7529e293d0af20fdef2fe8065e96633495b96eac39f840208cc20acc21b5c5d3`；`.002` 1,291,834,174 B，SHA-256 `c07fd7d2719f9f361766e1c71a15f821caf65a6b865fcea39b0f01f09c88e5b0` |
+| 完整性 | PASS：原始归档和两个分卷各自通过 SHA-256；流式顺序重组哈希等于原始归档；从 `.001` 识别两卷执行 `7z t` 无错误 |
+| 全新解压 | PASS：28,139 个文件、8,202,711,383 B 完整解压；包内 Transformers 实际导入成功 |
+| 发布边界 | PASS：包含根目录和 `app` 内的 MIT LICENSE；不含模型权重、`config/gui.ini`、运行锁、媒体、字幕、用户输出或开发机路径 |
+| 运行时与 GUI | PASS：解压后的 PyTorch 2.11.0+cu128 识别 RTX 5080 CUDA；CLI 帮助和非法后端组合提前拒绝正常；隔离配置 GUI 显示 2 个 ASR、3 种字幕目标并正常退出 |
+| 远端资产 | PASS：两个程序分卷、两份安装说明和两份 SHA-256 文件均为 `uploaded`，名称和字节数与本地一致；四个小型资产重新下载后逐字节匹配 |
+
 ## 14. 当前剩余人工验收
 
 以下项目尚未用真实桌面手工操作逐项勾选，保留 `NOT RUN`：系统文件对话框、真实桌面
