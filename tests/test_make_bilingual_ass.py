@@ -1,5 +1,4 @@
 from argparse import Namespace
-from pathlib import Path
 
 import pytest
 
@@ -153,7 +152,6 @@ def test_gender_probabilities_on_model_examples():
     # The model ships example1.wav (female) and example2.wav (male); use them as ground truth.
     sf = pytest.importorskip("soundfile")
     pytest.importorskip("torch")
-    import numpy as np
 
     probs = {}
     for name, idx in [("example1.wav", "1"), ("example2.wav", "2")]:

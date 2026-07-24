@@ -10,7 +10,7 @@ from PySide6.QtCore import QProcess, QSettings, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QFileDialog, QListWidget, QMessageBox
 
-from jp2zh_gui.models import CleanupPolicy, GuiConfig, GuiTask, TargetLanguage, TaskStatus, TranslatorPreset
+from jp2zh_gui.models import CleanupPolicy, GuiConfig, TargetLanguage, TranslatorPreset
 import jp2zh_gui.window as window_module
 from jp2zh_gui.window import MainWindow, format_device_status
 

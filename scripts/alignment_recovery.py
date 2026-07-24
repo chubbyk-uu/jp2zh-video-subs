@@ -126,15 +126,20 @@ def assess_alignment_quality(
     collapsed = False
     triggers: List[str] = []
     if coverage_ratio < _COVERAGE_RATIO_THRESHOLD:
-        collapsed = True; triggers.append("coverage")
+        collapsed = True
+        triggers.append("coverage")
     if aggregate_cps > _AGGREGATE_CPS_THRESHOLD:
-        collapsed = True; triggers.append("cps")
+        collapsed = True
+        triggers.append("cps")
     if word_span_sec < _WORD_SPAN_THRESHOLD:
-        collapsed = True; triggers.append("span")
+        collapsed = True
+        triggers.append("span")
     if zero_position_ratio > _ZERO_POSITION_RATIO_THRESHOLD:
-        collapsed = True; triggers.append("zero_position")
+        collapsed = True
+        triggers.append("zero_position")
     if degenerate_ratio > _DEGENERATE_RATIO_THRESHOLD:
-        collapsed = True; triggers.append("degenerate")
+        collapsed = True
+        triggers.append("degenerate")
 
     result["triggers"] = triggers
     if collapsed:

@@ -271,7 +271,7 @@ def test_build_report_fills_metrics_dict(tmp_path):
     args.qwen_metadata = qwen_meta
 
     metrics: dict = {}
-    report = build_report(args, metrics)
+    build_report(args, metrics)
 
     assert metrics["ja_entries"] == 2
     assert metrics["zh_entries"] == 2

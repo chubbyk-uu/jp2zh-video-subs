@@ -18,7 +18,7 @@ from pipeline_configs import (
     validate_translation_config,
 )
 from target_languages import TargetLanguage, resolve_translation_settings
-from translation_common import HISTORY_RESET_SECONDS, Entry, parse_srt, write_entry
+from translation_common import HISTORY_RESET_SECONDS, parse_srt, write_entry
 
 
 PROJECT_ROOT = project_root(Path(__file__))

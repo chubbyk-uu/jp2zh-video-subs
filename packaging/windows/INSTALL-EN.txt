@@ -54,3 +54,9 @@ reviewed manually.
 
 - SHA256SUMS verifies the original .7z application archive after its volumes are reassembled in order.
 - SHA256SUMS.parts verifies the downloaded split volumes directly.
+
+6. Licenses
+
+- LICENSE contains the MIT license for the original jp2zh-video-subs code.
+- THIRD_PARTY_NOTICES.md describes the separate terms for bundled libraries, FFmpeg, adapted code, and models.
+- The MIT project license does not override the non-commercial terms of the GalTransl or Sakura models.

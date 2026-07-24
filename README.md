@@ -7,7 +7,7 @@ from local Japanese video files and writes a target-language/Japanese bilingual 
 default. Inference runs fully offline after the required models are downloaded.
 
 Windows users can start with the portable desktop GUI in the
-[`v0.1.0 Beta 3` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.3).
+[`v0.1.0 Beta 4` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.4).
 It bundles the application runtime and FFmpeg, but not third-party model weights; follow
 `INSTALL-EN.txt` or `INSTALL-CN.txt` on the release page to download models with the bundled
 Hugging Face CLI. The command-line workflow remains fully supported for source installations
@@ -301,7 +301,7 @@ per-script usage, the CUDA check, and troubleshooting, see [docs/USAGE.md](docs/
 ### Windows portable beta
 
 The easiest Windows entry point is the portable
-[`v0.1.0 Beta 3` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.3):
+[`v0.1.0 Beta 4` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.4):
 
 1. Download every `jp2zh-video-subs-windows-x64-cuda-program.7z.*` volume.
 2. Put all volumes in one directory and extract `.7z.001` with 7-Zip or NanaZip.
@@ -390,15 +390,22 @@ The detailed reference docs are maintained in Chinese only:
 The pure helper functions (SRT parsing, timing, interval math, noise/duplicate detection, translation cleanup) are covered by `pytest` and do not need the models or a GPU:
 
 ```bash
-python -m pip install pytest
+python -m pip install -r requirements-dev.txt
 python -m pytest tests/ -q
+ruff check scripts tests
 ```
+
+Shared pytest and Ruff settings live in `pyproject.toml`; `.editorconfig`
+standardizes UTF-8, LF line endings, indentation, and final newlines. Install
+`requirements.txt` first, or `requirements-gui.txt` when working on the desktop
+interface. CI remains intentionally deferred; CUDA inference and Windows
+portable acceptance are verified locally before a release.
 
 ## Git Policy
 
 Commit source files and documentation:
 
-- `README.md`, `README-CN.md`, `LICENSE`, tracked public documents under `docs/`, `requirements.txt`
+- `README.md`, `README-CN.md`, `LICENSE`, tracked public documents under `docs/`, and requirement/config files
 - `scripts/`
 - `tests/`
 - `.gitignore` and placeholder files

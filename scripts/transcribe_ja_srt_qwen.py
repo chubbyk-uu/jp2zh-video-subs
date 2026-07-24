@@ -22,8 +22,6 @@ from asr_common import (
     drop_adjacent_near_duplicates,
     filter_main_local_entries,
     resolve_overlaps,
-    speech_clusters,
-    split_clip_with_overlap,
     write_entries,
 )
 from cli_config import add_dataclass_arguments

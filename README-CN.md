@@ -5,7 +5,7 @@
 这个项目用于从本地日语视频生成简体中文、繁体中文或实验性英文 SRT，并默认生成“译文在上、日文在下”的双语 ASS。下载好模型后，推理过程全部在本地完成。
 
 Windows 用户建议直接使用
-[`v0.1.0 Beta 3` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.3)。
+[`v0.1.0 Beta 4` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.4)。
 它已内置程序运行时和 FFmpeg，但不附带第三方模型权重；按 Release 里的
 `INSTALL-CN.txt` 使用包内 Hugging Face CLI 下载模型即可。CLI 仍是完整支持的
 源码安装与高级用法入口。
@@ -279,7 +279,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 ### Windows 绿色测试版
 
 Windows 上最直接的入口是
-[`v0.1.0 Beta 3` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.3)：
+[`v0.1.0 Beta 4` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.4)：
 
 1. 下载全部 `jp2zh-video-subs-windows-x64-cuda-program.7z.*` 分卷。
 2. 把所有分卷放在同一目录，用 7-Zip 或 NanaZip 从 `.7z.001` 开始解压。
@@ -347,15 +347,21 @@ ASS 里的日文只按字幕序号对齐贡献文本。
 纯函数部分（SRT 解析、时间换算、区间计算、噪声/重复判定、翻译清洗）有 `pytest` 单元测试覆盖，不需要模型或 GPU：
 
 ```bash
-python -m pip install pytest
+python -m pip install -r requirements-dev.txt
 python -m pytest tests/ -q
+ruff check scripts tests
 ```
+
+pytest 与 Ruff 的公共配置位于 `pyproject.toml`，`.editorconfig` 统一 UTF-8、LF
+行尾、缩进和文件末尾换行。开始测试前先安装 `requirements.txt`；修改桌面 GUI
+时改为安装 `requirements-gui.txt`。CI 目前按决定暂缓，CUDA 推理和 Windows
+绿色包验收仍在发布前由本机执行。
 
 ## Git 提交建议
 
 建议提交：
 
-- `README.md`、`README-CN.md`、`LICENSE`、`docs/` 下已跟踪的公开文档、`requirements.txt`
+- `README.md`、`README-CN.md`、`LICENSE`、`docs/` 下已跟踪的公开文档，以及依赖和开发配置文件
 - `scripts/`
 - `tests/`
 - `.gitignore` 与目录占位文件

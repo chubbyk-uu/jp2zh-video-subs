@@ -1,0 +1,4 @@
+# Install after requirements.txt, or after requirements-gui.txt when working on
+# the desktop interface. Model weights and a GPU are not required for unit tests.
+pytest>=8,<10
+ruff>=0.12,<1

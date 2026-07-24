@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from retime_existing_subtitles import process_video, subtitle_paths
 
 

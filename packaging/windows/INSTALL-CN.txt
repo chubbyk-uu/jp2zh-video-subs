@@ -53,3 +53,9 @@ runtime\Scripts\hf.exe download JaesungHuh/voice-gender-classifier --local-dir m
 
 - SHA256SUMS 用于校验按顺序重组后的原始 .7z 程序包。
 - SHA256SUMS.parts 用于直接校验下载的各个分卷。
+
+6. 许可证
+
+- LICENSE 是 jp2zh-video-subs 原创代码采用的 MIT 许可证。
+- THIRD_PARTY_NOTICES.md 说明包内依赖、FFmpeg、改编代码和模型各自适用的条款。
+- 项目的 MIT 许可证不会覆盖或取消 GalTransl、Sakura 模型的非商业使用限制。
