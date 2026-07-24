@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+import inspect
+import re
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 import pytest
@@ -294,6 +296,28 @@ def test_shared_config_validation_rejects_invalid_numeric_and_relations():
 def test_shared_config_validation_rejects_nonfinite_values():
     issues = validate_asr_config(QwenAsrConfig(vad_threshold=float("nan")))
     assert [issue.field for issue in issues] == ["vad_threshold"]
+
+
+def test_asr_validation_covers_phrase_max_internal_gap():
+    # A negative phrase gap silently disables the internal-gap split rather than
+    # crashing, so it must be validated like its phrase_max_* siblings.
+    for cls in (QwenAsrConfig, AnimeAsrConfig):
+        issues = validate_asr_config(cls(phrase_max_internal_gap=-1.0))
+        assert [issue.field for issue in issues] == ["phrase_max_internal_gap"]
+
+
+def test_asr_validation_only_names_real_config_fields():
+    # validate_asr_config lists field names as string literals; a rename that
+    # missed one would silently stop validating that knob. Guard against it.
+    known = {f.name for cls in (QwenAsrConfig, AnimeAsrConfig) for f in fields(cls)}
+    source = inspect.getsource(validate_asr_config)
+    for keyword in ("positive", "nonnegative", "probabilities"):
+        body = re.search(rf"{keyword}=\((.*?)\)", source, re.S)
+        assert body is not None, f"could not locate {keyword} tuple"
+        referenced = re.findall(r'"([a-z_][a-z0-9_]*)"', body.group(1))
+        assert referenced, f"{keyword} tuple parsed empty"
+        unknown = [name for name in referenced if name not in known]
+        assert not unknown, f"{keyword} references non-fields: {unknown}"
 
 
 # --- TOML config file (apply_config_file / format_config_toml) ---

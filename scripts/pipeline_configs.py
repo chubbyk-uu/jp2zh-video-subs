@@ -344,6 +344,7 @@ def validate_asr_config(config: Any) -> list[ConfigValidationIssue]:
             "isolated_interjection_run_gap",
             "interjection_reply_anchor_lag",
             "no_repeat_ngram_size",
+            "phrase_max_internal_gap",
             "near_dup_max_gap",
             "near_dup_squeeze_seconds",
             "main_min_chars",
