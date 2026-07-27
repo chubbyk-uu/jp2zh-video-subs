@@ -1142,6 +1142,11 @@ Do not reuse completed stages after changing models or key settings</source>
         <translation>可選的說話者配色</translation>
     </message>
     <message>
+        <location filename="../model_download.py" line="812"/>
+        <source>Model download</source>
+        <translation>模型下載</translation>
+    </message>
+    <message>
         <location filename="../model_download.py" line="841"/>
         <source>Installed</source>
         <translation>已安裝</translation>

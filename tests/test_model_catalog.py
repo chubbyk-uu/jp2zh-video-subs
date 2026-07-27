@@ -17,6 +17,15 @@ def test_model_catalog_keys_are_unique_and_destinations_stay_under_models():
     for spec in MODEL_DOWNLOAD_SPECS:
         assert Path(spec.local_dir).parts[0] == "models"
         assert spec.required_files
+        assert spec.filenames
+        assert set(spec.required_files).issubset(spec.filenames)
+        assert spec.revision is not None
+        assert len(spec.revision) == 40
+        assert all(character in "0123456789abcdef" for character in spec.revision)
+        for filename in spec.filenames:
+            relative = Path(filename)
+            assert not relative.is_absolute()
+            assert ".." not in relative.parts
 
 
 def test_current_configuration_dependencies_preserve_catalog_order(tmp_path):

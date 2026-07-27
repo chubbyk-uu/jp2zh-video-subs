@@ -809,7 +809,7 @@ class ModelDownloadDialog(QDialog):
             "sugoi-14b": self.tr("Experimental English translation"),
             "speaker-gender": self.tr("Optional speaker colouring"),
         }
-        return purposes[key]
+        return purposes.get(key, self.tr("Model download"))
 
     @staticmethod
     def _set_progress_range(bar: QProgressBar, total: object) -> None:

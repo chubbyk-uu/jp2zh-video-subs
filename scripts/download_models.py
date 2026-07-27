@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -10,7 +11,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -26,15 +27,62 @@ from portable_runtime import project_root
 
 
 @dataclass(frozen=True)
+class RemoteFileInfo:
+    size: int | None
+    sha256: str | None = None
+    git_blob_id: str | None = None
+
+    @property
+    def digest(self) -> tuple[str, str] | None:
+        if self.sha256 is not None:
+            return ("sha256", self.sha256)
+        if self.git_blob_id is not None:
+            return ("git-sha1", self.git_blob_id)
+        return None
+
+
+@dataclass(frozen=True)
 class RemoteModelPlan:
     spec: ModelDownloadSpec
-    files: dict[str, int | None]
+    revision: str
+    files: dict[str, RemoteFileInfo]
 
     @property
     def total_bytes(self) -> int | None:
-        if any(size is None for size in self.files.values()):
+        sizes = [remote.size for remote in self.files.values()]
+        if any(size is None for size in sizes):
             return None
-        return sum(size for size in self.files.values() if size is not None)
+        return sum(size for size in sizes if size is not None)
+
+
+class DownloadIntegrityError(RuntimeError):
+    """Downloaded bytes do not match trusted remote metadata."""
+
+
+def validate_download_filename(filename: str) -> PurePosixPath:
+    """Return a safe Hub-relative path or reject traversal/platform tricks."""
+    if not filename or "\\" in filename:
+        raise RuntimeError(f"Unsafe model filename: {filename!r}")
+    posix = PurePosixPath(filename)
+    windows = PureWindowsPath(filename)
+    if (
+        posix.is_absolute()
+        or windows.is_absolute()
+        or windows.drive
+        or any(part in {"", ".", ".."} for part in posix.parts)
+    ):
+        raise RuntimeError(f"Unsafe model filename: {filename!r}")
+    return posix
+
+
+def safe_download_target(destination: Path, filename: str) -> Path:
+    relative = validate_download_filename(filename)
+    root = destination.resolve()
+    target = destination.joinpath(*relative.parts)
+    resolved = target.resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        raise RuntimeError(f"Model filename escapes destination: {filename!r}")
+    return target
 
 
 class EventWriter:
@@ -145,16 +193,89 @@ def create_hub_api(endpoint: str, proxy: str | None = None) -> Any:
     return HfApi(endpoint=endpoint, token=token)
 
 
+def _validated_digest(value: object, *, length: int, label: str) -> str | None:
+    if value is None:
+        return None
+    text = str(value).lower()
+    if len(text) != length:
+        raise RuntimeError(f"Invalid {label} metadata: {value!r}")
+    try:
+        int(text, 16)
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid {label} metadata: {value!r}") from exc
+    return text
+
+
+def _remote_file_info(sibling: Any) -> RemoteFileInfo:
+    lfs = getattr(sibling, "lfs", None)
+    if isinstance(lfs, dict):
+        lfs_size = lfs.get("size")
+        lfs_sha256 = lfs.get("sha256")
+    else:
+        lfs_size = getattr(lfs, "size", None)
+        lfs_sha256 = getattr(lfs, "sha256", None)
+    size = getattr(sibling, "size", None)
+    if size is None:
+        size = lfs_size
+    if size is not None:
+        size = int(size)
+        if size < 0:
+            raise RuntimeError(f"Invalid remote file size: {size}")
+    sha256 = _validated_digest(
+        lfs_sha256,
+        length=64,
+        label="LFS SHA-256",
+    )
+    # For an LFS object, blob_id identifies the small Git pointer rather than
+    # the downloaded weight bytes. Only use Git blob verification for ordinary
+    # repository files.
+    git_blob_id = (
+        None
+        if lfs is not None
+        else _validated_digest(
+            getattr(sibling, "blob_id", None),
+            length=40,
+            label="Git blob ID",
+        )
+    )
+    return RemoteFileInfo(
+        size=size,
+        sha256=sha256,
+        git_blob_id=git_blob_id,
+    )
+
+
 def remote_model_plan(api: Any, spec: ModelDownloadSpec) -> RemoteModelPlan:
     info = api.model_info(
         spec.repo_id,
         revision=spec.revision,
         files_metadata=True,
     )
-    available = {
-        sibling.rfilename: getattr(sibling, "size", None)
-        for sibling in (info.siblings or ())
-    }
+    resolved_revision = str(getattr(info, "sha", "") or "")
+    if not resolved_revision:
+        raise RuntimeError(f"{spec.repo_id} returned no resolved revision")
+    resolved_revision = _validated_digest(
+        resolved_revision,
+        length=40,
+        label="resolved revision",
+    )
+    assert resolved_revision is not None
+    if spec.revision is not None:
+        pinned_revision = _validated_digest(
+            spec.revision,
+            length=40,
+            label="pinned revision",
+        )
+        if pinned_revision != resolved_revision:
+            raise RuntimeError(
+                f"{spec.repo_id} resolved to {resolved_revision}, "
+                f"expected pinned revision {pinned_revision}"
+            )
+    available: dict[str, RemoteFileInfo] = {}
+    for sibling in info.siblings or ():
+        filename = str(sibling.rfilename)
+        validate_download_filename(filename)
+        available[filename] = _remote_file_info(sibling)
     if spec.filenames:
         missing = [filename for filename in spec.filenames if filename not in available]
         if missing:
@@ -166,7 +287,11 @@ def remote_model_plan(api: Any, spec: ModelDownloadSpec) -> RemoteModelPlan:
         selected = available
     if not selected:
         raise RuntimeError(f"{spec.repo_id} returned no downloadable files")
-    return RemoteModelPlan(spec=spec, files=selected)
+    return RemoteModelPlan(
+        spec=spec,
+        revision=resolved_revision,
+        files=selected,
+    )
 
 
 def observed_download_bytes(
@@ -178,16 +303,22 @@ def observed_download_bytes(
     destination = plan.spec.destination(root)
     completed = 0
     adjacent_incomplete = 0
-    for relative, expected in plan.files.items():
-        path = destination / Path(relative)
+    for relative, remote in plan.files.items():
+        path = safe_download_target(destination, relative)
         partial = path.with_name(path.name + ".incomplete")
         if include_completed and path.is_file() and not partial.is_file():
             size = path.stat().st_size
-            completed += min(size, expected) if expected is not None else size
+            completed += (
+                min(size, remote.size)
+                if remote.size is not None
+                else size
+            )
         if partial.is_file():
             size = partial.stat().st_size
             adjacent_incomplete += (
-                min(size, expected) if expected is not None else size
+                min(size, remote.size)
+                if remote.size is not None
+                else size
             )
 
     incomplete = 0
@@ -222,7 +353,7 @@ def download_remote_plan(
     if download_backend == "auto":
         common = {
             "repo_id": plan.spec.repo_id,
-            "revision": plan.spec.revision,
+            "revision": plan.revision,
             "local_dir": destination,
             "endpoint": endpoint,
             "force_download": force,
@@ -243,57 +374,178 @@ def download_remote_plan(
                 exc,
             )
 
-    for filename, expected_size in plan.files.items():
+    for filename, remote in plan.files.items():
         logging.warning("Compatibility download: %s/%s", plan.spec.repo_id, filename)
         download_public_file(
             plan.spec,
             filename,
-            expected_size,
+            remote,
             destination,
             endpoint,
+            revision=plan.revision,
             force=force,
         )
+
+
+def _partial_metadata_path(partial: Path) -> Path:
+    return partial.with_name(partial.name + ".json")
+
+
+def _download_identity(
+    spec: ModelDownloadSpec,
+    filename: str,
+    revision: str,
+    remote: RemoteFileInfo,
+) -> dict[str, object]:
+    return {
+        "version": 1,
+        "repo_id": spec.repo_id,
+        "revision": revision,
+        "filename": filename,
+        "size": remote.size,
+        "sha256": remote.sha256,
+        "git_blob_id": remote.git_blob_id,
+    }
+
+
+def _read_partial_identity(path: Path) -> dict[str, object] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_partial_identity(path: Path, identity: dict[str, object]) -> None:
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to write through symlink: {path}")
+    temporary = path.with_name(path.name + ".tmp")
+    if temporary.is_symlink():
+        raise RuntimeError(f"Refusing to write through symlink: {temporary}")
+    temporary.write_text(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _remove_partial(partial: Path, metadata: Path) -> None:
+    if partial.is_file() or partial.is_symlink():
+        partial.unlink()
+    if metadata.is_file() or metadata.is_symlink():
+        metadata.unlink()
+
+
+def _new_remote_hasher(
+    remote: RemoteFileInfo,
+    *,
+    content_size: int | None,
+) -> Any | None:
+    if remote.sha256 is not None:
+        return hashlib.sha256()
+    if remote.git_blob_id is not None and content_size is not None:
+        digest = hashlib.sha1()
+        digest.update(f"blob {content_size}\0".encode())
+        return digest
+    return None
+
+
+def _feed_hasher_from_file(hasher: Any, path: Path) -> None:
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            hasher.update(chunk)
+
+
+def _remote_file_matches(
+    path: Path,
+    remote: RemoteFileInfo,
+    *,
+    prepared_hasher: Any | None = None,
+) -> bool:
+    if not path.is_file() or path.is_symlink():
+        return False
+    actual_size = path.stat().st_size
+    if remote.size is not None and actual_size != remote.size:
+        return False
+    expected_digest = remote.digest
+    if expected_digest is None:
+        return False
+    algorithm, expected = expected_digest
+    hasher = prepared_hasher
+    if hasher is None:
+        hasher = _new_remote_hasher(remote, content_size=actual_size)
+        if hasher is None:
+            return False
+        _feed_hasher_from_file(hasher, path)
+    if algorithm not in {"sha256", "git-sha1"}:
+        return False
+    return hasher.hexdigest().lower() == expected
 
 
 def download_public_file(
     spec: ModelDownloadSpec,
     filename: str,
-    expected_size: int | None,
+    remote: RemoteFileInfo,
     destination: Path,
     endpoint: str,
     *,
+    revision: str,
     request_get: Callable[..., Any] | None = None,
     chunk_size: int = 1024 * 1024,
     attempts: int = 3,
     force: bool = False,
 ) -> None:
-    """Download one public file with Range resume, without forwarding an HF token."""
+    """Download and verify one public file without forwarding an HF token."""
     import requests
     from huggingface_hub import hf_hub_url
 
     if attempts <= 0:
         raise ValueError("attempts must be positive")
-    target = destination / Path(filename)
+    if remote.digest is None:
+        raise RuntimeError(
+            f"Compatibility download requires checksum metadata: "
+            f"{spec.repo_id}/{filename}"
+        )
+    target = safe_download_target(destination, filename)
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_name(target.name + ".incomplete")
-    if force and partial.is_file():
-        partial.unlink()
-    if not force and not partial.is_file() and target.is_file() and (
-        expected_size is None or target.stat().st_size == expected_size
-    ):
+    metadata = _partial_metadata_path(partial)
+    for path in (target, partial, metadata):
+        if path.is_symlink():
+            raise RuntimeError(f"Refusing to use model-file symlink: {path}")
+
+    identity = _download_identity(spec, filename, revision, remote)
+    if force:
+        _remove_partial(partial, metadata)
+    elif partial.is_file():
+        stored_identity = _read_partial_identity(metadata)
+        if stored_identity is not None and stored_identity != identity:
+            logging.warning(
+                "Discarding partial file from a different revision: %s",
+                filename,
+            )
+            _remove_partial(partial, metadata)
+    if partial.is_file() and not metadata.is_file():
+        # Legacy partials have no identity sidecar. Reuse them once, but final
+        # checksum verification still prevents mixed revisions from promotion.
+        _write_partial_identity(metadata, identity)
+    if not force and not partial.is_file() and _remote_file_matches(target, remote):
         return
-    if partial.is_file() and expected_size is not None:
+    if partial.is_file() and remote.size is not None:
         partial_size = partial.stat().st_size
-        if partial_size == expected_size:
-            partial.replace(target)
-            return
-        if partial_size > expected_size:
-            partial.unlink()
+        if partial_size == remote.size:
+            if _remote_file_matches(partial, remote):
+                partial.replace(target)
+                metadata.unlink(missing_ok=True)
+                return
+            _remove_partial(partial, metadata)
+        elif partial_size > remote.size:
+            _remove_partial(partial, metadata)
 
     url = hf_hub_url(
         spec.repo_id,
         filename,
-        revision=spec.revision,
+        revision=revision,
         endpoint=endpoint,
     )
     getter = request_get or requests.get
@@ -302,6 +554,7 @@ def download_public_file(
         offset = partial.stat().st_size if partial.is_file() else 0
         headers = {"Range": f"bytes={offset}-"} if offset else {}
         try:
+            _write_partial_identity(metadata, identity)
             with getter(
                 url,
                 headers=headers,
@@ -316,25 +569,56 @@ def download_public_file(
                         urlsplit(url).netloc,
                         urlsplit(final_url).netloc,
                     )
-                if response.status_code == 416 and expected_size == offset:
-                    partial.replace(target)
-                    return
+                if response.status_code == 416:
+                    if _remote_file_matches(partial, remote):
+                        partial.replace(target)
+                        metadata.unlink(missing_ok=True)
+                        return
+                    raise DownloadIntegrityError(
+                        f"Range-complete file failed verification: {filename}"
+                    )
                 response.raise_for_status()
                 append = offset > 0 and response.status_code == 206
+                response_headers = getattr(response, "headers", {})
+                content_range = (
+                    response_headers.get("Content-Range")
+                    if hasattr(response_headers, "get")
+                    else None
+                )
+                if append and content_range and not str(content_range).startswith(
+                    f"bytes {offset}-"
+                ):
+                    raise DownloadIntegrityError(
+                        f"Unexpected Content-Range for {filename}: {content_range}"
+                    )
+                hasher = _new_remote_hasher(
+                    remote,
+                    content_size=remote.size,
+                )
+                if append and hasher is not None:
+                    _feed_hasher_from_file(hasher, partial)
                 with partial.open("ab" if append else "wb") as stream:
                     for chunk in response.iter_content(chunk_size=chunk_size):
-                        if chunk:
-                            stream.write(chunk)
-            actual_size = partial.stat().st_size
-            if expected_size is not None and actual_size != expected_size:
-                raise RuntimeError(
-                    f"Incomplete response for {filename}: "
-                    f"expected {expected_size} bytes, received {actual_size}"
+                        if not chunk:
+                            continue
+                        stream.write(chunk)
+                        if hasher is not None:
+                            hasher.update(chunk)
+            if not _remote_file_matches(
+                partial,
+                remote,
+                prepared_hasher=hasher,
+            ):
+                raise DownloadIntegrityError(
+                    f"Downloaded file failed size or checksum verification: {filename}"
                 )
             partial.replace(target)
+            metadata.unlink(missing_ok=True)
             return
         except Exception as exc:
             last_error = exc
+            if isinstance(exc, DownloadIntegrityError):
+                _remove_partial(partial, metadata)
             if attempt < attempts:
                 time.sleep(min(2 ** (attempt - 1), 4))
     raise RuntimeError(
@@ -343,11 +627,22 @@ def download_public_file(
 
 
 def validate_downloaded_model(plan: RemoteModelPlan, root: Path) -> None:
-    missing = [
+    destination = plan.spec.destination(root)
+    invalid: list[Path] = []
+    for filename, remote in plan.files.items():
+        path = safe_download_target(destination, filename)
+        if not path.is_file():
+            invalid.append(path)
+            continue
+        size = path.stat().st_size
+        if size <= 0 or (remote.size is not None and size != remote.size):
+            invalid.append(path)
+    missing_required = [
         path
         for path in plan.spec.required_paths(root)
         if not path.is_file() or path.stat().st_size <= 0
     ]
+    missing = list(dict.fromkeys([*invalid, *missing_required]))
     if missing:
         relative = ", ".join(str(path.relative_to(root)) for path in missing)
         raise RuntimeError(f"Downloaded model is incomplete: {relative}")

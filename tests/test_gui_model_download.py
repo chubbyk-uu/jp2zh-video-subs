@@ -10,6 +10,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QEventLoop, QObject, QSettings, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+import jp2zh_gui.model_download as model_download_module
 from jp2zh_gui.model_download import ModelDownloadController, ModelDownloadDialog
 from model_catalog import MODEL_DOWNLOAD_SPECS, ModelDownloadSpec
 
@@ -81,6 +82,31 @@ def test_dialog_is_modal_and_preselects_current_missing_models(tmp_path):
     try:
         assert dialog.windowModality() == Qt.WindowModality.ApplicationModal
         assert dialog._selected_keys() == ["anime-whisper", "galtransl-7b"]
+    finally:
+        dialog.close()
+
+
+def test_new_catalog_entry_uses_generic_purpose_text(tmp_path, monkeypatch):
+    application()
+    new_spec = ModelDownloadSpec(
+        key="brand-new",
+        name="Brand New",
+        repo_id="owner/repo",
+        local_dir="models/brand-new",
+        required_files=("model.bin",),
+        filenames=("model.bin",),
+        revision="a" * 40,
+    )
+    monkeypatch.setattr(
+        model_download_module,
+        "MODEL_DOWNLOAD_SPECS",
+        (*MODEL_DOWNLOAD_SPECS, new_spec),
+    )
+
+    dialog, _controller = make_dialog(tmp_path, current=())
+    try:
+        row = dialog._rows_by_key["brand-new"]
+        assert dialog.table.item(row, 2).text() == "Model download"
     finally:
         dialog.close()
 

@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 from types import SimpleNamespace
@@ -5,8 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from download_models import (
+    DownloadIntegrityError,
     EventWriter,
     ProgressMonitor,
+    RemoteFileInfo,
     RemoteModelPlan,
     configure_hub_environment,
     create_hub_api,
@@ -15,23 +18,59 @@ from download_models import (
     observed_download_bytes,
     remote_model_plan,
     run_download_queue,
+    safe_download_target,
+    validate_download_filename,
 )
 from model_catalog import ModelDownloadSpec, model_specs
 
 
+REVISION = "a" * 40
+
+
 class FakeApi:
-    def __init__(self, files):
+    def __init__(self, files, *, sha=None):
         self.files = files
+        self.sha = sha
         self.calls = []
 
     def model_info(self, repo_id, *, revision, files_metadata):
         self.calls.append((repo_id, revision, files_metadata))
         return SimpleNamespace(
+            sha=self.sha or revision or REVISION,
             siblings=[
-                SimpleNamespace(rfilename=filename, size=size)
+                SimpleNamespace(
+                    rfilename=filename,
+                    size=size,
+                    blob_id="b" * 40,
+                    lfs=None,
+                )
                 for filename, size in self.files.items()
             ]
         )
+
+
+def sha256_info(data: bytes, *, size: int | None = None) -> RemoteFileInfo:
+    return RemoteFileInfo(
+        size=len(data) if size is None else size,
+        sha256=hashlib.sha256(data).hexdigest(),
+    )
+
+
+def git_blob_info(data: bytes, *, size: int | None = None) -> RemoteFileInfo:
+    digest = hashlib.sha1()
+    digest.update(f"blob {len(data)}\0".encode())
+    digest.update(data)
+    return RemoteFileInfo(
+        size=len(data) if size is None else size,
+        git_blob_id=digest.hexdigest(),
+    )
+
+
+def remote_plan(
+    spec: ModelDownloadSpec,
+    files: dict[str, RemoteFileInfo],
+) -> RemoteModelPlan:
+    return RemoteModelPlan(spec=spec, revision=REVISION, files=files)
 
 
 def event_rows(stream):
@@ -73,16 +112,77 @@ def test_mirror_api_never_receives_cached_hugging_face_token(monkeypatch):
 
 def test_remote_plan_selects_requested_file_and_pinned_revision():
     spec = model_specs(("whisperseg",))[0]
-    api = FakeApi({"model.onnx": 120, "README.md": 30})
+    api = FakeApi(
+        {"model.onnx": 120, "README.md": 30},
+        sha=spec.revision,
+    )
     plan = remote_model_plan(api, spec)
-    assert plan.files == {"model.onnx": 120}
+    assert plan.revision == spec.revision
+    assert plan.files == {
+        "model.onnx": RemoteFileInfo(size=120, git_blob_id="b" * 40)
+    }
     assert plan.total_bytes == 120
     assert api.calls == [(spec.repo_id, spec.revision, True)]
 
 
+def test_remote_plan_extracts_lfs_sha256_and_regular_git_blob():
+    spec = ModelDownloadSpec(
+        key="test",
+        name="Test",
+        repo_id="owner/repo",
+        local_dir="models/test",
+        required_files=("model.bin", "config.json"),
+        filenames=("model.bin", "config.json"),
+        revision=REVISION,
+    )
+
+    class MetadataApi:
+        def model_info(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                sha=REVISION,
+                siblings=(
+                    SimpleNamespace(
+                        rfilename="model.bin",
+                        size=None,
+                        blob_id="c" * 40,
+                        lfs={"size": 123, "sha256": "d" * 64},
+                    ),
+                    SimpleNamespace(
+                        rfilename="config.json",
+                        size=45,
+                        blob_id="e" * 40,
+                        lfs=None,
+                    ),
+                ),
+            )
+
+    plan = remote_model_plan(MetadataApi(), spec)
+    assert plan.files == {
+        "model.bin": RemoteFileInfo(size=123, sha256="d" * 64),
+        "config.json": RemoteFileInfo(size=45, git_blob_id="e" * 40),
+    }
+
+
+def test_remote_plan_rejects_revision_different_from_catalog_pin():
+    spec = model_specs(("whisperseg",))[0]
+    with pytest.raises(RuntimeError, match="expected pinned revision"):
+        remote_model_plan(FakeApi({"model.onnx": 120}, sha="f" * 40), spec)
+
+
+def test_remote_plan_rejects_endpoint_without_resolved_revision():
+    spec = model_specs(("whisperseg",))[0]
+
+    class MissingRevisionApi:
+        def model_info(self, *_args, **_kwargs):
+            return SimpleNamespace(sha=None, siblings=())
+
+    with pytest.raises(RuntimeError, match="returned no resolved revision"):
+        remote_model_plan(MissingRevisionApi(), spec)
+
+
 def test_observed_bytes_include_completed_and_incomplete_files(tmp_path):
     spec = model_specs(("whisperseg",))[0]
-    plan = RemoteModelPlan(spec, {"model.onnx": 100})
+    plan = remote_plan(spec, {"model.onnx": RemoteFileInfo(100, sha256="0" * 64)})
     destination = spec.destination(tmp_path)
     destination.mkdir(parents=True)
     (destination / "model.onnx").write_bytes(b"x" * 40)
@@ -94,7 +194,7 @@ def test_observed_bytes_include_completed_and_incomplete_files(tmp_path):
 
 def test_observed_bytes_include_mirror_resume_file(tmp_path):
     spec = model_specs(("whisperseg",))[0]
-    plan = RemoteModelPlan(spec, {"model.onnx": 100})
+    plan = remote_plan(spec, {"model.onnx": RemoteFileInfo(100, sha256="0" * 64)})
     partial = spec.destination(tmp_path) / "model.onnx.incomplete"
     partial.parent.mkdir(parents=True)
     partial.write_bytes(b"x" * 35)
@@ -103,7 +203,7 @@ def test_observed_bytes_include_mirror_resume_file(tmp_path):
 
 def test_progress_monitor_reports_average_speed_since_this_session(monkeypatch, tmp_path):
     spec = model_specs(("whisperseg",))[0]
-    plan = RemoteModelPlan(spec, {"model.onnx": 100})
+    plan = remote_plan(spec, {"model.onnx": RemoteFileInfo(100, sha256="0" * 64)})
     events = []
     monitor = ProgressMonitor(
         plan,
@@ -134,7 +234,7 @@ def test_progress_monitor_reports_average_speed_since_this_session(monkeypatch, 
 
 def test_mirror_download_prefers_native_hugging_face_client(monkeypatch, tmp_path):
     spec = model_specs(("whisperseg",))[0]
-    plan = RemoteModelPlan(spec, {"model.onnx": 10})
+    plan = remote_plan(spec, {"model.onnx": RemoteFileInfo(10, sha256="0" * 64)})
     calls = []
 
     monkeypatch.setattr(
@@ -154,13 +254,14 @@ def test_mirror_download_prefers_native_hugging_face_client(monkeypatch, tmp_pat
     )
 
     assert calls[0]["filename"] == "model.onnx"
+    assert calls[0]["revision"] == REVISION
     assert calls[0]["endpoint"] == "https://hf-mirror.com"
     assert calls[0]["token"] is False
 
 
 def test_mirror_download_falls_back_after_native_client_error(monkeypatch, tmp_path):
     spec = model_specs(("whisperseg",))[0]
-    plan = RemoteModelPlan(spec, {"model.onnx": 10})
+    plan = remote_plan(spec, {"model.onnx": RemoteFileInfo(10, sha256="0" * 64)})
     calls = []
 
     def fail_native(**_kwargs):
@@ -181,11 +282,12 @@ def test_mirror_download_falls_back_after_native_client_error(monkeypatch, tmp_p
 
     assert len(calls) == 1
     assert calls[0][0][1] == "model.onnx"
+    assert calls[0][1]["revision"] == REVISION
 
 
 def test_compatibility_mode_skips_native_hugging_face_client(monkeypatch, tmp_path):
     spec = model_specs(("whisperseg",))[0]
-    plan = RemoteModelPlan(spec, {"model.onnx": 10})
+    plan = remote_plan(spec, {"model.onnx": RemoteFileInfo(10, sha256="0" * 64)})
     calls = []
 
     monkeypatch.setattr(
@@ -217,12 +319,13 @@ def test_public_mirror_download_resumes_without_a_token(tmp_path):
         local_dir="models/test",
         required_files=("model.bin",),
         filenames=("model.bin",),
-        revision="revision",
+        revision=REVISION,
     )
     destination = spec.destination(tmp_path)
     destination.mkdir(parents=True)
     partial = destination / "model.bin.incomplete"
     partial.write_bytes(b"abc")
+    data = b"abcdef"
     calls = []
 
     class FakeResponse:
@@ -249,9 +352,10 @@ def test_public_mirror_download_resumes_without_a_token(tmp_path):
     download_public_file(
         spec,
         "model.bin",
-        6,
+        sha256_info(data),
         destination,
         "https://hf-mirror.com",
+        revision=REVISION,
         request_get=fake_get,
         chunk_size=2,
     )
@@ -296,9 +400,10 @@ def test_download_queue_is_catalog_ordered_and_stops_after_failure(tmp_path):
         )
         if plan.spec.key == "galtransl-7b":
             raise RuntimeError("network down")
-        for required in plan.spec.required_paths(root):
-            required.parent.mkdir(parents=True, exist_ok=True)
-            required.write_bytes(b"complete")
+        for filename, remote in plan.files.items():
+            path = plan.spec.destination(root) / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * remote.size)
 
     result = run_download_queue(
         specs,
@@ -409,11 +514,326 @@ def test_force_public_download_keeps_old_file_until_replacement(tmp_path):
     download_public_file(
         spec,
         "model.bin",
-        len(b"replacement"),
+        sha256_info(b"replacement"),
         destination,
         "https://hf-mirror.com",
+        revision=REVISION,
         request_get=lambda *_args, **_kwargs: FakeResponse(),
         force=True,
     )
 
     assert target.read_bytes() == b"replacement"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    (
+        "../outside.bin",
+        "nested/../../outside.bin",
+        "/absolute.bin",
+        r"C:\outside.bin",
+        r"nested\outside.bin",
+    ),
+)
+def test_download_filename_rejects_traversal_and_platform_paths(filename):
+    with pytest.raises(RuntimeError, match="Unsafe model filename"):
+        validate_download_filename(filename)
+
+
+def test_safe_download_target_rejects_symlink_escape(tmp_path):
+    destination = tmp_path / "models"
+    outside = tmp_path / "outside"
+    destination.mkdir()
+    outside.mkdir()
+    (destination / "link").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="escapes destination"):
+        safe_download_target(destination, "link/model.bin")
+
+
+def test_remote_plan_rejects_unsafe_repository_filename():
+    spec = ModelDownloadSpec(
+        key="test",
+        name="Test",
+        repo_id="owner/repo",
+        local_dir="models/test",
+        required_files=("model.bin",),
+    )
+    with pytest.raises(RuntimeError, match="Unsafe model filename"):
+        remote_model_plan(FakeApi({"../outside.bin": 5}), spec)
+
+
+def test_unknown_size_download_rejects_truncated_content(tmp_path):
+    spec = ModelDownloadSpec(
+        key="test",
+        name="Test",
+        repo_id="owner/repo",
+        local_dir="models/test",
+        required_files=("model.bin",),
+        filenames=("model.bin",),
+        revision=REVISION,
+    )
+    destination = spec.destination(tmp_path)
+    destination.mkdir(parents=True)
+    expected = b"complete contents"
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, *, chunk_size):
+            yield b"truncated"
+
+    remote = RemoteFileInfo(
+        size=None,
+        sha256=hashlib.sha256(expected).hexdigest(),
+    )
+    with pytest.raises(RuntimeError) as error:
+        download_public_file(
+            spec,
+            "model.bin",
+            remote,
+            destination,
+            "https://hf-mirror.com",
+            revision=REVISION,
+            request_get=lambda *_args, **_kwargs: FakeResponse(),
+            attempts=1,
+        )
+
+    assert isinstance(error.value.__cause__, DownloadIntegrityError)
+    assert not (destination / "model.bin").exists()
+    assert not (destination / "model.bin.incomplete").exists()
+
+
+def test_unknown_size_download_with_correct_checksum_succeeds(tmp_path):
+    spec = ModelDownloadSpec(
+        key="test",
+        name="Test",
+        repo_id="owner/repo",
+        local_dir="models/test",
+        required_files=("model.bin",),
+        filenames=("model.bin",),
+        revision=REVISION,
+    )
+    destination = spec.destination(tmp_path)
+    destination.mkdir(parents=True)
+    data = b"complete contents"
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, *, chunk_size):
+            yield data
+
+    remote = RemoteFileInfo(
+        size=None,
+        sha256=hashlib.sha256(data).hexdigest(),
+    )
+    download_public_file(
+        spec,
+        "model.bin",
+        remote,
+        destination,
+        "https://hf-mirror.com",
+        revision=REVISION,
+        request_get=lambda *_args, **_kwargs: FakeResponse(),
+    )
+    assert (destination / "model.bin").read_bytes() == data
+
+
+def test_compat_download_rejects_missing_checksum_metadata(tmp_path):
+    spec = ModelDownloadSpec(
+        key="test",
+        name="Test",
+        repo_id="owner/repo",
+        local_dir="models/test",
+        required_files=("model.bin",),
+        filenames=("model.bin",),
+        revision=REVISION,
+    )
+    with pytest.raises(RuntimeError, match="requires checksum metadata"):
+        download_public_file(
+            spec,
+            "model.bin",
+            RemoteFileInfo(size=None),
+            spec.destination(tmp_path),
+            "https://hf-mirror.com",
+            revision=REVISION,
+        )
+
+
+def test_exact_size_corrupt_partial_is_not_promoted(tmp_path):
+    spec = ModelDownloadSpec(
+        key="test",
+        name="Test",
+        repo_id="owner/repo",
+        local_dir="models/test",
+        required_files=("model.bin",),
+        filenames=("model.bin",),
+        revision=REVISION,
+    )
+    destination = spec.destination(tmp_path)
+    destination.mkdir(parents=True)
+    partial = destination / "model.bin.incomplete"
+    partial.write_bytes(b"wrong")
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, *, chunk_size):
+            yield b"right"
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse()
+
+    download_public_file(
+        spec,
+        "model.bin",
+        sha256_info(b"right"),
+        destination,
+        "https://hf-mirror.com",
+        revision=REVISION,
+        request_get=fake_get,
+        attempts=1,
+    )
+
+    assert calls
+    assert calls[0][1]["headers"] == {}
+    assert (destination / "model.bin").read_bytes() == b"right"
+
+
+def test_partial_from_different_revision_is_discarded(tmp_path):
+    spec = ModelDownloadSpec(
+        key="test",
+        name="Test",
+        repo_id="owner/repo",
+        local_dir="models/test",
+        required_files=("model.bin",),
+        filenames=("model.bin",),
+        revision=REVISION,
+    )
+    destination = spec.destination(tmp_path)
+    destination.mkdir(parents=True)
+    partial = destination / "model.bin.incomplete"
+    partial.write_bytes(b"old")
+    partial.with_name("model.bin.incomplete.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "repo_id": spec.repo_id,
+                "revision": "c" * 40,
+                "filename": "model.bin",
+                "size": 7,
+                "sha256": hashlib.sha256(b"old-new").hexdigest(),
+                "git_blob_id": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, *, chunk_size):
+            yield b"current"
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse()
+
+    download_public_file(
+        spec,
+        "model.bin",
+        sha256_info(b"current"),
+        destination,
+        "https://hf-mirror.com",
+        revision=REVISION,
+        request_get=fake_get,
+    )
+
+    assert calls[0][1]["headers"] == {}
+    assert (destination / "model.bin").read_bytes() == b"current"
+
+
+def test_git_blob_checksum_is_verified(tmp_path):
+    spec = ModelDownloadSpec(
+        key="test",
+        name="Test",
+        repo_id="owner/repo",
+        local_dir="models/test",
+        required_files=("config.json",),
+        filenames=("config.json",),
+        revision=REVISION,
+    )
+    destination = spec.destination(tmp_path)
+    destination.mkdir(parents=True)
+    data = b'{"ok": true}'
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, *, chunk_size):
+            yield data
+
+    download_public_file(
+        spec,
+        "config.json",
+        git_blob_info(data),
+        destination,
+        "https://hf-mirror.com",
+        revision=REVISION,
+        request_get=lambda *_args, **_kwargs: FakeResponse(),
+    )
+    assert (destination / "config.json").read_bytes() == data
