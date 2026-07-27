@@ -114,7 +114,8 @@ def test_new_catalog_entry_uses_generic_purpose_text(tmp_path, monkeypatch):
 def test_installed_models_are_selectable_but_not_preselected(tmp_path):
     application()
     anime = next(spec for spec in MODEL_DOWNLOAD_SPECS if spec.key == "anime-whisper")
-    for path in anime.required_paths(tmp_path):
+    for filename in anime.filenames:
+        path = anime.destination(tmp_path) / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"installed")
 

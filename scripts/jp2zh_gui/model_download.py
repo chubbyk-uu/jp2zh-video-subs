@@ -46,7 +46,7 @@ from model_catalog import (
     ModelInstallState,
     ModelDownloadSpec,
     cleanup_redundant_model_partials,
-    model_install_state,
+    model_download_state,
 )
 from portable_runtime import scripts_dir
 from .models import PROJECT_ROOT
@@ -422,7 +422,7 @@ class ModelDownloadDialog(QDialog):
         for spec in MODEL_DOWNLOAD_SPECS:
             cleanup_redundant_model_partials(spec, self.root)
             row = self._rows_by_key[spec.key]
-            state = model_install_state(spec, self.root)
+            state = model_download_state(spec, self.root)
             check_item = self.table.item(row, 0)
             check_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
@@ -460,7 +460,7 @@ class ModelDownloadDialog(QDialog):
         keys = {
             spec.key
             for spec in MODEL_DOWNLOAD_SPECS
-            if model_install_state(spec, self.root) != ModelInstallState.INSTALLED
+            if model_download_state(spec, self.root) != ModelInstallState.INSTALLED
         }
         self._set_checked_keys(keys)
 
@@ -542,7 +542,7 @@ class ModelDownloadDialog(QDialog):
             keys = [
                 key
                 for key in keys
-                if model_install_state(
+                if model_download_state(
                     MODEL_SPEC_BY_KEY[key],
                     self.root,
                 )

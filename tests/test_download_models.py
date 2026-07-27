@@ -532,6 +532,45 @@ def test_download_queue_skips_installed_model(tmp_path):
     assert rows[-1] == {"type": "finished", "completed": 0, "failed": 0}
 
 
+def test_download_queue_resumes_when_runtime_is_ready_but_planned_file_is_partial(
+    tmp_path,
+):
+    spec = ModelDownloadSpec(
+        key="test",
+        name="Test",
+        repo_id="owner/repo",
+        local_dir="models/test",
+        required_files=("model.bin",),
+        filenames=("model.bin", "optional.json"),
+        revision=REVISION,
+    )
+    destination = spec.destination(tmp_path)
+    destination.mkdir(parents=True)
+    (destination / "model.bin").write_bytes(b"ready")
+    (destination / "optional.json.incomplete").write_bytes(b"partial")
+    calls = []
+
+    def fake_downloader(plan, root, _endpoint, **_kwargs):
+        calls.append(plan.spec.key)
+        for filename, remote in plan.files.items():
+            path = plan.spec.destination(root) / filename
+            path.write_bytes(b"x" * remote.size)
+
+    stream = io.StringIO()
+    result = run_download_queue(
+        (spec,),
+        tmp_path,
+        "https://example.test",
+        EventWriter(stream),
+        api=FakeApi({"model.bin": 5, "optional.json": 8}),
+        downloader=fake_downloader,
+    )
+
+    assert result == 0
+    assert calls == ["test"]
+    assert not any(row["type"] == "model_skipped" for row in event_rows(stream))
+
+
 def test_force_download_does_not_skip_installed_model(tmp_path):
     spec = model_specs(("whisperseg",))[0]
     required = spec.required_paths(tmp_path)[0]

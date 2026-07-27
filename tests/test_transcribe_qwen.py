@@ -88,9 +88,36 @@ def test_run_resilient_batches_halves_only_oom_batches():
     )
 
     assert outputs == ["0", "1", "2", "3", "4"]
-    assert calls == [[0, 1, 2, 3, 4], [0, 1], [2, 3, 4], [2], [3, 4]]
+    assert calls == [[0, 1, 2, 3, 4], [0, 1, 2], [0, 1], [2, 3], [4]]
     assert split_events == [(5, 3), (3, 2)]
     assert len(cleared) == splits == 2
+
+
+def test_run_resilient_batches_keeps_the_learned_safe_batch_size():
+    class FakeOom(RuntimeError):
+        pass
+
+    calls = []
+
+    def generate(batch):
+        calls.append(len(batch))
+        if len(batch) > 6:
+            raise FakeOom()
+        return list(batch)
+
+    outputs, splits = run_resilient_batches(
+        list(range(120)),
+        24,
+        generate,
+        is_oom_error=lambda exc: isinstance(exc, FakeOom),
+    )
+
+    assert outputs == list(range(120))
+    assert splits == 2
+    assert calls[:3] == [24, 12, 6]
+    assert calls.count(24) == 1
+    assert calls.count(12) == 1
+    assert set(calls[2:]) == {6}
 
 
 def test_run_resilient_batches_does_not_hide_non_oom_or_single_item_failures():

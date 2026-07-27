@@ -269,9 +269,35 @@ def cleanup_redundant_model_partials(
 
 
 def model_install_state(spec: ModelDownloadSpec, root: Path) -> ModelInstallState:
+    """Report whether the files required by inference are ready."""
     destination = spec.destination(root)
     required = spec.required_paths(root)
     if required and all(path.is_file() and path.stat().st_size > 0 for path in required):
+        return ModelInstallState.INSTALLED
+
+    if destination.is_dir() and any(
+        path.is_file() for path in destination.rglob("*.incomplete")
+    ):
+        return ModelInstallState.PARTIAL
+
+    if not destination.is_dir():
+        return ModelInstallState.MISSING
+    for path in destination.rglob("*"):
+        if not path.is_file() or path.stat().st_size <= 0:
+            continue
+        if path.suffix == ".incomplete" or ".cache" not in path.relative_to(destination).parts:
+            return ModelInstallState.PARTIAL
+    return ModelInstallState.MISSING
+
+
+def model_download_state(
+    spec: ModelDownloadSpec,
+    root: Path,
+) -> ModelInstallState:
+    """Report whether every file selected by the model downloader is complete."""
+    destination = spec.destination(root)
+    planned = tuple(destination / filename for filename in spec.filenames)
+    if planned and all(path.is_file() and path.stat().st_size > 0 for path in planned):
         return ModelInstallState.INSTALLED
 
     if destination.is_dir() and any(

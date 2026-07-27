@@ -21,7 +21,7 @@ from model_catalog import (
     ModelDownloadSpec,
     ModelInstallState,
     cleanup_redundant_model_partials,
-    model_install_state,
+    model_download_state,
     model_specs,
 )
 from portable_runtime import project_root
@@ -826,7 +826,7 @@ def prepare_plans(
     plans: list[RemoteModelPlan] = []
     for spec in specs:
         cleanup_redundant_model_partials(spec, root)
-        state = model_install_state(spec, root)
+        state = model_download_state(spec, root)
         if state == ModelInstallState.INSTALLED and not force:
             writer.emit("model_skipped", model=spec.key, reason="installed")
             continue

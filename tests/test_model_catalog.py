@@ -4,8 +4,10 @@ import pytest
 
 from model_catalog import (
     MODEL_DOWNLOAD_SPECS,
+    ModelDownloadSpec,
     ModelInstallState,
     cleanup_redundant_model_partials,
+    model_download_state,
     model_install_state,
     model_specs,
     required_model_keys,
@@ -73,6 +75,30 @@ def test_model_install_state_distinguishes_missing_partial_and_installed(tmp_pat
 
     incomplete.unlink()
     assert model_install_state(spec, tmp_path) == ModelInstallState.INSTALLED
+
+
+def test_download_state_requires_every_planned_file_but_runtime_state_does_not(
+    tmp_path,
+):
+    spec = ModelDownloadSpec(
+        key="test",
+        name="Test",
+        repo_id="owner/repo",
+        local_dir="models/test",
+        required_files=("model.bin",),
+        filenames=("model.bin", "optional.json"),
+        revision="a" * 40,
+    )
+    destination = spec.destination(tmp_path)
+    destination.mkdir(parents=True)
+    (destination / "model.bin").write_bytes(b"ready")
+    (destination / "optional.json.incomplete").write_bytes(b"partial")
+
+    assert model_install_state(spec, tmp_path) == ModelInstallState.INSTALLED
+    assert model_download_state(spec, tmp_path) == ModelInstallState.PARTIAL
+
+    (destination / "optional.json").write_bytes(b"complete")
+    assert model_download_state(spec, tmp_path) == ModelInstallState.INSTALLED
 
 
 def test_redundant_compat_partial_is_cleaned_after_complete_final_file(tmp_path):

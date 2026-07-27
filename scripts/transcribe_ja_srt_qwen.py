@@ -1940,16 +1940,18 @@ def run_resilient_batches(
     on_split: Callable[[int, int], None] | None = None,
     on_success: Callable[[int, list[_BatchOutput]], None] | None = None,
 ) -> tuple[list[_BatchOutput], int]:
-    """Generate ordered batches, recursively halving only a batch that runs out of memory."""
+    """Generate ordered batches and keep a smaller batch size after an OOM retry."""
     if batch_size <= 0:
         raise ValueError("batch_size must be greater than 0")
 
     outputs: list[_BatchOutput] = []
     completed = 0
     split_count = 0
+    cursor = 0
+    effective_batch_size = batch_size
 
-    def run_one(batch: list[_BatchItem]) -> list[_BatchOutput]:
-        nonlocal split_count
+    while cursor < len(items):
+        batch = items[cursor : cursor + effective_batch_size]
         try:
             generated = list(generate_batch(batch))
         except Exception as exc:
@@ -1959,24 +1961,19 @@ def run_resilient_batches(
             # generator frame and its input tensors until the except block ends.
             exc.__traceback__ = None
             next_size = (len(batch) + 1) // 2
-            midpoint = len(batch) // 2
-        else:
-            if len(generated) != len(batch):
-                raise RuntimeError(
-                    f"Batch generator returned {len(generated)} results for {len(batch)} inputs"
-                )
-            return generated
-
-        split_count += 1
-        if clear_oom is not None:
-            clear_oom()
-        if on_split is not None:
-            on_split(len(batch), next_size)
-        return run_one(batch[:midpoint]) + run_one(batch[midpoint:])
-
-    for start in range(0, len(items), batch_size):
-        generated = run_one(items[start : start + batch_size])
+            split_count += 1
+            effective_batch_size = min(effective_batch_size, next_size)
+            if clear_oom is not None:
+                clear_oom()
+            if on_split is not None:
+                on_split(len(batch), effective_batch_size)
+            continue
+        if len(generated) != len(batch):
+            raise RuntimeError(
+                f"Batch generator returned {len(generated)} results for {len(batch)} inputs"
+            )
         outputs.extend(generated)
+        cursor += len(batch)
         completed += len(generated)
         if on_success is not None:
             on_success(completed, generated)
