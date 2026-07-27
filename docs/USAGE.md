@@ -238,6 +238,12 @@ python scripts/run_gui.py
 - 拖入一个或多个视频、拖入文件夹并可选递归扫描；
 - 任务去重、移除和清空；失败或取消的任务可移除后重新加入；
 - Anime/Qwen ASR、简体中文/繁体中文/实验性英文字幕目标、兼容的 GalTransl/Sakura/Sugoi 翻译模型选择及本地文件完整性提示；
+- 当前开发版可从“管理模型…”打开模态下载窗口：选择当前配置或全部缺失模型，切换
+  Hugging Face 官方站/第三方 HF-Mirror，可选填仅供模型下载使用的 HTTP 代理，并按界面
+  顺序逐个下载；默认优先使用 Hugging Face/Xet 并在失败时自动后备，也可取消该选项直接
+  使用兼容 HTTP；取消下载后保留断点续传文件，界面显示本次会话的平均速度和可展开详情；
+  已安装模型可手动勾选后重新下载，或经二次确认后删除整个模型目录；模型下载期间不能
+  操作主窗口，视频流水线运行期间也不能打开模型管理；
 - 输出/工作目录、双语 ASS、质量报告、断点续跑、字幕复制，以及直接影响 ASR 显存与速度的
   批大小策略（性能优先 24、均衡 16、低显存 8、稳定优先 4；默认 24，建议 14 GB 以上
   显存使用，显存不足时逐档降低）；
@@ -254,6 +260,20 @@ python scripts/run_gui.py
 NVIDIA 显卡仍缺少实机兼容性证据。缺少 `models\whisperseg\model.onnx`
 时，设备栏显示“语音切分 未检测（缺少模型）”；模型存在时才创建真实 ONNX Runtime
 会话并区分 CUDA、CPU 和检测失败。更改模型文件后点击“刷新”重新检测。
+已发布的 Beta 5 尚不包含 GUI 模型管理器，仍按 `INSTALL-CN.txt` 使用 `hf.cmd`；
+该窗口会随后续绿色测试包提供。
+
+模型管理器调用的是本项目自己的 `scripts/download_models.py`，它和 Hugging Face 官方
+CLI 的根目录包装器 `hf.cmd` 不是同一条命令。`--download-backend auto|compat` 只属于
+项目下载器，不能附加到 `hf.cmd download`。Windows 绿色开发包可在程序根目录执行：
+
+```powershell
+runtime\python.exe app\scripts\download_models.py --root . --model anime-whisper --source mirror --download-backend compat --proxy http://127.0.0.1:7890
+```
+
+源码环境使用 `python scripts/download_models.py`，其余参数相同。`--model` 可以重复，
+以目录顺序依次下载多个模型；`auto` 对应 GUI 默认勾选的 Hugging Face/Xet 优先模式，
+`compat` 对应取消勾选后的兼容 HTTP 模式。
 
 “复用已完成阶段（断点续跑）”会验证输入、模型、完整阶段参数和产物哈希清单，只跳过
 全部匹配的 WAV、日语 SRT 和译文字幕；更换模型或识别/翻译参数会自动使对应阶段失效，
@@ -439,6 +459,8 @@ Missing GalTransl model: .../models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtran
 WhisperSeg、Qwen forced aligner 和 GalTransl；Qwen ASR 模型只在 `--asr qwen` 时需要；
 Sakura 模型只在 `--translator sakura` 时需要；Sugoi 模型只在英文目标时需要。OpenCC
 是程序依赖，不是模型，源码安装随 `requirements.txt` 安装，Windows 绿色包会直接内置。
+当前开发版也可点模型状态旁的“管理模型…”下载或续传；已发布的 Beta 5 仍使用
+程序根目录下的 `hf.cmd`。
 
 ### 翻译速度很慢
 

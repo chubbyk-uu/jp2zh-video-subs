@@ -15,6 +15,7 @@ from jp2zh_gui.i18n import LanguageManager, load_language_specs, resolve_languag
 from jp2zh_gui.models import AsrPreset, GuiTask, TargetLanguage, TaskStatus
 import jp2zh_gui.window as window_module
 from jp2zh_gui.window import MainWindow
+from model_catalog import ModelInstallState
 
 
 def application():
@@ -193,6 +194,18 @@ def test_model_status_is_retranslated_for_complete_and_missing_models(tmp_path, 
         "missing_model_files",
         lambda _config: [tmp_path / "one", tmp_path / "two"] if state["missing"] else [],
     )
+    monkeypatch.setattr(
+        window_module,
+        "unavailable_model_states",
+        lambda _config: (
+            {
+                "anime-whisper": ModelInstallState.MISSING,
+                "galtransl-7b": ModelInstallState.MISSING,
+            }
+            if state["missing"]
+            else {}
+        ),
+    )
     window = MainWindow(settings=settings, language_manager=manager)
     try:
         assert window.model_status_label.text() == "所选模型文件完整"
@@ -206,13 +219,13 @@ def test_model_status_is_retranslated_for_complete_and_missing_models(tmp_path, 
         state["missing"] = True
         manager.set_language("zh_CN")
         app.processEvents()
-        assert window.model_status_label.text() == "缺少 2 个模型文件"
+        assert window.model_status_label.text() == "缺少 2 个模型"
         manager.set_language("zh_TW")
         app.processEvents()
-        assert window.model_status_label.text() == "缺少 2 個模型檔案"
+        assert window.model_status_label.text() == "缺少 2 個模型"
         manager.set_language("en")
         app.processEvents()
-        assert window.model_status_label.text() == "2 model files missing"
+        assert window.model_status_label.text() == "2 models missing"
     finally:
         window.close()
 

@@ -6,6 +6,7 @@ translations="$root/scripts/jp2zh_gui/translations"
 sources=(
     "$root/scripts/jp2zh_gui/app.py"
     "$root/scripts/jp2zh_gui/controller.py"
+    "$root/scripts/jp2zh_gui/model_download.py"
     "$root/scripts/jp2zh_gui/window.py"
 )
 

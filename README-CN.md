@@ -66,6 +66,8 @@ Windows 用户建议直接使用
 │   ├── translate_srt_sakura.py      # 日语 SRT 到中文字幕（Sakura-14B）
 │   ├── translate_srt_sugoi.py       # 日语 SRT 到英文字幕（Sugoi）
 │   ├── convert_srt_opencc.py        # 简体到繁体 SRT 转换
+│   ├── download_models.py            # GUI/CLI 模型下载队列
+│   ├── model_catalog.py              # 统一的模型路径与文件要求
 │   ├── retime_existing_subtitles.py # 基于已有产物批量重定时并刷新 ASS
 │   ├── make_bilingual_ass.py        # 双语 ASS（中文在上，日文在下）+ 说话人性别上色
 │   ├── ecapa_gender.py              # vendoring 的 ECAPA-TDNN 声纹性别分类器
@@ -128,6 +130,19 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 
 ## 下载模型
 
+当前开发版 GUI 在模型状态旁新增了“管理模型…”窗口。它可以勾选当前 ASR/翻译配置所需
+模型或全部缺失模型，并按界面顺序逐个从 Hugging Face 官方站或第三方 HF-Mirror 下载；
+下载优先使用 Hugging Face/Xet 客户端，取消时保留未完整文件供下次续传；窗口内可选填
+HTTP 代理，也可以取消“优先使用 Hugging Face/Xet”而直接使用支持断点续传的兼容 HTTP。
+HF-Mirror 只用于公开模型，下载器不会把本机缓存的 Hugging Face 私有令牌转发给第三方
+镜像。已安装模型可以重新下载，也可以经二次确认后删除。
+下载后端选项属于 GUI 和本项目的 `scripts/download_models.py` 辅助程序，不是根目录
+Hugging Face `hf.cmd` 支持的参数；项目下载 CLI 示例见
+[docs/USAGE.md](https://github.com/chubbyk-uu/jp2zh-video-subs/blob/main/docs/USAGE.md)。
+
+已发布的 Beta 5 早于这个功能，仍需使用程序根目录的 `hf.cmd`。源码安装也可以继续使用
+下面的命令。
+
 一键默认流程需要的模型：
 
 - Anime ASR 文本：[`litagin/anime-whisper`](https://huggingface.co/litagin/anime-whisper)
@@ -174,9 +189,13 @@ hf download SakuraLLM/Sakura-GalTransl-7B-v3.7 \
 ```text
 models/anime-whisper/config.json
 models/anime-whisper/model.safetensors
+models/anime-whisper/preprocessor_config.json
+models/anime-whisper/tokenizer_config.json
 models/whisperseg/model.onnx
 models/Qwen3-ForcedAligner-0.6B/config.json
 models/Qwen3-ForcedAligner-0.6B/model.safetensors
+models/Qwen3-ForcedAligner-0.6B/preprocessor_config.json
+models/Qwen3-ForcedAligner-0.6B/tokenizer_config.json
 models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 ```
 
@@ -295,6 +314,9 @@ CPU。模型存在时才通过真实 ONNX Runtime 会话显示 CUDA、CPU 或检
 GUI 支持拖入视频或文件夹、可见任务队列、Anime/Qwen 识别、独立的简体中文/繁体中文/实验性英文字幕目标、兼容的 GalTransl/Sakura/Sugoi 模型选择、
 常用字幕参数、总体进度与详细阶段状态、可折叠日志、取消、设置记忆、模型文件检查，
 以及成功后的中间产物清理。文件夹会展开为视频列表并逐个处理，避免多个模型实例叠加显存。
+
+上文[下载模型](#下载模型)介绍的“管理模型…”功能计划随下一版绿色测试包发布；
+已发布的 Beta 5 仍使用 `hf.cmd`。
 
 Windows 包内置 Python 3.12、FFmpeg、PyTorch CUDA、ONNX Runtime CUDA 和启用 CUDA 的
 llama.cpp。已通过含中文/空格路径重定位、不依赖 WSL 的原生 EXE 启动、安装模型后的三项 CUDA 探测，

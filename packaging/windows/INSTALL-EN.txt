@@ -16,9 +16,33 @@ D:\Tools\jp2zh-video-subs\
 
 2. Download the default models
 
-Open PowerShell or Command Prompt in the application root and run each command below. Do not mix
+In newer builds, first double-click jp2zh-subtitle-tool.exe and then click **Manage models...**
+beside the model-status message:
+
+- Click **Select current configuration**, confirm the download source, and click
+  **Start download**.
+- Checked models download sequentially in display order. Cancelling keeps partial files so the
+  next attempt can resume.
+- Installed models can be selected for re-download. Deleting a model always requires a second
+  confirmation.
+- **HF-Mirror (third-party)** is intended for public models. The application does not send a
+  cached private Hugging Face token to that mirror.
+- **Prefer Hugging Face/Xet (recommended)** is enabled by default and automatically falls back
+  to compatibility HTTP. Turn it off to force resumable compatibility HTTP from the start.
+- If either source is slow, enable **Use proxy** and enter the Windows proxy address, for
+  example http://127.0.0.1:7890. The proxy applies to both download modes.
+- Speed is the session average from the start of the current transfer. **Show download details**
+  displays the source, proxy, current model, and errors.
+
+If **Manage models...** is unavailable (for example, in the published Beta 5), or if you prefer
+manual setup, open PowerShell or Command Prompt in the application root and run each command
+below. Do not mix
 the proxy syntax of the two shells. PowerShell does not search the current directory by default,
 so the commands consistently use .\hf.cmd; that form also works in Command Prompt.
+
+Important: **Prefer Hugging Face/Xet** and compatibility HTTP are GUI/project-downloader
+options. `hf.cmd` wraps the official Hugging Face CLI and does not accept
+`--download-backend`; do not append that option to the `hf.cmd download` commands below.
 
 If Hugging Face is slow or blocked, set your Windows proxy in the same terminal first
 (replace the example port with the one used by your proxy application).

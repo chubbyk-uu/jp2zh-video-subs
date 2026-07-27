@@ -12,7 +12,9 @@ from jp2zh_gui.models import (
     TargetLanguage,
     discover_dropped_videos,
     missing_model_files,
+    unavailable_model_states,
 )
+from model_catalog import ModelInstallState
 
 
 def test_gui_config_builds_pipeline_command(tmp_path):
@@ -126,3 +128,26 @@ def test_missing_model_files_uses_selected_presets(tmp_path):
     assert tmp_path / "models/anime-whisper/model.safetensors" in missing
     assert tmp_path / "models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf" in missing
     assert not any("Qwen3-ASR-1.7B" in str(path) for path in missing)
+
+
+def test_missing_model_files_rejects_empty_placeholders(tmp_path):
+    config = GuiConfig(asr=AsrPreset.ANIME, translator=TranslatorPreset.GALTRANSL)
+    placeholder = tmp_path / "models/anime-whisper/config.json"
+    placeholder.parent.mkdir(parents=True)
+    placeholder.touch()
+
+    assert placeholder in missing_model_files(config, tmp_path)
+
+
+def test_unavailable_models_are_counted_by_model_not_required_file(tmp_path):
+    config = GuiConfig(asr=AsrPreset.ANIME, translator=TranslatorPreset.GALTRANSL)
+
+    unavailable = unavailable_model_states(config, tmp_path)
+
+    assert unavailable == {
+        "anime-whisper": ModelInstallState.MISSING,
+        "whisperseg": ModelInstallState.MISSING,
+        "qwen-forced-aligner": ModelInstallState.MISSING,
+        "galtransl-7b": ModelInstallState.MISSING,
+    }
+    assert len(missing_model_files(config, tmp_path)) > len(unavailable)

@@ -76,6 +76,8 @@ No online API is required for inference. Model files are not included in this re
 │   ├── translate_srt_sakura.py      # Japanese SRT to Chinese SRT (Sakura-14B)
 │   ├── translate_srt_sugoi.py       # Japanese SRT to English SRT (Sugoi)
 │   ├── convert_srt_opencc.py        # Simplified-to-Traditional SRT conversion
+│   ├── download_models.py            # GUI/CLI model download queue
+│   ├── model_catalog.py              # Shared model locations and requirements
 │   ├── retime_existing_subtitles.py # Retiming + ASS refresh from existing outputs
 │   ├── make_bilingual_ass.py        # Bilingual ASS (Chinese on top, Japanese below) + speaker colouring
 │   ├── ecapa_gender.py              # Vendored ECAPA-TDNN voice gender classifier
@@ -145,6 +147,22 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 
 ## Download Models
 
+The current development GUI has a modal **Manage models…** window beside the model-status
+message. It can select the models required by the current ASR/translator settings or all
+missing models, then download them sequentially from Hugging Face or the third-party
+HF-Mirror source. Downloads prefer the Hugging Face/Xet client and retain partial files for
+resume; users can turn off the preferred client to force resumable compatibility HTTP, and an
+optional HTTP proxy can be set directly in the window. HF-Mirror is intended for public models
+and the downloader does not forward a cached private Hugging Face token to it.
+Installed models can be selected for re-download or deleted after a second confirmation.
+The backend selector is part of the GUI and this project's `scripts/download_models.py` helper;
+it is not an option accepted by the root-level Hugging Face `hf.cmd` wrapper. See
+[docs/USAGE.md](https://github.com/chubbyk-uu/jp2zh-video-subs/blob/main/docs/USAGE.md)
+for the project-helper CLI example.
+
+The published Beta 5 predates this window and still uses the root-level `hf.cmd` instructions
+below. Source installations can also use the commands directly.
+
 Default one-command models:
 
 - Anime ASR text: [`litagin/anime-whisper`](https://huggingface.co/litagin/anime-whisper)
@@ -192,9 +210,13 @@ Default required files:
 ```text
 models/anime-whisper/config.json
 models/anime-whisper/model.safetensors
+models/anime-whisper/preprocessor_config.json
+models/anime-whisper/tokenizer_config.json
 models/whisperseg/model.onnx
 models/Qwen3-ForcedAligner-0.6B/config.json
 models/Qwen3-ForcedAligner-0.6B/model.safetensors
+models/Qwen3-ForcedAligner-0.6B/preprocessor_config.json
+models/Qwen3-ForcedAligner-0.6B/tokenizer_config.json
 models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 ```
 
@@ -324,6 +346,9 @@ Simplified Chinese/Traditional Chinese/experimental English subtitle targets, co
 status, collapsible logs, cancellation, remembered settings, model-file checks, and
 successful-job cleanup policies. Expanded videos run sequentially so multiple model instances
 do not stack their VRAM usage.
+
+The **Manage models…** workflow described under [Download Models](#download-models) is scheduled
+for the next portable beta. The published Beta 5 continues to use `hf.cmd`.
 
 The Windows package embeds Python 3.12, FFmpeg, PyTorch CUDA, ONNX Runtime CUDA, and CUDA-enabled
 llama.cpp. It has passed relocation to paths containing spaces and Chinese characters, native

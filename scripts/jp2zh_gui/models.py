@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import Iterable
 from uuid import uuid4
 
+from model_catalog import (
+    ModelInstallState,
+    model_install_state,
+    model_specs,
+    required_model_keys,
+    required_model_paths,
+)
 from pipeline_configs import (
     AnimeAsrConfig,
     BilingualAssConfig,
@@ -72,39 +79,6 @@ STAGE_PROGRESS_RANGES = {
 class ValidationIssue:
     code: str
     params: dict[str, object] = field(default_factory=dict)
-
-
-MODEL_REQUIREMENTS = {
-    AsrPreset.ANIME: (
-        "models/anime-whisper/config.json",
-        "models/anime-whisper/model.safetensors",
-        "models/whisperseg/model.onnx",
-        "models/Qwen3-ForcedAligner-0.6B/config.json",
-        "models/Qwen3-ForcedAligner-0.6B/model.safetensors",
-    ),
-    AsrPreset.QWEN: (
-        "models/Qwen3-ASR-1.7B/config.json",
-        "models/Qwen3-ASR-1.7B/model.safetensors.index.json",
-        "models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors",
-        "models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors",
-        "models/Qwen3-ForcedAligner-0.6B/config.json",
-        "models/Qwen3-ForcedAligner-0.6B/model.safetensors",
-        "models/whisperseg/model.onnx",
-    ),
-    TranslatorPreset.GALTRANSL: (
-        "models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf",
-    ),
-    TranslatorPreset.SAKURA: (
-        "models/Sakura-14B-Qwen2.5-v1.0-GGUF/sakura-14b-qwen2.5-v1.0-iq4xs.gguf",
-    ),
-    TranslatorPreset.SUGOI: (
-        "models/Sugoi-14B-Ultra-GGUF/Sugoi-14B-Ultra-Q4_K_M.gguf",
-    ),
-}
-GENDER_MODEL_REQUIREMENTS = (
-    "models/voice-gender-classifier/config.json",
-    "models/voice-gender-classifier/model.safetensors",
-)
 
 
 @dataclass
@@ -311,7 +285,31 @@ def discover_dropped_videos(paths: Iterable[Path], recursive: bool) -> list[Path
 
 
 def missing_model_files(config: GuiConfig, project_root: Path = PROJECT_ROOT) -> list[Path]:
-    required = [*MODEL_REQUIREMENTS[config.asr], *MODEL_REQUIREMENTS[config.translator]]
-    if config.colour_by_speaker:
-        required.extend(GENDER_MODEL_REQUIREMENTS)
-    return [project_root / relative for relative in required if not (project_root / relative).is_file()]
+    required = required_model_paths(
+        project_root,
+        config.asr.value,
+        config.translator.value,
+        colour_by_speaker=config.colour_by_speaker,
+    )
+    return [
+        path
+        for path in required
+        if not path.is_file() or path.stat().st_size <= 0
+    ]
+
+
+def unavailable_model_states(
+    config: GuiConfig,
+    project_root: Path = PROJECT_ROOT,
+) -> dict[str, ModelInstallState]:
+    keys = required_model_keys(
+        config.asr.value,
+        config.translator.value,
+        colour_by_speaker=config.colour_by_speaker,
+    )
+    return {
+        spec.key: state
+        for spec in model_specs(keys)
+        if (state := model_install_state(spec, project_root))
+        != ModelInstallState.INSTALLED
+    }

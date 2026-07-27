@@ -44,9 +44,11 @@ from PySide6.QtWidgets import (
 )
 
 from portable_runtime import portable_config_path, rebase_portable_path
+from model_catalog import MODEL_SPEC_BY_KEY, ModelInstallState, required_model_keys
 from target_languages import DEFAULT_BATCH_SIZE_BY_TRANSLATOR, DEFAULT_WRAP_CHARS_BY_TARGET
 from .controller import PipelineController
 from .i18n import LanguageManager
+from .model_download import ModelDownloadDialog
 from .models import (
     AsrPreset,
     CleanupPolicy,
@@ -58,6 +60,7 @@ from .models import (
     TargetLanguage,
     discover_dropped_videos,
     missing_model_files,
+    unavailable_model_states,
 )
 from .process_utils import hide_windows_console
 
@@ -489,6 +492,8 @@ class MainWindow(QMainWindow):
         )
         self.refresh_device_button = QPushButton()
         self.refresh_device_button.setMinimumWidth(90)
+        self.model_manager_button = QPushButton()
+        self.model_manager_button.setMinimumWidth(90)
         self.output_edit = QLineEdit()
         self.output_browse = QPushButton()
         self.work_edit = QLineEdit()
@@ -512,6 +517,7 @@ class MainWindow(QMainWindow):
         status_text.addWidget(self.model_status_label)
         status_text.addWidget(self.device_status_label)
         status_row.addLayout(status_text, 1)
+        status_row.addWidget(self.model_manager_button)
         status_row.addWidget(self.refresh_device_button)
         settings_layout.addLayout(status_row)
         path_layout = QGridLayout()
@@ -749,6 +755,7 @@ class MainWindow(QMainWindow):
             TargetLanguage.ENGLISH.value: self.tr("English (Experimental)"),
         })
         self.refresh_device_button.setText(self.tr("Probing…") if self._device_probe_state == "running" else self.tr("Refresh"))
+        self.model_manager_button.setText(self.tr("Manage models…"))
         self.output_label.setText(self.tr("Output folder"))
         self.work_label.setText(self.tr("Work folder"))
         self.cleanup_label.setText(self.tr("After success"))
@@ -832,6 +839,7 @@ class MainWindow(QMainWindow):
         self.speaker_check.toggled.connect(self._update_model_status)
         self.advanced_button.clicked.connect(self._show_advanced_settings)
         self.refresh_device_button.clicked.connect(self._start_device_probe)
+        self.model_manager_button.clicked.connect(self._open_model_manager)
         self.log_toggle.toggled.connect(self.log_edit.setVisible)
         for edit in (self.output_edit, self.work_edit):
             edit.textChanged.connect(edit.setToolTip)
@@ -1229,6 +1237,22 @@ class MainWindow(QMainWindow):
         config_folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_folder)))
 
+    def _open_model_manager(self) -> None:
+        config = self._config_from_ui()
+        keys = required_model_keys(
+            config.asr.value,
+            config.translator.value,
+            colour_by_speaker=config.colour_by_speaker,
+        )
+        dialog = ModelDownloadDialog(
+            self,
+            current_model_keys=keys,
+            settings=self.settings,
+        )
+        dialog.models_changed.connect(self._update_model_status)
+        dialog.exec()
+        self._update_model_status()
+
     def _open_user_guide(self) -> None:
         filename = "README-CN.md" if self.language_manager.current_code.startswith("zh") else "README.md"
         candidates = (PROJECT_ROOT / filename, PROJECT_ROOT / "app" / filename)
@@ -1279,11 +1303,21 @@ class MainWindow(QMainWindow):
 
     def _update_model_status(self) -> None:
         config = self._config_from_ui()
+        unavailable = unavailable_model_states(config)
         missing = missing_model_files(config)
-        if missing:
-            self.model_status_label.setText(self.tr("{count} model files missing").format(count=len(missing)))
+        if unavailable:
+            if ModelInstallState.PARTIAL in unavailable.values():
+                message = self.tr("{count} models missing or incomplete")
+            else:
+                message = self.tr("{count} models missing")
+            self.model_status_label.setText(message.format(count=len(unavailable)))
             self.model_status_label.setStyleSheet("color: #c0392b;")
-            self.model_status_label.setToolTip("\n".join(str(path) for path in missing))
+            details = [
+                MODEL_SPEC_BY_KEY[key].name
+                for key in unavailable
+            ]
+            details.extend(str(path) for path in missing)
+            self.model_status_label.setToolTip("\n".join(details))
         else:
             self.model_status_label.setText(self.tr("Selected model files are complete"))
             self.model_status_label.setStyleSheet("color: #18864b;")
