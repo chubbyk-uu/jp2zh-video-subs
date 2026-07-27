@@ -219,7 +219,7 @@ python scripts/video_to_zh_srt.py path/to/videos/ \
 ### 桌面 GUI
 
 Windows 用户可从
-[`v0.1.0 Beta 5`](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.5)
+[`v0.1.0`](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0)
 下载绿色版。下载全部 `jp2zh-video-subs-windows-x64-cuda-program.7z.*`
 分卷，放在同一目录并从 `.7z.001` 解压，然后按 Release 内的
 `INSTALL-CN.txt` 使用程序根目录下可迁移的 `hf.cmd` 下载模型。双击
@@ -238,7 +238,7 @@ python scripts/run_gui.py
 - 拖入一个或多个视频、拖入文件夹并可选递归扫描；
 - 任务去重、移除和清空；失败或取消的任务可移除后重新加入；
 - Anime/Qwen ASR、简体中文/繁体中文/实验性英文字幕目标、兼容的 GalTransl/Sakura/Sugoi 翻译模型选择及本地文件完整性提示；
-- 当前开发版可从“管理模型…”打开模态下载窗口：选择当前配置或全部缺失模型，切换
+- 可从“管理模型…”打开模态下载窗口：选择当前配置或全部缺失模型，切换
   Hugging Face 官方站/第三方 HF-Mirror，可选填仅供模型下载使用且不需要认证的
   HTTP/HTTPS 代理，并按界面顺序逐个下载；默认优先使用 Hugging Face/Xet 并在失败时
   明确提示已自动后备，也可取消该选项直接使用兼容 HTTP；取消下载后保留断点续传文件，
@@ -246,8 +246,8 @@ python scripts/run_gui.py
   确认后删除整个模型目录；共享 Xet 下载缓存可以单独打开或清空，不会删除已安装模型；
   模型下载期间不能操作主窗口，视频流水线运行期间也不能打开模型管理；
 - 输出/工作目录、双语 ASS、质量报告、断点续跑、字幕复制，以及直接影响 ASR 显存与速度的
-  批大小策略（性能优先 24、均衡 16、低显存 8、稳定优先 4；默认 24，建议 14 GB 以上
-  显存使用，显存不足时逐档降低）；
+  批大小策略（高吞吐 24、性能优先 16、低负载 8、兼容优先 4；默认 24；显存不足时降低，
+  CPU 较弱导致 GPU 空闲较多时也应降低；Qwen 通常比 Anime 占用更多显存）；
 - 后台检测并显示 PyTorch ASR、ONNX Runtime 语音切分和 llama.cpp 翻译的 CUDA 支持状态；
 - 翻译上下文/批大小、自动换行、系统字体下拉框、中文/日文字号和调色板颜色集中在独立的
   双标签高级设置窗口；
@@ -257,12 +257,11 @@ python scripts/run_gui.py
 文件夹会先展开成 GUI 队列，当前版本固定逐个视频启动现有 CLI，避免并行模型实例叠加显存。
 阶段百分比来自版本化 JSONL
 事件；后端没有可靠内部百分比时只显示已完成阶段，不推测模型内部进度。Windows x64 CUDA
-绿色版已完成程序分卷、全新解压和 RTX 5080 原生验证；其它
-NVIDIA 显卡仍缺少实机兼容性证据。缺少 `models\whisperseg\model.onnx`
+绿色版已完成程序分卷、全新解压，并在 RTX 5080 与 12 GB RTX 4080 Laptop 上完成
+Windows 原生人工运行。缺少 `models\whisperseg\model.onnx`
 时，设备栏显示“语音切分 未检测（缺少模型）”；模型存在时才创建真实 ONNX Runtime
 会话并区分 CUDA、CPU 和检测失败。更改模型文件后点击“刷新”重新检测。
-已发布的 Beta 5 尚不包含 GUI 模型管理器，仍按 `INSTALL-CN.txt` 使用 `hf.cmd`；
-该窗口会随后续绿色测试包提供。
+本版包含 GUI 模型管理器；`hf.cmd` 仍可作为手动下载模型的备用方式。
 
 模型管理器调用的是本项目自己的 `scripts/download_models.py`，它和 Hugging Face 官方
 CLI 的根目录包装器 `hf.cmd` 不是同一条命令。`--download-backend auto|compat` 只属于
@@ -461,8 +460,7 @@ Missing GalTransl model: .../models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtran
 WhisperSeg、Qwen forced aligner 和 GalTransl；Qwen ASR 模型只在 `--asr qwen` 时需要；
 Sakura 模型只在 `--translator sakura` 时需要；Sugoi 模型只在英文目标时需要。OpenCC
 是程序依赖，不是模型，源码安装随 `requirements.txt` 安装，Windows 绿色包会直接内置。
-当前开发版也可点模型状态旁的“管理模型…”下载或续传；已发布的 Beta 5 仍使用
-程序根目录下的 `hf.cmd`。
+也可点模型状态旁的“管理模型…”下载或续传；程序根目录下的 `hf.cmd` 可用于手动安装。
 
 ### 翻译速度很慢
 

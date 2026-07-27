@@ -306,6 +306,12 @@ def test_asr_validation_covers_phrase_max_internal_gap():
         assert [issue.field for issue in issues] == ["phrase_max_internal_gap"]
 
 
+def test_anime_text_batch_size_allows_follow_default_but_rejects_negative():
+    assert not validate_asr_config(AnimeAsrConfig(text_batch_size=0))
+    issues = validate_asr_config(AnimeAsrConfig(text_batch_size=-1))
+    assert [issue.field for issue in issues] == ["text_batch_size"]
+
+
 def test_asr_validation_only_names_real_config_fields():
     # validate_asr_config lists field names as string literals; a rename that
     # missed one would silently stop validating that knob. Guard against it.

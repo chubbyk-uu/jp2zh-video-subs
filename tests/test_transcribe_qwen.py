@@ -34,6 +34,7 @@ from transcribe_ja_srt_qwen import (
     qwen_aligner_language,
     reframe_collapsed_jobs,
     resolve_qwen_generation_config,
+    run_resilient_batches,
     sentences_from_alignment,
     split_into_units,
     transcribe_qwen,
@@ -43,6 +44,73 @@ from transcribe_ja_srt_qwen import (
 )
 import whisperseg_vad
 from whisperseg_vad import SpeechSegment, group_segments
+
+
+def test_run_resilient_batches_preserves_order_and_reports_progress():
+    calls = []
+    progress = []
+
+    outputs, splits = run_resilient_batches(
+        list(range(7)),
+        3,
+        lambda batch: calls.append(list(batch)) or [value * 2 for value in batch],
+        is_oom_error=lambda exc: False,
+        on_success=lambda done, generated: progress.append((done, list(generated))),
+    )
+
+    assert outputs == [0, 2, 4, 6, 8, 10, 12]
+    assert calls == [[0, 1, 2], [3, 4, 5], [6]]
+    assert progress == [(3, [0, 2, 4]), (6, [6, 8, 10]), (7, [12])]
+    assert splits == 0
+
+
+def test_run_resilient_batches_halves_only_oom_batches():
+    class FakeOom(RuntimeError):
+        pass
+
+    calls = []
+    cleared = []
+    split_events = []
+
+    def generate(batch):
+        calls.append(list(batch))
+        if len(batch) > 2:
+            raise FakeOom()
+        return [str(value) for value in batch]
+
+    outputs, splits = run_resilient_batches(
+        list(range(5)),
+        5,
+        generate,
+        is_oom_error=lambda exc: isinstance(exc, FakeOom),
+        clear_oom=lambda: cleared.append(True),
+        on_split=lambda previous, next_size: split_events.append((previous, next_size)),
+    )
+
+    assert outputs == ["0", "1", "2", "3", "4"]
+    assert calls == [[0, 1, 2, 3, 4], [0, 1], [2, 3, 4], [2], [3, 4]]
+    assert split_events == [(5, 3), (3, 2)]
+    assert len(cleared) == splits == 2
+
+
+def test_run_resilient_batches_does_not_hide_non_oom_or_single_item_failures():
+    error = RuntimeError("decoder failed")
+
+    with pytest.raises(RuntimeError, match="decoder failed"):
+        run_resilient_batches(
+            [1, 2],
+            2,
+            lambda batch: (_ for _ in ()).throw(error),
+            is_oom_error=lambda exc: False,
+        )
+
+    with pytest.raises(RuntimeError, match="decoder failed"):
+        run_resilient_batches(
+            [1],
+            1,
+            lambda batch: (_ for _ in ()).throw(error),
+            is_oom_error=lambda exc: True,
+        )
 
 
 def _shaping_args(**overrides):

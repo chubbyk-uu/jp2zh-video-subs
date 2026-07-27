@@ -165,6 +165,26 @@
         <translation>未知</translation>
     </message>
     <message>
+        <location filename="../window.py" line="106"/>
+        <source>Not detected</source>
+        <translation>未检测</translation>
+    </message>
+    <message>
+        <location filename="../window.py" line="107"/>
+        <source>GPU: {gpu}</source>
+        <translation>GPU：{gpu}</translation>
+    </message>
+    <message>
+        <location filename="../window.py" line="110"/>
+        <source>ASR: {asr} · VAD: {vad} · Translation: {translation}</source>
+        <translation>ASR：{asr} · 语音切分：{vad} · 翻译：{translation}</translation>
+    </message>
+    <message>
+        <location filename="../window.py" line="113"/>
+        <source>Unavailable</source>
+        <translation>不可用</translation>
+    </message>
+    <message>
         <location filename="../window.py" line="81"/>
         <source>VAD {state}</source>
         <translation>语音切分 {state}</translation>
@@ -343,28 +363,33 @@
     </message>
     <message>
         <location filename="../window.py" line="779"/>
-        <source>Performance (24; 14 GB+ VRAM)</source>
-        <translation>性能优先（24，14GB以上显存推荐）</translation>
+        <source>High throughput (24)</source>
+        <translation>高吞吐（24）</translation>
     </message>
     <message>
         <location filename="../window.py" line="780"/>
-        <source>Balanced (16)</source>
-        <translation>均衡（16）</translation>
+        <source>Performance (16)</source>
+        <translation>性能优先（16）</translation>
     </message>
     <message>
         <location filename="../window.py" line="781"/>
-        <source>Low VRAM (8)</source>
-        <translation>低显存（8）</translation>
+        <source>Low load (8)</source>
+        <translation>低负载（8）</translation>
     </message>
     <message>
         <location filename="../window.py" line="782"/>
-        <source>Stability (4)</source>
-        <translation>稳定优先（4）</translation>
+        <source>Compatibility (4)</source>
+        <translation>兼容优先（4）</translation>
     </message>
     <message>
         <location filename="../window.py" line="784"/>
-        <source>Affects ASR speed and VRAM usage; actual usage varies by model and GPU.</source>
-        <translation>影响 ASR 速度和显存占用；不同模型和显卡的实际占用不同。</translation>
+        <source>Larger batches raise GPU throughput but also VRAM use and CPU feed pressure.</source>
+        <translation>批次增大会提高 GPU 吞吐，也会增加显存占用和 CPU 供数压力。</translation>
+    </message>
+    <message>
+        <location filename="../window.py" line="788"/>
+        <source>Qwen usually uses more VRAM than Anime; results at the same level vary by model and hardware.</source>
+        <translation>Qwen 通常比 Anime 占用更多显存；同一档位的效果也会因模型和硬件而异。</translation>
     </message>
     <message>
         <location filename="../window.py" line="770"/>
@@ -413,8 +438,8 @@
     </message>
     <message>
         <location filename="../window.py" line="785"/>
-        <source>Lower if VRAM is insufficient.</source>
-        <translation>显存不足时逐档降低；不同模型和显卡的实际占用不同。</translation>
+        <source>Lower for low VRAM or CPU-limited GPU idle.</source>
+        <translation>显存不足时降低；CPU 较弱导致 GPU 空闲较多时也应降低。</translation>
     </message>
     <message>
         <location filename="../window.py" line="786"/>
@@ -832,8 +857,8 @@ Do not reuse completed stages after changing models or key settings</source>
     </message>
     <message>
         <location filename="../window.py" line="1274"/>
-        <source>&lt;b&gt;jp2zh Subtitle Tool&lt;/b&gt;&lt;br&gt;&lt;br&gt;Generate Chinese or experimental English subtitles from Japanese videos with local models.&lt;br&gt;&lt;br&gt;&lt;a href=&quot;https://github.com/chubbyk-uu/jp2zh-video-subs&quot;&gt;Project on GitHub&lt;/a&gt;</source>
-        <translation>&lt;b&gt;jp2zh 字幕工具&lt;/b&gt;&lt;br&gt;&lt;br&gt;使用本地模型为日语视频生成中文字幕或实验性英文字幕。&lt;br&gt;&lt;br&gt;&lt;a href=&quot;https://github.com/chubbyk-uu/jp2zh-video-subs&quot;&gt;GitHub 项目主页&lt;/a&gt;</translation>
+        <source>&lt;b&gt;jp2zh Subtitle Tool&lt;/b&gt;&lt;br&gt;&lt;br&gt;Version: {version}&lt;br&gt;Build: {build}&lt;br&gt;&lt;br&gt;Generate Chinese or experimental English subtitles from Japanese videos with local models.&lt;br&gt;&lt;br&gt;&lt;a href=&quot;https://github.com/chubbyk-uu/jp2zh-video-subs&quot;&gt;Project on GitHub&lt;/a&gt;</source>
+        <translation>&lt;b&gt;jp2zh 字幕工具&lt;/b&gt;&lt;br&gt;&lt;br&gt;版本：{version}&lt;br&gt;构建：{build}&lt;br&gt;&lt;br&gt;使用本地模型为日语视频生成中文字幕或实验性英文字幕。&lt;br&gt;&lt;br&gt;&lt;a href=&quot;https://github.com/chubbyk-uu/jp2zh-video-subs&quot;&gt;GitHub 项目主页&lt;/a&gt;</translation>
     </message>
     <message>
         <location filename="../window.py" line="1283"/>

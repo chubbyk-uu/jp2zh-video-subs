@@ -10,9 +10,10 @@ from PySide6.QtCore import QProcess, QSettings, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QFileDialog, QListWidget, QMessageBox
 
+from app_version import APP_BUILD, APP_VERSION
 from jp2zh_gui.models import CleanupPolicy, GuiConfig, TargetLanguage, TranslatorPreset
 import jp2zh_gui.window as window_module
-from jp2zh_gui.window import MainWindow, format_device_status
+from jp2zh_gui.window import MainWindow, format_device_status, format_device_tooltip
 
 
 def application():
@@ -51,6 +52,26 @@ def test_main_window_has_model_and_cleanup_choices(tmp_path):
         assert not window.guidance_group.isHidden()
         assert window.guidance_label.alignment() & window_module.Qt.AlignmentFlag.AlignVCenter
         assert window.log_edit.maximumHeight() > 130
+    finally:
+        window.close()
+
+
+def test_about_dialog_identifies_application_version_and_build(tmp_path, monkeypatch):
+    application()
+    shown = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "about",
+        lambda _parent, title, text: shown.append((title, text)),
+    )
+    window = MainWindow(settings=window_settings(tmp_path))
+    try:
+        window._show_about()
+        assert len(shown) == 1
+        title, text = shown[0]
+        assert "jp2zh" in title
+        assert APP_VERSION in text
+        assert APP_BUILD in text
     finally:
         window.close()
 
@@ -345,6 +366,24 @@ def test_device_status_still_reports_cpu_after_a_real_cpu_probe():
     )
 
     assert "语音切分 CPU" in text
+
+
+def test_device_tooltip_is_a_compact_two_line_summary():
+    tooltip = format_device_tooltip(
+        {
+            "torch_cuda": True,
+            "onnx_cuda": True,
+            "onnx_status": "cuda",
+            "llama_cuda": True,
+            "gpu_name": "NVIDIA GeForce RTX 5080",
+            "details": "ONNX Runtime providers: a very long raw diagnostic line",
+        }
+    )
+
+    assert tooltip.count("\n") == 1
+    assert "RTX 5080" in tooltip
+    assert "ASR" in tooltip
+    assert "ONNX Runtime providers" not in tooltip
 
 
 def test_drop_event_adds_local_video_and_accepts_action(tmp_path):

@@ -8,6 +8,7 @@ import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Callable, TypeVar
 
 from atomic_io import atomic_write_text
 from alignment_recovery import (
@@ -25,7 +26,7 @@ from asr_common import (
     write_entries,
 )
 from cli_config import add_dataclass_arguments
-from pipeline_configs import QwenAsrConfig, raise_for_config_issues, validate_asr_config
+from pipeline_configs import AnimeAsrConfig, QwenAsrConfig, raise_for_config_issues, validate_asr_config
 from portable_runtime import project_root
 from srt_utils import Interval
 
@@ -40,6 +41,8 @@ DEFAULT_ALIGNER = PROJECT_ROOT / "models" / "Qwen3-ForcedAligner-0.6B"
 # words that were not spoken and can degrade unrelated lines, so it is not worth it
 # for a single homophone. Pass per-title names/terms explicitly with --context.
 DEFAULT_ASR_CONTEXT = ""
+_BatchItem = TypeVar("_BatchItem")
+_BatchOutput = TypeVar("_BatchOutput")
 
 # Characters that end a sentence-level cue.
 # Sentence-ending punctuation. Keep … out because anime-whisper sprays it on soft
@@ -1927,6 +1930,59 @@ def qwen_batch_token_budget(jobs: list[ChunkJob], args: argparse.Namespace) -> d
     }
 
 
+def run_resilient_batches(
+    items: list[_BatchItem],
+    batch_size: int,
+    generate_batch: Callable[[list[_BatchItem]], list[_BatchOutput]],
+    *,
+    is_oom_error: Callable[[Exception], bool],
+    clear_oom: Callable[[], None] | None = None,
+    on_split: Callable[[int, int], None] | None = None,
+    on_success: Callable[[int, list[_BatchOutput]], None] | None = None,
+) -> tuple[list[_BatchOutput], int]:
+    """Generate ordered batches, recursively halving only a batch that runs out of memory."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than 0")
+
+    outputs: list[_BatchOutput] = []
+    completed = 0
+    split_count = 0
+
+    def run_one(batch: list[_BatchItem]) -> list[_BatchOutput]:
+        nonlocal split_count
+        try:
+            generated = list(generate_batch(batch))
+        except Exception as exc:
+            if not is_oom_error(exc) or len(batch) == 1:
+                raise
+            # Drop the traceback before clearing CUDA memory: it retains the failed
+            # generator frame and its input tensors until the except block ends.
+            exc.__traceback__ = None
+            next_size = (len(batch) + 1) // 2
+            midpoint = len(batch) // 2
+        else:
+            if len(generated) != len(batch):
+                raise RuntimeError(
+                    f"Batch generator returned {len(generated)} results for {len(batch)} inputs"
+                )
+            return generated
+
+        split_count += 1
+        if clear_oom is not None:
+            clear_oom()
+        if on_split is not None:
+            on_split(len(batch), next_size)
+        return run_one(batch[:midpoint]) + run_one(batch[midpoint:])
+
+    for start in range(0, len(items), batch_size):
+        generated = run_one(items[start : start + batch_size])
+        outputs.extend(generated)
+        completed += len(generated)
+        if on_success is not None:
+            on_success(completed, generated)
+    return outputs, split_count
+
+
 def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], list[ChunkResult], dict]:
     """anime-whisper text + standalone Qwen forced aligner, two-phase (generate-all then
     align-all). Reuses the existing VAD clip construction; WhisperSeg/semantic are Stage 3/4.
@@ -1952,42 +2008,90 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
     if (args.context or "").strip():
         print("warning: --context is ignored by anime-whisper (model constraint: no initial prompt)", flush=True)
 
+    text_batch_size = int(getattr(args, "text_batch_size", 0)) or int(args.batch_size)
     print(
         f"anime ASR: audio={duration / 60.0:.1f}min mode={mode} clips={len(jobs)} "
-        f"batch={args.batch_size} timestamp_mode={args.timestamp_mode} model={args.text_model}",
+        f"text_batch={text_batch_size} align_batch={args.batch_size} "
+        f"timestamp_mode={args.timestamp_mode} model={args.text_model}",
         flush=True,
     )
 
     gen_dtype = torch.float16 if "cuda" in str(args.device) else torch.float32
 
     # ---- Phase 1: generate all clip texts ----
-    proc = WhisperProcessor.from_pretrained(str(args.text_model))
-    model = WhisperForConditionalGeneration.from_pretrained(str(args.text_model), dtype=gen_dtype).to(args.device)
+    processor = WhisperProcessor.from_pretrained(str(args.text_model))
+    text_model = WhisperForConditionalGeneration.from_pretrained(
+        str(args.text_model), dtype=gen_dtype
+    ).to(args.device)
+    if torch.cuda.is_available() and "cuda" in str(args.device):
+        torch.cuda.reset_peak_memory_stats(args.device)
     max_tokens = min(int(args.max_new_tokens), 444)
-    raw_texts: list[str] = []
-    clean_texts: list[str] = []
     t0 = time.time()
-    for i, job in enumerate(jobs):
-        clip = audio[int(job.start * samplerate) : int(job.end * samplerate)]
-        feats = proc(clip, sampling_rate=samplerate, return_tensors="pt").input_features.to(args.device, gen_dtype)
+
+    def generate_text_batch(
+        batch_jobs: list[ChunkJob],
+        processor=processor,
+        text_model=text_model,
+    ) -> list[str]:
+        clips = [
+            audio[int(job.start * samplerate) : int(job.end * samplerate)]
+            for job in batch_jobs
+        ]
+        feats = processor(
+            clips,
+            sampling_rate=samplerate,
+            return_tensors="pt",
+        ).input_features.to(args.device, gen_dtype)
         with torch.no_grad():
-            ids = model.generate(
+            ids = text_model.generate(
                 input_features=feats, language="ja", task="transcribe",
                 do_sample=False, num_beams=1,
                 no_repeat_ngram_size=int(args.no_repeat_ngram_size), max_new_tokens=max_tokens,
             )
-        raw = str(proc.batch_decode(ids, skip_special_tokens=True)[0]).strip()
-        raw_texts.append(raw)
-        clean_texts.append(anime_clean_text(raw))
-        progress_interval = max(1, min(50, len(jobs) // 100 or 1))
-        if (i + 1) % progress_interval == 0 or i + 1 == len(jobs):
-            el = time.time() - t0
-            eta = el / (i + 1) * (len(jobs) - i - 1)
-            print(
-                f"[anime-gen] {i + 1}/{len(jobs)} elapsed={el:.0f}s eta={eta:.0f}s last={clean_texts[-1][:40]!r}",
-                flush=True,
-            )
-    del model, proc
+        return [
+            str(text).strip()
+            for text in processor.batch_decode(ids, skip_special_tokens=True)
+        ]
+
+    def clear_cuda_oom() -> None:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def report_oom_split(previous_size: int, next_size: int) -> None:
+        print(
+            f"warning: anime text batch {previous_size} ran out of GPU memory; "
+            f"retrying in batches of at most {next_size}",
+            flush=True,
+        )
+
+    def report_generation_progress(done: int, generated: list[str]) -> None:
+        elapsed = time.time() - t0
+        eta = elapsed / done * (len(jobs) - done)
+        last = anime_clean_text(generated[-1]) if generated else ""
+        print(
+            f"[anime-gen] {done}/{len(jobs)} elapsed={elapsed:.0f}s "
+            f"eta={eta:.0f}s last={last[:40]!r}",
+            flush=True,
+        )
+
+    raw_texts, text_batch_splits = run_resilient_batches(
+        jobs,
+        text_batch_size,
+        generate_text_batch,
+        is_oom_error=lambda exc: isinstance(exc, torch.cuda.OutOfMemoryError),
+        clear_oom=clear_cuda_oom,
+        on_split=report_oom_split,
+        on_success=report_generation_progress,
+    )
+    text_generation_seconds = time.time() - t0
+    text_generation_peak_allocated_mib = (
+        torch.cuda.max_memory_allocated(args.device) / (1024 * 1024)
+        if torch.cuda.is_available() and "cuda" in str(args.device)
+        else None
+    )
+    clean_texts = [anime_clean_text(raw) for raw in raw_texts]
+    del generate_text_batch, text_model, processor
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -2113,6 +2217,10 @@ def transcribe_anime(args: argparse.Namespace) -> tuple[list[SubtitleEntry], lis
         "duration": duration,
         "mode": mode,
         "context": "",
+        "text_batch_size": text_batch_size,
+        "text_batch_splits": text_batch_splits,
+        "text_generation_seconds": text_generation_seconds,
+        "text_generation_peak_allocated_mib": text_generation_peak_allocated_mib,
         "chunks": raw_chunks,
     }
     return entries, chunk_results, raw
@@ -2347,6 +2455,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rebuild the SRT from a --raw-output dump, skipping the model (fast post-processing tuning).",
     )
     add_dataclass_arguments(parser, QwenAsrConfig)
+    # AnimeAsrConfig adds this backend-only control to the shared sub-script.
+    parser.add_argument(
+        "--text-batch-size",
+        type=int,
+        default=AnimeAsrConfig().text_batch_size,
+        help="Anime text-generation batch size (0 = use --batch-size)",
+    )
     # The shared parser still normalizes backend-dependent defaults after parsing;
     # both current top-level backends default to no WhisperSeg context expansion.
     parser.set_defaults(whisperseg_context_mode=None)
@@ -2402,6 +2517,15 @@ def main() -> None:
                 "chunk_seconds": args.chunk_seconds,
                 "chunk_overlap_seconds": args.chunk_overlap_seconds,
                 "batch_size": args.batch_size,
+                "text_batch_size": (
+                    (int(getattr(args, "text_batch_size", 0)) or int(args.batch_size))
+                    if getattr(args, "text_backend", "qwen") == "anime"
+                    else None
+                ),
+                "text_generation_seconds": raw.get("text_generation_seconds"),
+                "text_generation_peak_allocated_mib": raw.get(
+                    "text_generation_peak_allocated_mib"
+                ),
                 "phrase_max_chars": args.phrase_max_chars,
                 "phrase_max_duration": args.phrase_max_duration,
                 "phrase_max_internal_gap": args.phrase_max_internal_gap,

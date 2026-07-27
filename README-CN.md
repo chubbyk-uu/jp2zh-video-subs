@@ -5,10 +5,10 @@
 这个项目用于从本地日语视频生成简体中文、繁体中文或实验性英文 SRT，并默认生成“译文在上、日文在下”的双语 ASS。下载好模型后，推理过程全部在本地完成。
 
 Windows 用户建议直接使用
-[`v0.1.0 Beta 5` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.5)。
+[`v0.1.0` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0)。
 它已内置程序运行时和 FFmpeg，但不附带第三方模型权重；按 Release 里的
-`INSTALL-CN.txt` 使用程序根目录下可迁移的 `hf.cmd` 下载模型即可。CLI 仍是完整支持的
-源码安装与高级用法入口。
+`INSTALL-CN.txt` 操作，可直接在 GUI 中安装模型，也可使用程序根目录下可迁移的
+`hf.cmd` 手动下载。CLI 仍是完整支持的源码安装与高级用法入口。
 
 项目提供两套识别后端，用 `--asr` 选择：
 
@@ -130,7 +130,7 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 
 ## 下载模型
 
-当前开发版 GUI 在模型状态旁新增了“管理模型…”窗口。它可以勾选当前 ASR/翻译配置所需
+GUI 在模型状态旁提供“管理模型…”窗口。它可以勾选当前 ASR/翻译配置所需
 模型或全部缺失模型，并按界面顺序逐个从 Hugging Face 官方站或第三方 HF-Mirror 下载；
 下载优先使用 Hugging Face/Xet 客户端，取消时保留未完整文件供下次续传；窗口内可选填
 不需要认证的 HTTP/HTTPS 代理，也可以取消“优先使用 Hugging Face/Xet”而直接使用支持
@@ -141,9 +141,9 @@ HF-Mirror 只用于公开模型，下载器不会把本机缓存的 Hugging Face
 Hugging Face `hf.cmd` 支持的参数；项目下载 CLI 示例见
 [docs/USAGE.md](https://github.com/chubbyk-uu/jp2zh-video-subs/blob/main/docs/USAGE.md)。
 
-已发布的 Beta 5 早于这个功能，仍需使用程序根目录的 `hf.cmd`。源码安装也可以继续使用
-下面的命令。手工命令固定到当前模型目录使用的同一组上游 revision，避免仓库默认分支
-后续变化导致下载内容静默改变。
+程序根目录的 `hf.cmd` 仍可用于手动安装，源码安装也可以继续使用下面的命令。手工命令
+固定到当前模型目录使用的同一组上游 revision，避免仓库默认分支后续变化导致下载内容
+静默改变。
 
 一键默认流程需要的模型：
 
@@ -313,10 +313,10 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 
 ## 桌面 GUI
 
-### Windows 绿色测试版
+### Windows 绿色版
 
 Windows 上最直接的入口是
-[`v0.1.0 Beta 5` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.5)：
+[`v0.1.0` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0)：
 
 1. 下载全部 `jp2zh-video-subs-windows-x64-cuda-program.7z.*` 分卷。
 2. 把所有分卷放在同一目录，用 7-Zip 或 NanaZip 从 `.7z.001` 开始解压。
@@ -333,14 +333,14 @@ GUI 支持拖入视频或文件夹、可见任务队列、Anime/Qwen 识别、�
 常用字幕参数、总体进度与详细阶段状态、可折叠日志、取消、设置记忆、模型文件检查，
 以及成功后的中间产物清理。文件夹会展开为视频列表并逐个处理，避免多个模型实例叠加显存。
 
-上文[下载模型](#下载模型)介绍的“管理模型…”功能计划随下一版绿色测试包发布；
-已发布的 Beta 5 仍使用 `hf.cmd`。
+本版已包含上文[下载模型](#下载模型)介绍的“管理模型…”功能；`hf.cmd` 仍可作为手动
+安装模型的备用方式。
 
 Windows 包内置 Python 3.12、FFmpeg、PyTorch CUDA、ONNX Runtime CUDA 和启用 CUDA 的
 llama.cpp。已通过含中文/空格路径重定位、不依赖 WSL 的原生 EXE 启动、安装模型后的三项 CUDA 探测，
 以及 Anime + GalTransl 完整流程。发布前还验证了 Qwen + GalTransl、Anime + Sakura 14B 和说话人性别着色。
-目前原生 CUDA 证据仅来自一台 RTX 5080，其他 NVIDIA 显卡/驱动组合仍属于 Beta 反馈范围，
-不作广泛兼容性保证。
+Windows 原生 CUDA 人工运行已覆盖 RTX 5080 与 12 GB RTX 4080 Laptop；实际速度和显存
+占用仍会随 CPU、GPU、驱动、模型和批大小变化。
 
 ### 从源码启动 GUI
 
@@ -374,7 +374,8 @@ ASS 里的日文只按字幕序号对齐贡献文本。
 用 `--display-wrap-max-chars 0` 可关闭，或传入其他阈值调整。
 英文默认以 60 个字符作为单行换行触发值，只在单词边界换行，并保持最多两行。此前基于两份、
 合计 200 条英文评测字幕，较保守的 42 档已确认处于 1280×720 ASS 安全宽度内；60 的新默认值
-用于减少过早换行，仍需在正式发布前完成播放器渲染验收。
+用于减少过早换行。由于英文翻译仍是实验性功能，建议同时人工检查译文质量，以及目标播放器和
+分辨率下的最终渲染效果。
 
 ## 文档 / 延伸阅读
 

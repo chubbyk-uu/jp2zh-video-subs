@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
+from app_version import APP_BUILD, APP_VERSION
 from portable_runtime import portable_config_path, rebase_portable_path
 from model_catalog import MODEL_SPEC_BY_KEY, ModelInstallState, required_model_keys
 from target_languages import DEFAULT_BATCH_SIZE_BY_TRANSLATOR, DEFAULT_WRAP_CHARS_BY_TARGET
@@ -88,6 +89,35 @@ def format_device_status(data: dict[str, object]) -> tuple[str, str]:
     if torch_cuda:
         return QCoreApplication.translate("DeviceStatus", "Device: partial CUDA · {gpu} ({parts})").format(gpu=display_gpu_name, parts=" / ".join(parts)), "#a56500"
     return QCoreApplication.translate("DeviceStatus", "Device: CUDA unavailable; ASR cannot start ({parts})").format(parts=" / ".join(parts)), "#c0392b"
+
+
+def format_device_tooltip(data: dict[str, object]) -> str:
+    """Return a compact, translated two-line summary instead of raw provider diagnostics."""
+    torch_cuda = bool(data.get("torch_cuda"))
+    llama_cuda = bool(data.get("llama_cuda"))
+    onnx_status = str(data.get("onnx_status") or ("cuda" if data.get("onnx_cuda") else "cpu"))
+    state_labels = {
+        "cuda": "CUDA",
+        "cpu": "CPU",
+        "missing_model": QCoreApplication.translate("DeviceStatus", "Not detected (model missing)"),
+        "unavailable": QCoreApplication.translate("DeviceStatus", "Probe failed"),
+    }
+    gpu_name = str(data.get("gpu_name") or "").removeprefix("NVIDIA GeForce ")
+    if not gpu_name:
+        gpu_name = QCoreApplication.translate("DeviceStatus", "Not detected")
+    gpu_line = QCoreApplication.translate("DeviceStatus", "GPU: {gpu}").format(gpu=gpu_name)
+    states_line = QCoreApplication.translate(
+        "DeviceStatus",
+        "ASR: {asr} · VAD: {vad} · Translation: {translation}",
+    ).format(
+        asr="CUDA" if torch_cuda else QCoreApplication.translate("DeviceStatus", "Unavailable"),
+        vad=state_labels.get(
+            onnx_status,
+            QCoreApplication.translate("DeviceStatus", "Unknown"),
+        ),
+        translation="CUDA" if llama_cuda else "CPU",
+    )
+    return f"{gpu_line}\n{states_line}"
 
 
 class LogSplitterHandle(QSplitterHandle):
@@ -554,8 +584,8 @@ class MainWindow(QMainWindow):
         self.copy_check = QCheckBox()
         self.speaker_check = QCheckBox()
         self.asr_batch_combo = QComboBox()
-        self.asr_batch_combo.setMinimumWidth(260)
-        self.asr_batch_combo.setMaximumWidth(275)
+        self.asr_batch_combo.setMinimumWidth(195)
+        self.asr_batch_combo.setMaximumWidth(210)
         for value in (24, 16, 8, 4):
             self.asr_batch_combo.addItem("", value)
         self.advanced_dialog = AdvancedSettingsDialog(self)
@@ -776,13 +806,22 @@ class MainWindow(QMainWindow):
         self.speaker_check.setText(self.tr("Colour by speaker gender"))
         self.asr_batch_label.setText(self.tr("ASR batch size"))
         self._replace_combo_labels(self.asr_batch_combo, {
-            24: self.tr("Performance (24; 14 GB+ VRAM)"),
-            16: self.tr("Balanced (16)"),
-            8: self.tr("Low VRAM (8)"),
-            4: self.tr("Stability (4)"),
+            24: self.tr("High throughput (24)"),
+            16: self.tr("Performance (16)"),
+            8: self.tr("Low load (8)"),
+            4: self.tr("Compatibility (4)"),
         })
-        self.asr_batch_combo.setToolTip(self.tr("Affects ASR speed and VRAM usage; actual usage varies by model and GPU."))
-        self.batch_note.setText(self.tr("Lower if VRAM is insufficient."))
+        batch_tooltip = "\n".join((
+            self.tr(
+                "Larger batches raise GPU throughput but also VRAM use and CPU feed pressure."
+            ),
+            self.tr(
+                "Qwen usually uses more VRAM than Anime; results at the same level vary by model and hardware."
+            ),
+        ))
+        self.asr_batch_combo.setToolTip(batch_tooltip)
+        self.batch_note.setText(self.tr("Lower for low VRAM or CPU-limited GPU idle."))
+        self.batch_note.setToolTip(batch_tooltip)
         self.advanced_button.setText(self.tr("Advanced settings…"))
         self.advanced_button.setToolTip(self.tr("Advanced subtitle and translation settings…"))
         self.guidance_group.setTitle(self.tr("Tips"))
@@ -1124,7 +1163,7 @@ class MainWindow(QMainWindow):
         text, colour = format_device_status(data)
         self.device_status_label.setText(text)
         self.device_status_label.setStyleSheet(f"color: {colour};")
-        self.device_status_label.setToolTip(str(data.get("details") or ""))
+        self.device_status_label.setToolTip(format_device_tooltip(data))
 
     def _refresh_device_status_text(self) -> None:
         if self._device_probe_state == "running":
@@ -1140,6 +1179,7 @@ class MainWindow(QMainWindow):
             text, colour = format_device_status(self._last_device_data)
             self.device_status_label.setText(text)
             self.device_status_label.setStyleSheet(f"color: {colour};")
+            self.device_status_label.setToolTip(format_device_tooltip(self._last_device_data))
 
     def _remove_selected(self) -> None:
         if self.controller.is_running:
@@ -1272,9 +1312,11 @@ class MainWindow(QMainWindow):
             self.tr("About jp2zh Subtitle Tool"),
             self.tr(
                 "<b>jp2zh Subtitle Tool</b><br><br>"
+                "Version: {version}<br>"
+                "Build: {build}<br><br>"
                 "Generate Chinese or experimental English subtitles from Japanese videos with local models.<br><br>"
                 '<a href="https://github.com/chubbyk-uu/jp2zh-video-subs">Project on GitHub</a>'
-            ),
+            ).format(version=APP_VERSION, build=APP_BUILD),
         )
 
     def _restore_all_defaults(self) -> None:

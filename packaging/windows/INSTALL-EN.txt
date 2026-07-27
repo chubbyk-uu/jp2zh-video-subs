@@ -38,9 +38,8 @@ beside the model-status message:
 - Speed is the session average from the start of the current transfer. **Show download details**
   displays the source, proxy, current model, and errors.
 
-If **Manage models...** is unavailable (for example, in the published Beta 5), or if you prefer
-manual setup, open PowerShell or Command Prompt in the application root and run each command
-below. Do not mix
+If you prefer manual setup, open PowerShell or Command Prompt in the application root and run
+each command below. Do not mix
 the proxy syntax of the two shells. PowerShell does not search the current directory by default,
 so the commands consistently use .\hf.cmd; that form also works in Command Prompt.
 

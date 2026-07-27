@@ -7,6 +7,7 @@ from PySide6.QtCore import QCoreApplication, QLockFile, QSettings
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from app_version import APP_VERSION
 from portable_runtime import portable_config_path, single_instance_lock_path
 from .i18n import LanguageManager
 from .window import MainWindow
@@ -23,6 +24,7 @@ def acquire_instance_lock(lock_path: Path | None = None) -> QLockFile | None:
 def main() -> int:
     application = QApplication(sys.argv)
     application.setApplicationName("jp2zh-video-subs")
+    application.setApplicationVersion(APP_VERSION)
     icon_path = Path(__file__).with_name("assets") / "app-icon.png"
     application.setWindowIcon(QIcon(str(icon_path)))
     config_path = portable_config_path()

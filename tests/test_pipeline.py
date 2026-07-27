@@ -922,6 +922,7 @@ def test_build_qwen_command_asr_anime_uses_anime_prefixed_overrides(tmp_path):
         min_cue_seconds=0.3,
         asr="anime",
         anime_batch_size=7,
+        anime_text_batch_size=3,
         anime_timestamp_mode="aligner_fallback",
         anime_scene_backend="none",
         anime_whisperseg_chunk_threshold=0.75,
@@ -930,6 +931,7 @@ def test_build_qwen_command_asr_anime_uses_anime_prefixed_overrides(tmp_path):
 
     assert cmd[cmd.index("--text-backend") + 1] == "anime"
     assert cmd[cmd.index("--batch-size") + 1] == "7"
+    assert cmd[cmd.index("--text-batch-size") + 1] == "3"
     assert cmd[cmd.index("--timestamp-mode") + 1] == "aligner_fallback"
     assert cmd[cmd.index("--scene-backend") + 1] == "none"
     assert cmd[cmd.index("--whisperseg-chunk-threshold") + 1] == "0.75"

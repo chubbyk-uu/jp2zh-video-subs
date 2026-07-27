@@ -7,11 +7,11 @@ from local Japanese video files and writes a target-language/Japanese bilingual 
 default. Inference runs fully offline after the required models are downloaded.
 
 Windows users can start with the portable desktop GUI in the
-[`v0.1.0 Beta 5` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.5).
+[`v0.1.0` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0).
 It bundles the application runtime and FFmpeg, but not third-party model weights; follow
-`INSTALL-EN.txt` or `INSTALL-CN.txt` on the release page to download models with the relocatable
-root-level `hf.cmd`. The command-line workflow remains fully supported for source installations
-and advanced use.
+`INSTALL-EN.txt` or `INSTALL-CN.txt` on the release page. Models can be installed from the GUI,
+or manually with the relocatable root-level `hf.cmd`. The command-line workflow remains fully
+supported for source installations and advanced use.
 
 It ships two transcription backends, selectable with `--asr`:
 
@@ -147,7 +147,7 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 
 ## Download Models
 
-The current development GUI has a modal **Manage models…** window beside the model-status
+The GUI has a modal **Manage models…** window beside the model-status
 message. It can select the models required by the current ASR/translator settings or all
 missing models, then download them sequentially from Hugging Face or the third-party
 HF-Mirror source. Downloads prefer the Hugging Face/Xet client and retain partial files for
@@ -162,10 +162,10 @@ it is not an option accepted by the root-level Hugging Face `hf.cmd` wrapper. Se
 [docs/USAGE.md](https://github.com/chubbyk-uu/jp2zh-video-subs/blob/main/docs/USAGE.md)
 for the project-helper CLI example.
 
-The published Beta 5 predates this window and still uses the root-level `hf.cmd` instructions
-below. Source installations can also use the commands directly.
-The manual commands pin the same upstream revisions as the current model catalog so they do
-not silently follow later changes on a repository's default branch.
+The root-level `hf.cmd` instructions below remain available for manual setup. Source
+installations can use the commands directly. The manual commands pin the same upstream
+revisions as the current model catalog so they do not silently follow later changes on a
+repository's default branch.
 
 Default one-command models:
 
@@ -340,10 +340,10 @@ per-script usage, the CUDA check, and troubleshooting, see [docs/USAGE.md](docs/
 
 ## Desktop GUI
 
-### Windows portable beta
+### Windows portable release
 
 The easiest Windows entry point is the portable
-[`v0.1.0 Beta 5` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0-beta.5):
+[`v0.1.0` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0):
 
 1. Download every `jp2zh-video-subs-windows-x64-cuda-program.7z.*` volume.
 2. Put all volumes in one directory and extract `.7z.001` with 7-Zip or NanaZip.
@@ -367,16 +367,16 @@ status, collapsible logs, cancellation, remembered settings, model-file checks, 
 successful-job cleanup policies. Expanded videos run sequentially so multiple model instances
 do not stack their VRAM usage.
 
-The **Manage models…** workflow described under [Download Models](#download-models) is scheduled
-for the next portable beta. The published Beta 5 continues to use `hf.cmd`.
+The **Manage models…** workflow described under [Download Models](#download-models) is included
+in this release. The manual `hf.cmd` workflow remains available as a fallback.
 
 The Windows package embeds Python 3.12, FFmpeg, PyTorch CUDA, ONNX Runtime CUDA, and CUDA-enabled
 llama.cpp. It has passed relocation to paths containing spaces and Chinese characters, native
 EXE startup without WSL, all three CUDA probes with the models installed, and end-to-end Anime +
 GalTransl processing. Qwen + GalTransl, Anime + Sakura 14B, and speaker colouring were also
-validated before publication. Current native CUDA evidence covers one RTX 5080 system only, so
-other NVIDIA GPU/driver combinations remain beta feedback rather than a broad compatibility
-claim.
+validated before publication. Manual native CUDA runs cover RTX 5080 and RTX 4080 Laptop
+12 GB systems; performance and memory use can still vary with the CPU, GPU, driver, model,
+and batch size.
 
 ### Run the GUI from source
 
@@ -420,7 +420,8 @@ cue with the same timing; cues without suitable punctuation are not hard-split. 
 English wraps at word boundaries into at most two lines, using 60 characters as the default
 single-line trigger. The earlier two-source, 200-cue evaluation established that the more
 conservative 42-character setting was safely within the 1280×720 ASS width; the new 60-character
-default reduces overly aggressive wrapping and still requires player-rendering acceptance.
+default reduces overly aggressive wrapping. Because English translation is experimental, review
+both translation quality and final rendering for the target player and resolution.
 
 ## Documentation
 

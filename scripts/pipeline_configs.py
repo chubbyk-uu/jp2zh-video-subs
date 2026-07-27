@@ -156,6 +156,10 @@ class QwenAsrConfig(BaseAsrConfig):
 class AnimeAsrConfig(BaseAsrConfig):
     """anime-whisper backend defaults forwarded to the shared qwen/anime sub-script."""
 
+    text_batch_size: int = arg_field(
+        0,
+        help="Anime text-generation batch size (0 = use --batch-size)",
+    )
     # Forced alignment is the default; VAD-only retains its independent 50/80
     # frame-native splitter as a comparison/fallback timing mode.
     phrase_max_chars: int = arg_field(80, help="Anime forced-align cue safety cap (VAD-only uses its own 50/80 splitter)")
@@ -326,6 +330,7 @@ def validate_asr_config(config: Any) -> list[ConfigValidationIssue]:
             "stepdown_fallback_group",
         ),
         nonnegative=(
+            "text_batch_size",
             "chunk_overlap_seconds",
             "vad_window_overlap_seconds",
             "vad_min_silence_ms",

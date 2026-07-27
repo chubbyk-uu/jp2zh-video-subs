@@ -129,6 +129,15 @@ def test_english_main_window_fits_key_labels_at_1280_width(tmp_path):
         for widget in (window.recursive_check, window.resume_check, window.copy_check, window.speaker_check):
             assert widget.sizeHint().width() <= widget.width(), widget.text()
         assert window.batch_note.sizeHint().width() <= window.batch_note.width()
+        assert window.asr_batch_combo.toolTip().count("\n") == 1
+        assert "<br>" not in window.asr_batch_combo.toolTip()
+        assert all(
+            window.asr_batch_combo.fontMetrics().horizontalAdvance(
+                window.asr_batch_combo.itemText(index)
+            ) + 40 <= window.asr_batch_combo.width()
+            for index in range(window.asr_batch_combo.count())
+        )
+        assert window.asr_batch_combo.width() <= 210
         assert {
             widget.height()
             for widget in (
