@@ -152,8 +152,10 @@ message. It can select the models required by the current ASR/translator setting
 missing models, then download them sequentially from Hugging Face or the third-party
 HF-Mirror source. Downloads prefer the Hugging Face/Xet client and retain partial files for
 resume; users can turn off the preferred client to force resumable compatibility HTTP, and an
-optional HTTP proxy can be set directly in the window. HF-Mirror is intended for public models
-and the downloader does not forward a cached private Hugging Face token to it.
+optional unauthenticated HTTP/HTTPS proxy can be set directly in the window. The manager can
+also open or clear the shared Xet download cache without removing installed models. HF-Mirror
+is intended for public models and the downloader does not forward a cached private Hugging
+Face token to it.
 Installed models can be selected for re-download or deleted after a second confirmation.
 The backend selector is part of the GUI and this project's `scripts/download_models.py` helper;
 it is not an option accepted by the root-level Hugging Face `hf.cmd` wrapper. See
@@ -162,6 +164,8 @@ for the project-helper CLI example.
 
 The published Beta 5 predates this window and still uses the root-level `hf.cmd` instructions
 below. Source installations can also use the commands directly.
+The manual commands pin the same upstream revisions as the current model catalog so they do
+not silently follow later changes on a repository's default branch.
 
 Default one-command models:
 
@@ -183,6 +187,7 @@ mkdir -p models
 
 # Default anime ASR backend
 hf download litagin/anime-whisper \
+  --revision 22e2008a8182b357da3922a6308d095008f72973 \
   --local-dir models/anime-whisper
 
 mkdir -p models/whisperseg
@@ -193,15 +198,18 @@ hf download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx \
 
 # Default Anime timing and Qwen timing
 hf download Qwen/Qwen3-ForcedAligner-0.6B \
+  --revision c7cbfc2048c462b0d63a45797104fc9db3ad62b7 \
   --local-dir models/Qwen3-ForcedAligner-0.6B
 
 # Optional Qwen ASR comparison line
 hf download Qwen/Qwen3-ASR-1.7B \
+  --revision 7278e1e70fe206f11671096ffdd38061171dd6e5 \
   --local-dir models/Qwen3-ASR-1.7B
 
 # Default translation model (Sakura-GalTransl-7B-v3.7, ~6.25 GB high-quality quant)
 hf download SakuraLLM/Sakura-GalTransl-7B-v3.7 \
   Sakura-Galtransl-7B-v3.7.gguf \
+  --revision 759d76b1745f4428308de6564c5ab710d4358b2e \
   --local-dir models/Sakura-GalTransl-7B-v3.7-GGUF
 ```
 
@@ -212,11 +220,15 @@ models/anime-whisper/config.json
 models/anime-whisper/model.safetensors
 models/anime-whisper/preprocessor_config.json
 models/anime-whisper/tokenizer_config.json
+models/anime-whisper/merges.txt
+models/anime-whisper/vocab.json
 models/whisperseg/model.onnx
 models/Qwen3-ForcedAligner-0.6B/config.json
 models/Qwen3-ForcedAligner-0.6B/model.safetensors
 models/Qwen3-ForcedAligner-0.6B/preprocessor_config.json
 models/Qwen3-ForcedAligner-0.6B/tokenizer_config.json
+models/Qwen3-ForcedAligner-0.6B/merges.txt
+models/Qwen3-ForcedAligner-0.6B/vocab.json
 models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 ```
 
@@ -226,6 +238,11 @@ Qwen comparison additionally needs:
 models/Qwen3-ASR-1.7B/config.json
 models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors
 models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
+models/Qwen3-ASR-1.7B/model.safetensors.index.json
+models/Qwen3-ASR-1.7B/preprocessor_config.json
+models/Qwen3-ASR-1.7B/tokenizer_config.json
+models/Qwen3-ASR-1.7B/merges.txt
+models/Qwen3-ASR-1.7B/vocab.json
 ```
 
 The larger `sakura` translator (`--translator sakura`) needs
@@ -234,6 +251,7 @@ The larger `sakura` translator (`--translator sakura`) needs
 ```bash
 hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
   sakura-14b-qwen2.5-v1.0-iq4xs.gguf \
+  --revision f370f85114971e556ba9ab7cdfd00fe9fe88dd53 \
   --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
@@ -242,6 +260,7 @@ Experimental English output (`--target-language en`) needs Sugoi 14B Ultra:
 ```bash
 hf download sugoitoolkit/Sugoi-14B-Ultra-GGUF \
   Sugoi-14B-Ultra-Q4_K_M.gguf \
+  --revision d8dd836bf519a604530779cbf5ce13ffb35c3eeb \
   --local-dir models/Sugoi-14B-Ultra-GGUF
 ```
 
@@ -252,6 +271,7 @@ just uncoloured:
 
 ```bash
 hf download JaesungHuh/voice-gender-classifier \
+  --revision db1222153bd60337e900be22add7af180452adc0 \
   --local-dir models/voice-gender-classifier
 ```
 

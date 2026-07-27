@@ -25,8 +25,11 @@ D:\Tools\jp2zh-video-subs\
   发送给该镜像。
 - 默认勾选“优先使用 Hugging Face/Xet（推荐）”，失败时自动切换兼容 HTTP；如果该方式
   在本机容易卡住，可取消勾选，直接使用支持断点续传的兼容 HTTP。
-- 如果官方站或镜像速度不理想，可勾选“使用代理”并填写 Windows 代理地址，例如
-  http://127.0.0.1:7890。代理对两种下载模式都生效。
+- 如果官方站或镜像速度不理想，可勾选“使用代理（不支持认证）”并填写不含用户名和
+  密码的 Windows HTTP/HTTPS 代理地址，例如 http://127.0.0.1:7890。代理对两种下载
+  模式都生效；当前不支持需要认证的代理。
+- “打开 Xet 缓存”和“清空 Xet 缓存”只管理共享下载缓存；清空后已安装模型仍会保留，
+  但以后下载时可能需要重新获取相同的数据块。
 - 速度是本次下载会话从启动至当前的平均值；“显示下载详情”可查看所用下载源、代理、
   当前模型和错误信息。
 
@@ -37,7 +40,8 @@ D:\Tools\jp2zh-video-subs\
 
 注意：“优先使用 Hugging Face/Xet”和兼容 HTTP 是 GUI/项目下载器的选项。
 hf.cmd 包装的是 Hugging Face 官方 CLI，不接受 --download-backend 参数，请不要把该
-参数附加到下面的 hf.cmd download 命令。
+参数附加到下面的 hf.cmd download 命令。下面的手工命令固定到与当前模型目录相同的
+上游 revision，避免默认分支后续变化。
 
 如果直连 Hugging Face 较慢或无法访问，可先在同一个终端中设置 Windows 代理
 （端口请按代理软件的实际设置修改）。
@@ -52,29 +56,29 @@ $env:HTTP_PROXY = "http://127.0.0.1:7890"
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
 
-.\hf.cmd download litagin/anime-whisper --local-dir models\anime-whisper
+.\hf.cmd download litagin/anime-whisper --revision 22e2008a8182b357da3922a6308d095008f72973 --local-dir models\anime-whisper
 
 .\hf.cmd download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx model.onnx --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c --local-dir models\whisperseg
 
-.\hf.cmd download Qwen/Qwen3-ForcedAligner-0.6B --local-dir models\Qwen3-ForcedAligner-0.6B
+.\hf.cmd download Qwen/Qwen3-ForcedAligner-0.6B --revision c7cbfc2048c462b0d63a45797104fc9db3ad62b7 --local-dir models\Qwen3-ForcedAligner-0.6B
 
-.\hf.cmd download SakuraLLM/Sakura-GalTransl-7B-v3.7 Sakura-Galtransl-7B-v3.7.gguf --local-dir models\Sakura-GalTransl-7B-v3.7-GGUF
+.\hf.cmd download SakuraLLM/Sakura-GalTransl-7B-v3.7 Sakura-Galtransl-7B-v3.7.gguf --revision 759d76b1745f4428308de6564c5ab710d4358b2e --local-dir models\Sakura-GalTransl-7B-v3.7-GGUF
 
 默认 Anime + GalTransl 简体中文/繁体中文流程需要上述四个模型。
 
 3. 可选模型
 
 Qwen ASR：
-.\hf.cmd download Qwen/Qwen3-ASR-1.7B --local-dir models\Qwen3-ASR-1.7B
+.\hf.cmd download Qwen/Qwen3-ASR-1.7B --revision 7278e1e70fe206f11671096ffdd38061171dd6e5 --local-dir models\Qwen3-ASR-1.7B
 
 Sakura 14B 中文翻译：
-.\hf.cmd download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF sakura-14b-qwen2.5-v1.0-iq4xs.gguf --local-dir models\Sakura-14B-Qwen2.5-v1.0-GGUF
+.\hf.cmd download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF sakura-14b-qwen2.5-v1.0-iq4xs.gguf --revision f370f85114971e556ba9ab7cdfd00fe9fe88dd53 --local-dir models\Sakura-14B-Qwen2.5-v1.0-GGUF
 
 Sugoi 14B 实验性英文翻译（英文输出建议人工复核）：
-.\hf.cmd download sugoitoolkit/Sugoi-14B-Ultra-GGUF Sugoi-14B-Ultra-Q4_K_M.gguf --local-dir models\Sugoi-14B-Ultra-GGUF
+.\hf.cmd download sugoitoolkit/Sugoi-14B-Ultra-GGUF Sugoi-14B-Ultra-Q4_K_M.gguf --revision d8dd836bf519a604530779cbf5ce13ffb35c3eeb --local-dir models\Sugoi-14B-Ultra-GGUF
 
 说话人性别着色：
-.\hf.cmd download JaesungHuh/voice-gender-classifier --local-dir models\voice-gender-classifier
+.\hf.cmd download JaesungHuh/voice-gender-classifier --revision db1222153bd60337e900be22add7af180452adc0 --local-dir models\voice-gender-classifier
 
 4. 启动
 

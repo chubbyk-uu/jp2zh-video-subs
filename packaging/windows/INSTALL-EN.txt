@@ -29,8 +29,12 @@ beside the model-status message:
   cached private Hugging Face token to that mirror.
 - **Prefer Hugging Face/Xet (recommended)** is enabled by default and automatically falls back
   to compatibility HTTP. Turn it off to force resumable compatibility HTTP from the start.
-- If either source is slow, enable **Use proxy** and enter the Windows proxy address, for
-  example http://127.0.0.1:7890. The proxy applies to both download modes.
+- If either source is slow, enable **Use proxy (no authentication)** and enter a Windows
+  HTTP/HTTPS proxy address without a username or password, for example
+  http://127.0.0.1:7890. The proxy applies to both download modes; authenticated proxies
+  are not currently supported.
+- **Open Xet cache** and **Clear Xet cache** manage only the shared download cache. Clearing
+  it keeps installed models, but future downloads may need to retrieve the same chunks again.
 - Speed is the session average from the start of the current transfer. **Show download details**
   displays the source, proxy, current model, and errors.
 
@@ -43,6 +47,8 @@ so the commands consistently use .\hf.cmd; that form also works in Command Promp
 Important: **Prefer Hugging Face/Xet** and compatibility HTTP are GUI/project-downloader
 options. `hf.cmd` wraps the official Hugging Face CLI and does not accept
 `--download-backend`; do not append that option to the `hf.cmd download` commands below.
+The manual commands pin the same upstream revisions as the current model catalog so later
+default-branch changes cannot silently alter the downloaded files.
 
 If Hugging Face is slow or blocked, set your Windows proxy in the same terminal first
 (replace the example port with the one used by your proxy application).
@@ -57,29 +63,29 @@ Command Prompt (CMD):
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
 
-.\hf.cmd download litagin/anime-whisper --local-dir models\anime-whisper
+.\hf.cmd download litagin/anime-whisper --revision 22e2008a8182b357da3922a6308d095008f72973 --local-dir models\anime-whisper
 
 .\hf.cmd download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx model.onnx --revision 6ac29e2cbf2f4f8e9b639861766a8639dd666e9c --local-dir models\whisperseg
 
-.\hf.cmd download Qwen/Qwen3-ForcedAligner-0.6B --local-dir models\Qwen3-ForcedAligner-0.6B
+.\hf.cmd download Qwen/Qwen3-ForcedAligner-0.6B --revision c7cbfc2048c462b0d63a45797104fc9db3ad62b7 --local-dir models\Qwen3-ForcedAligner-0.6B
 
-.\hf.cmd download SakuraLLM/Sakura-GalTransl-7B-v3.7 Sakura-Galtransl-7B-v3.7.gguf --local-dir models\Sakura-GalTransl-7B-v3.7-GGUF
+.\hf.cmd download SakuraLLM/Sakura-GalTransl-7B-v3.7 Sakura-Galtransl-7B-v3.7.gguf --revision 759d76b1745f4428308de6564c5ab710d4358b2e --local-dir models\Sakura-GalTransl-7B-v3.7-GGUF
 
 The default Anime + GalTransl Simplified/Traditional Chinese workflow requires all four models above.
 
 3. Optional models
 
 Qwen ASR:
-.\hf.cmd download Qwen/Qwen3-ASR-1.7B --local-dir models\Qwen3-ASR-1.7B
+.\hf.cmd download Qwen/Qwen3-ASR-1.7B --revision 7278e1e70fe206f11671096ffdd38061171dd6e5 --local-dir models\Qwen3-ASR-1.7B
 
 Sakura 14B Chinese translation:
-.\hf.cmd download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF sakura-14b-qwen2.5-v1.0-iq4xs.gguf --local-dir models\Sakura-14B-Qwen2.5-v1.0-GGUF
+.\hf.cmd download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF sakura-14b-qwen2.5-v1.0-iq4xs.gguf --revision f370f85114971e556ba9ab7cdfd00fe9fe88dd53 --local-dir models\Sakura-14B-Qwen2.5-v1.0-GGUF
 
 Sugoi 14B experimental English translation (manual review recommended):
-.\hf.cmd download sugoitoolkit/Sugoi-14B-Ultra-GGUF Sugoi-14B-Ultra-Q4_K_M.gguf --local-dir models\Sugoi-14B-Ultra-GGUF
+.\hf.cmd download sugoitoolkit/Sugoi-14B-Ultra-GGUF Sugoi-14B-Ultra-Q4_K_M.gguf --revision d8dd836bf519a604530779cbf5ce13ffb35c3eeb --local-dir models\Sugoi-14B-Ultra-GGUF
 
 Speaker-gender colouring:
-.\hf.cmd download JaesungHuh/voice-gender-classifier --local-dir models\voice-gender-classifier
+.\hf.cmd download JaesungHuh/voice-gender-classifier --revision db1222153bd60337e900be22add7af180452adc0 --local-dir models\voice-gender-classifier
 
 4. Start the application
 

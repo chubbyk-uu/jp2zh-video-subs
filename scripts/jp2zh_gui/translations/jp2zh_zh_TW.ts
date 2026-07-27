@@ -884,7 +884,7 @@ Do not reuse completed stages after changing models or key settings</source>
 <context>
     <name>ModelDownloadController</name>
     <message>
-        <location filename="../model_download.py" line="212"/>
+        <location filename="../model_download.py" line="224"/>
         <source>Could not start the model downloader.</source>
         <translation>無法啟動模型下載程式。</translation>
     </message>
@@ -892,422 +892,502 @@ Do not reuse completed stages after changing models or key settings</source>
 <context>
     <name>ModelDownloadDialog</name>
     <message>
-        <location filename="../model_download.py" line="497"/>
+        <location filename="../model_download.py" line="537"/>
         <source>No models selected</source>
         <translation>未選取模型</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="498"/>
+        <location filename="../model_download.py" line="538"/>
         <source>Select at least one missing or partial model first.</source>
         <translation>請先選取至少一個缺少或未完整下載的模型。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="514"/>
+        <location filename="../model_download.py" line="554"/>
         <source>Models already installed</source>
         <translation>模型已安裝</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="516"/>
+        <location filename="../model_download.py" line="556"/>
         <source>The selected models are already installed. Use Re-download selected to replace them.</source>
         <translation>所選模型均已安裝。如需覆蓋，請使用「重新下載所選」。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="555"/>
+        <location filename="../model_download.py" line="595"/>
         <source>Download mode: prefer Hugging Face/Xet with compatibility fallback</source>
         <translation>下載模式：優先使用 Hugging Face/Xet，失敗時切換相容方式</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="558"/>
+        <location filename="../model_download.py" line="598"/>
         <source>Download mode: compatibility HTTP only</source>
         <translation>下載模式：僅使用相容 HTTP</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="590"/>
+        <location filename="../model_download.py" line="630"/>
         <source>Nothing to delete</source>
         <translation>沒有可刪除的內容</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="591"/>
+        <location filename="../model_download.py" line="631"/>
         <source>None of the selected models has local files.</source>
         <translation>所選模型均沒有本機檔案。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="597"/>
+        <location filename="../model_download.py" line="637"/>
         <source>Delete selected models</source>
         <translation>刪除所選模型</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="599"/>
-        <source>Permanently delete these models, including cached and partial files?
-
-{models}</source>
-        <translation>確定永久刪除以下模型，包括快取和未完整檔案嗎？
-
-{models}</translation>
-    </message>
-    <message>
-        <location filename="../model_download.py" line="614"/>
+        <location filename="../model_download.py" line="654"/>
         <source>Model path is not a normal directory</source>
         <translation>模型路徑不是一般目錄</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="626"/>
+        <location filename="../model_download.py" line="666"/>
         <source>Could not delete some models</source>
         <translation>部分模型無法刪除</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="631"/>
+        <location filename="../model_download.py" line="671"/>
         <source>{count} models deleted</source>
         <translation>已刪除 {count} 個模型</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="640"/>
+        <location filename="../model_download.py" line="680"/>
         <source>Refusing to delete a path outside the models folder</source>
         <translation>拒絕刪除模型資料夾之外的路徑</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="646"/>
+        <location filename="../model_download.py" line="786"/>
         <source>Cancelling; partial files will be kept…</source>
         <translation>正在取消；將保留未完整下載的檔案…</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="676"/>
+        <location filename="../model_download.py" line="818"/>
         <source>{count} models queued</source>
         <translation>已將 {count} 個模型加入佇列</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="684"/>
+        <location filename="../model_download.py" line="826"/>
         <source>Downloading {model} ({current}/{total})</source>
         <translation>正在下載 {model}（{current}/{total}）</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="701"/>
+        <location filename="../model_download.py" line="850"/>
         <source>Unknown download error</source>
         <translation>未知下載錯誤</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="702"/>
+        <location filename="../model_download.py" line="851"/>
         <source>Download failed: {error}</source>
         <translation>下載失敗：{error}</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="708"/>
+        <location filename="../model_download.py" line="857"/>
         <source>{count} models downloaded successfully</source>
         <translation>已成功下載 {count} 個模型</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="728"/>
-        <location filename="../model_download.py" line="765"/>
+        <location filename="../model_download.py" line="877"/>
+        <location filename="../model_download.py" line="924"/>
         <source>unknown</source>
         <translation>未知</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="476"/>
-        <source>The proxy port is invalid.</source>
-        <translation>代理連接埠無效。</translation>
+        <location filename="../model_download.py" line="503"/>
+        <source>Enter an HTTP/HTTPS proxy such as http://127.0.0.1:7890. Authenticated proxies are not supported.</source>
+        <translation>請輸入 HTTP/HTTPS 代理，例如 http://127.0.0.1:7890。不支援需要驗證的代理。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="486"/>
-        <source>Enter an HTTP proxy such as http://127.0.0.1:7890 without a username or password.</source>
-        <translation>請輸入不含使用者名稱和密碼的 HTTP 代理，例如 http://127.0.0.1:7890。</translation>
-    </message>
-    <message>
-        <location filename="../model_download.py" line="526"/>
+        <location filename="../model_download.py" line="566"/>
         <source>Invalid proxy</source>
         <translation>代理無效</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="534"/>
+        <location filename="../model_download.py" line="574"/>
         <source>Source: {source}</source>
         <translation>下載來源：{source}</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="539"/>
+        <location filename="../model_download.py" line="579"/>
         <source>Proxy: {proxy}</source>
         <translation>代理：{proxy}</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="541"/>
+        <location filename="../model_download.py" line="581"/>
         <source>Proxy: disabled</source>
         <translation>代理：未啟用</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="544"/>
+        <location filename="../model_download.py" line="584"/>
         <source>Mode: re-download and replace</source>
         <translation>模式：重新下載並取代</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="546"/>
+        <location filename="../model_download.py" line="586"/>
         <source>Mode: download missing or partial models</source>
         <translation>模式：下載缺少或不完整的模型</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="549"/>
+        <location filename="../model_download.py" line="589"/>
         <source>Selected models: {models}</source>
         <translation>已選模型：{models}</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="718"/>
+        <location filename="../model_download.py" line="639"/>
+<source>Permanently delete these model folders and their unfinished files?
+
+{models}</source>
+        <translation>永久刪除這些模型資料夾及其中未完成的檔案？
+
+{models}</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="697"/>
+        <source>The configured Xet cache path is invalid.</source>
+        <translation>設定的 Xet 快取路徑無效。</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="701"/>
+        <source>Refusing to manage a symbolic-link cache path.</source>
+        <translation>拒絕管理符號連結指向的快取路徑。</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="712"/>
+        <location filename="../model_download.py" line="719"/>
+        <source>Could not open Xet cache</source>
+        <translation>無法開啟 Xet 快取</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="720"/>
+        <source>The system could not open the Xet cache folder.</source>
+        <translation>系統無法開啟 Xet 快取資料夾。</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="730"/>
+        <source>Could not inspect Xet cache</source>
+        <translation>無法檢查 Xet 快取</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="737"/>
+        <source>Xet cache is empty</source>
+        <translation>Xet 快取為空</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="738"/>
+        <source>The shared Xet download cache is already empty.</source>
+        <translation>共用的 Xet 下載快取已經是空的。</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="743"/>
+        <source>Clear shared Xet cache</source>
+        <translation>清空共用 Xet 快取</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="745"/>
+        <source>Delete the shared Xet download cache ({size}, {count} files)?
+
+Installed models will remain. Future downloads may need to retrieve the same chunks again.</source>
+        <translation>刪除共用的 Xet 下載快取（{size}，{count} 個檔案）？
+
+已安裝的模型會保留。日後下載時可能需要重新取得相同的資料區塊。</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="760"/>
+        <source>Could not clear Xet cache</source>
+        <translation>無法清空 Xet 快取</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="764"/>
+        <source>Shared Xet cache cleared.</source>
+        <translation>共用 Xet 快取已清空。</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="839"/>
+        <source>Hugging Face/Xet failed; switched to compatibility HTTP.</source>
+        <translation>Hugging Face/Xet 失敗；已切換到相容 HTTP。</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="867"/>
         <source>Download helper started.</source>
         <translation>下載輔助程序已啟動。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="721"/>
+        <location filename="../model_download.py" line="870"/>
         <source>Querying metadata: {model}</source>
         <translation>正在查詢中繼資料：{model}</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="731"/>
+        <location filename="../model_download.py" line="880"/>
         <source>Queued: {model} ({size})</source>
         <translation>已加入佇列：{model}（{size}）</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="738"/>
+        <location filename="../model_download.py" line="887"/>
         <source>Skipped installed model: {model}</source>
         <translation>已略過安裝完成的模型：{model}</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="742"/>
+        <location filename="../model_download.py" line="891"/>
         <source>Downloading: {model}</source>
         <translation>正在下載：{model}</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="746"/>
+        <location filename="../model_download.py" line="896"/>
+        <source>Hugging Face/Xet failed for {model}; switched to compatibility HTTP: {error}</source>
+        <translation>{model} 的 Hugging Face/Xet 下載失敗；已切換到相容 HTTP：{error}</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="905"/>
         <source>Completed: {model}</source>
         <translation>下載完成：{model}</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="750"/>
+        <location filename="../model_download.py" line="909"/>
         <source>Error: {error}</source>
         <translation>錯誤：{error}</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="755"/>
+        <location filename="../model_download.py" line="914"/>
         <source>Download queue completed.</source>
         <translation>下載佇列已完成。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="767"/>
+        <location filename="../model_download.py" line="926"/>
         <source>{downloaded} / {total} · average {speed}/s</source>
         <translation>{downloaded} / {total} · 平均 {speed}/秒</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="779"/>
+        <location filename="../model_download.py" line="939"/>
         <source>Download cancelled; partial files were kept.</source>
         <translation>下載已取消；已保留未完整下載的檔案。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="782"/>
+        <location filename="../model_download.py" line="942"/>
         <source>Model download failed.</source>
         <translation>模型下載失敗。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="803"/>
+        <location filename="../model_download.py" line="969"/>
         <source>Anime speech recognition</source>
         <translation>Anime 日語辨識</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="804"/>
+        <location filename="../model_download.py" line="970"/>
         <source>Speech segmentation</source>
         <translation>語音切分</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="805"/>
+        <location filename="../model_download.py" line="971"/>
         <source>Subtitle timestamp alignment</source>
         <translation>字幕時間軸對齊</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="806"/>
+        <location filename="../model_download.py" line="972"/>
         <source>Recommended Chinese translation</source>
         <translation>建議的中文翻譯</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="807"/>
+        <location filename="../model_download.py" line="973"/>
         <source>Optional Qwen speech recognition</source>
         <translation>可選的 Qwen 日語辨識</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="808"/>
+        <location filename="../model_download.py" line="974"/>
         <source>Optional Chinese translation</source>
         <translation>可選的中文翻譯</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="809"/>
+        <location filename="../model_download.py" line="975"/>
         <source>Experimental English translation</source>
         <translation>實驗性英文翻譯</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="810"/>
+        <location filename="../model_download.py" line="976"/>
         <source>Optional speaker colouring</source>
         <translation>可選的說話者配色</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="812"/>
+        <location filename="../model_download.py" line="978"/>
         <source>Model download</source>
         <translation>模型下載</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="841"/>
+        <location filename="../model_download.py" line="1007"/>
         <source>Installed</source>
         <translation>已安裝</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="842"/>
+        <location filename="../model_download.py" line="1008"/>
         <source>Partial; resumable</source>
         <translation>未完整；可續傳</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="843"/>
+        <location filename="../model_download.py" line="1009"/>
         <source>Missing</source>
         <translation>缺少</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="844"/>
+        <location filename="../model_download.py" line="1010"/>
         <source>Querying…</source>
         <translation>正在查詢…</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="845"/>
+        <location filename="../model_download.py" line="1011"/>
         <source>Downloading…</source>
         <translation>正在下載…</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="846"/>
+        <location filename="../model_download.py" line="1012"/>
         <source>Failed</source>
         <translation>失敗</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="854"/>
+        <location filename="../model_download.py" line="1020"/>
         <source>Third-party mirror; do not use a private access token.</source>
         <translation>第三方鏡像；請勿使用私人存取權杖。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="860"/>
+        <location filename="../model_download.py" line="1027"/>
+        <source>Xet progress updates in batches; brief pauses are normal.</source>
+        <translation>Xet 進度按批次更新；短暫停頓屬正常。</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="1038"/>
         <source>Model manager</source>
         <translation>模型管理</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="861"/>
+        <location filename="../model_download.py" line="1039"/>
         <source>Download source</source>
         <translation>下載來源</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="864"/>
+        <location filename="../model_download.py" line="1042"/>
         <source>Hugging Face official</source>
         <translation>Hugging Face 官方站</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="868"/>
+        <location filename="../model_download.py" line="1046"/>
         <source>HF-Mirror (third-party)</source>
         <translation>HF-Mirror（第三方）</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="870"/>
-        <source>Use proxy</source>
-        <translation>使用代理</translation>
+        <location filename="../model_download.py" line="1048"/>
+        <source>Use proxy (no authentication)</source>
+        <translation>使用代理（不支援驗證）</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="874"/>
-        <source>Optional HTTP proxy used only by model downloads, for example http://127.0.0.1:7890.</source>
-        <translation>僅模型下載使用的選用 HTTP 代理，例如 http://127.0.0.1:7890。</translation>
+        <location filename="../model_download.py" line="1052"/>
+        <source>Optional HTTP/HTTPS proxy without a username or password, used only by model downloads; for example http://127.0.0.1:7890.</source>
+        <translation>可選填不含使用者名稱及密碼的 HTTP/HTTPS 代理，僅用於模型下載；例如 http://127.0.0.1:7890。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="879"/>
+        <location filename="../model_download.py" line="1057"/>
         <source>Prefer Hugging Face/Xet (recommended)</source>
         <translation>優先使用 Hugging Face/Xet（建議）</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="883"/>
+        <location filename="../model_download.py" line="1061"/>
         <source>Turn this off to use resumable compatibility HTTP directly.</source>
         <translation>取消勾選後直接使用支援續傳的相容 HTTP。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="888"/>
+        <location filename="../model_download.py" line="1066"/>
         <source>Download</source>
         <translation>下載</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="889"/>
+        <location filename="../model_download.py" line="1067"/>
         <source>Model</source>
         <translation>模型</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="890"/>
+        <location filename="../model_download.py" line="1068"/>
         <source>Purpose</source>
         <translation>用途</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="891"/>
+        <location filename="../model_download.py" line="1069"/>
         <source>Status</source>
         <translation>狀態</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="892"/>
+        <location filename="../model_download.py" line="1070"/>
         <source>Size</source>
         <translation>大小</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="898"/>
+        <location filename="../model_download.py" line="1076"/>
         <source>Select current configuration</source>
         <translation>選取目前設定所需模型</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="899"/>
+        <location filename="../model_download.py" line="1077"/>
         <source>Select all missing</source>
         <translation>選取全部缺少的模型</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="900"/>
+        <location filename="../model_download.py" line="1078"/>
+        <source>Open Xet cache</source>
+        <translation>開啟 Xet 快取</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="1079"/>
+        <source>Clear Xet cache…</source>
+        <translation>清空 Xet 快取…</translation>
+    </message>
+    <message>
+        <location filename="../model_download.py" line="1080"/>
         <source>Delete selected…</source>
         <translation>刪除所選…</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="901"/>
+        <location filename="../model_download.py" line="1081"/>
         <source>Ready</source>
         <translation>就緒</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="902"/>
+        <location filename="../model_download.py" line="1082"/>
         <source>Current model</source>
         <translation>目前模型</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="903"/>
+        <location filename="../model_download.py" line="1083"/>
         <source>Show download details</source>
         <translation>顯示下載詳情</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="906"/>
+        <location filename="../model_download.py" line="1086"/>
         <source>Download details will appear after a task starts.</source>
         <translation>工作開始後將在此顯示下載詳情。</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="908"/>
+        <location filename="../model_download.py" line="1088"/>
         <source>Download selected</source>
         <translation>下載所選</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="909"/>
+        <location filename="../model_download.py" line="1089"/>
         <source>Re-download selected</source>
         <translation>重新下載所選</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="910"/>
+        <location filename="../model_download.py" line="1090"/>
         <source>Cancel download</source>
         <translation>取消下載</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="911"/>
+        <location filename="../model_download.py" line="1091"/>
         <source>Close</source>
         <translation>關閉</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="921"/>
+        <location filename="../model_download.py" line="1101"/>
         <source>Cancel model download</source>
         <translation>取消模型下載</translation>
     </message>
     <message>
-        <location filename="../model_download.py" line="922"/>
+        <location filename="../model_download.py" line="1102"/>
         <source>Cancel the current download, keep partial files, and close this window?</source>
         <translation>要取消目前下載、保留未完整檔案並關閉此視窗嗎？</translation>
     </message>

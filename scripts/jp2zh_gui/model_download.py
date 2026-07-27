@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -14,9 +15,10 @@ from PySide6.QtCore import (
     QSettings,
     Qt,
     QTimer,
+    QUrl,
     Signal,
 )
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -43,6 +45,7 @@ from model_catalog import (
     MODEL_SPEC_BY_KEY,
     ModelInstallState,
     ModelDownloadSpec,
+    cleanup_redundant_model_partials,
     model_install_state,
 )
 from portable_runtime import scripts_dir
@@ -121,6 +124,15 @@ class ModelDownloadController(QObject):
         environment.remove("TRANSFORMERS_OFFLINE")
         environment.insert("PYTHONUTF8", "1")
         environment.insert("NO_COLOR", "1")
+        for name in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            environment.remove(name)
         if proxy:
             for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
                 environment.insert(name, proxy)
@@ -253,7 +265,6 @@ class ModelDownloadDialog(QDialog):
 
         source_layout = QGridLayout()
         self.source_label = QLabel()
-        self.source_label.setMinimumWidth(110)
         self.source_combo = QComboBox()
         self.source_combo.setMinimumWidth(190)
         self.source_combo.addItem("", "official")
@@ -264,13 +275,18 @@ class ModelDownloadDialog(QDialog):
         self.proxy_check = QCheckBox()
         self.proxy_edit = QLineEdit()
         self.proxy_edit.setMinimumWidth(210)
-        self.proxy_edit.setText(
-            self.settings.value(
-                "model_download_proxy_url",
-                "http://127.0.0.1:7890",
-                str,
-            )
+        default_proxy = "http://127.0.0.1:7890"
+        saved_proxy = self.settings.value(
+            "model_download_proxy_url",
+            default_proxy,
+            str,
         )
+        try:
+            saved_proxy = self._normalise_proxy_endpoint(saved_proxy)
+        except ValueError:
+            saved_proxy = default_proxy
+            self.settings.setValue("model_download_proxy_url", saved_proxy)
+        self.proxy_edit.setText(saved_proxy)
         proxy_enabled = self.settings.value(
             "model_download_proxy_enabled",
             False,
@@ -313,11 +329,15 @@ class ModelDownloadDialog(QDialog):
         selection_row = QHBoxLayout()
         self.select_current_button = QPushButton()
         self.select_missing_button = QPushButton()
+        self.open_xet_cache_button = QPushButton()
+        self.clear_xet_cache_button = QPushButton()
         self.delete_button = QPushButton()
         self.delete_button.setStyleSheet("color: #b42318;")
         selection_row.addWidget(self.select_current_button)
         selection_row.addWidget(self.select_missing_button)
         selection_row.addStretch()
+        selection_row.addWidget(self.open_xet_cache_button)
+        selection_row.addWidget(self.clear_xet_cache_button)
         selection_row.addWidget(self.delete_button)
         layout.addLayout(selection_row)
 
@@ -367,6 +387,8 @@ class ModelDownloadDialog(QDialog):
         )
         self.select_current_button.clicked.connect(self._select_current_models)
         self.select_missing_button.clicked.connect(self._select_all_missing)
+        self.open_xet_cache_button.clicked.connect(self._open_xet_cache)
+        self.clear_xet_cache_button.clicked.connect(self._clear_xet_cache)
         self.delete_button.clicked.connect(self._delete_selected)
         self.start_button.clicked.connect(lambda: self._start_download(force=False))
         self.redownload_button.clicked.connect(
@@ -398,6 +420,7 @@ class ModelDownloadDialog(QDialog):
 
     def _refresh_rows(self, *, initial: bool = False) -> None:
         for spec in MODEL_DOWNLOAD_SPECS:
+            cleanup_redundant_model_partials(spec, self.root)
             row = self._rows_by_key[spec.key]
             state = model_install_state(spec, self.root)
             check_item = self.table.item(row, 0)
@@ -457,37 +480,54 @@ class ModelDownloadDialog(QDialog):
         enabled = self.proxy_check.isChecked()
         self.proxy_edit.setEnabled(enabled and not self.controller.is_running)
         self.settings.setValue("model_download_proxy_enabled", enabled)
-        self.settings.setValue(
-            "model_download_proxy_url",
-            self.proxy_edit.text().strip(),
-        )
+        try:
+            value = self._normalise_proxy_endpoint(self.proxy_edit.text())
+        except ValueError:
+            # Do not persist malformed values or credentials while the user is
+            # still editing the field.
+            return
+        self.settings.setValue("model_download_proxy_url", value)
 
     def _download_backend_setting_changed(self, checked: bool) -> None:
         self.settings.setValue("model_download_prefer_native", checked)
+        self._refresh_source_note()
 
     def _validated_proxy(self) -> str | None:
         if not self.proxy_check.isChecked():
             return None
-        value = self.proxy_edit.text().strip()
+        try:
+            return self._normalise_proxy_endpoint(self.proxy_edit.text())
+        except ValueError as exc:
+            raise ValueError(
+                self.tr(
+                    "Enter an HTTP/HTTPS proxy such as http://127.0.0.1:7890. "
+                    "Authenticated proxies are not supported."
+                )
+            ) from exc
+
+    @staticmethod
+    def _normalise_proxy_endpoint(value: str) -> str:
+        value = value.strip()
         parsed = urlsplit(value)
         try:
             port = parsed.port
         except ValueError as exc:
-            raise ValueError(self.tr("The proxy port is invalid.")) from exc
+            raise ValueError("invalid proxy port") from exc
         if (
-            parsed.scheme not in {"http", "https"}
+            parsed.scheme.lower() not in {"http", "https"}
             or not parsed.hostname
             or port is None
             or parsed.username
             or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
         ):
-            raise ValueError(
-                self.tr(
-                    "Enter an HTTP proxy such as http://127.0.0.1:7890 "
-                    "without a username or password."
-                )
-            )
-        return value
+            raise ValueError("invalid unauthenticated HTTP/HTTPS proxy")
+        host = parsed.hostname
+        if ":" in host:
+            host = f"[{host}]"
+        return f"{parsed.scheme.lower()}://{host}:{port}"
 
     def _start_download(self, *, force: bool) -> None:
         keys = self._selected_keys()
@@ -596,7 +636,7 @@ class ModelDownloadDialog(QDialog):
             self,
             self.tr("Delete selected models"),
             self.tr(
-                "Permanently delete these models, including cached and partial files?\n\n"
+                "Permanently delete these model folders and their unfinished files?\n\n"
                 "{models}"
             ).format(models=names),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
@@ -640,6 +680,106 @@ class ModelDownloadDialog(QDialog):
             raise RuntimeError(self.tr("Refusing to delete a path outside the models folder"))
         return destination
 
+    def _xet_cache_path(self) -> Path:
+        explicit = os.environ.get("HF_XET_CACHE")
+        if explicit:
+            return Path(explicit).expanduser()
+        hf_home = os.environ.get("HF_HOME")
+        if hf_home:
+            return Path(hf_home).expanduser() / "xet"
+        from huggingface_hub.constants import HF_XET_CACHE
+
+        return Path(HF_XET_CACHE)
+
+    def _safe_xet_cache_path(self) -> Path:
+        path = self._xet_cache_path()
+        if path.name.casefold() != "xet":
+            raise RuntimeError(self.tr("The configured Xet cache path is invalid."))
+        for candidate in (path.parent, path):
+            if candidate.is_symlink():
+                raise RuntimeError(
+                    self.tr("Refusing to manage a symbolic-link cache path.")
+                )
+        return path
+
+    def _open_xet_cache(self) -> None:
+        try:
+            path = self._safe_xet_cache_path()
+            path.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                self.tr("Could not open Xet cache"),
+                str(exc),
+            )
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+            QMessageBox.warning(
+                self,
+                self.tr("Could not open Xet cache"),
+                self.tr("The system could not open the Xet cache folder."),
+            )
+
+    def _clear_xet_cache(self) -> None:
+        try:
+            path = self._safe_xet_cache_path()
+            size, file_count = self._directory_usage(path)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                self.tr("Could not inspect Xet cache"),
+                str(exc),
+            )
+            return
+        if file_count == 0:
+            QMessageBox.information(
+                self,
+                self.tr("Xet cache is empty"),
+                self.tr("The shared Xet download cache is already empty."),
+            )
+            return
+        answer = QMessageBox.warning(
+            self,
+            self.tr("Clear shared Xet cache"),
+            self.tr(
+                "Delete the shared Xet download cache ({size}, {count} files)?\n\n"
+                "Installed models will remain. Future downloads may need to retrieve "
+                "the same chunks again."
+            ).format(size=self._format_bytes(size), count=file_count),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            shutil.rmtree(path)
+            path.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                self.tr("Could not clear Xet cache"),
+                str(exc),
+            )
+            return
+        self.queue_status_label.setText(self.tr("Shared Xet cache cleared."))
+        self.queue_status_label.setStyleSheet("color: #18864b;")
+
+    @staticmethod
+    def _directory_usage(path: Path) -> tuple[int, int]:
+        if not path.is_dir():
+            return 0, 0
+        size = 0
+        count = 0
+        for item in path.rglob("*"):
+            if not item.is_file() or item.is_symlink():
+                continue
+            try:
+                size += item.stat().st_size
+                count += 1
+            except OSError:
+                continue
+        return size, count
+
     def _cancel_download(self) -> None:
         if not self.controller.is_running:
             return
@@ -655,6 +795,8 @@ class ModelDownloadDialog(QDialog):
         self.table.setEnabled(not running)
         self.select_current_button.setEnabled(not running)
         self.select_missing_button.setEnabled(not running)
+        self.open_xet_cache_button.setEnabled(not running)
+        self.clear_xet_cache_button.setEnabled(not running)
         self.delete_button.setEnabled(not running)
         self.start_button.setEnabled(not running)
         self.redownload_button.setEnabled(not running)
@@ -691,6 +833,13 @@ class ModelDownloadDialog(QDialog):
             self._set_progress_range(self.model_progress, payload.get("total_bytes"))
         elif event == "progress":
             self._update_progress(payload)
+        elif event == "backend_fallback":
+            self.queue_status_label.setText(
+                self.tr(
+                    "Hugging Face/Xet failed; switched to compatibility HTTP."
+                )
+            )
+            self.queue_status_label.setStyleSheet("color: #8a5a00;")
         elif event == "model_completed":
             self._set_model_status(key, "installed")
         elif event == "error":
@@ -741,6 +890,16 @@ class ModelDownloadDialog(QDialog):
             self._append_log(
                 self.tr("Downloading: {model}").format(model=model)
             )
+        elif event == "backend_fallback":
+            self._append_log(
+                self.tr(
+                    "Hugging Face/Xet failed for {model}; switched to "
+                    "compatibility HTTP: {error}"
+                ).format(
+                    model=model,
+                    error=str(payload.get("message") or ""),
+                )
+            )
         elif event == "model_completed":
             self._append_log(
                 self.tr("Completed: {model}").format(model=model)
@@ -773,6 +932,7 @@ class ModelDownloadDialog(QDialog):
 
     def _download_finished(self, success: bool, cancelled: bool) -> None:
         self._set_running(False)
+        self._settle_progress_bars(success=success)
         self._refresh_rows()
         self.models_changed.emit()
         if cancelled:
@@ -784,6 +944,12 @@ class ModelDownloadDialog(QDialog):
         if self._close_after_cancel:
             self._close_after_cancel = False
             super().reject()
+
+    def _settle_progress_bars(self, *, success: bool) -> None:
+        for progress in (self.overall_progress, self.model_progress):
+            if progress.minimum() == 0 and progress.maximum() == 0:
+                progress.setRange(0, 1000)
+                progress.setValue(1000 if success else 0)
 
     def _set_model_status(self, key: str, status: str) -> None:
         row = self._rows_by_key.get(key)
@@ -850,11 +1016,23 @@ class ModelDownloadDialog(QDialog):
         self.log_edit.appendPlainText(text.rstrip())
 
     def _refresh_source_note(self) -> None:
-        self.source_note.setText(
-            self.tr("Third-party mirror; do not use a private access token.")
-            if self.source_combo.currentData() == "mirror"
-            else ""
+        mirror_note = self.tr(
+            "Third-party mirror; do not use a private access token."
         )
+        is_mirror = self.source_combo.currentData() == "mirror"
+        self.source_combo.setToolTip(mirror_note if is_mirror else "")
+        if self.native_backend_check.isChecked():
+            self.source_note.setText(
+                self.tr(
+                    "Xet progress updates in batches; brief pauses are normal."
+                )
+            )
+            self.source_note.setStyleSheet("color: #5f6368;")
+        else:
+            self.source_note.setText(mirror_note if is_mirror else "")
+            self.source_note.setStyleSheet(
+                "color: #8a5a00;" if is_mirror else ""
+            )
 
     def retranslate_ui(self) -> None:
         self.setWindowTitle(self.tr("Model manager"))
@@ -867,12 +1045,12 @@ class ModelDownloadDialog(QDialog):
             self.source_combo.findData("mirror"),
             self.tr("HF-Mirror (third-party)"),
         )
-        self.proxy_check.setText(self.tr("Use proxy"))
+        self.proxy_check.setText(self.tr("Use proxy (no authentication)"))
         self.proxy_edit.setPlaceholderText("http://127.0.0.1:7890")
         self.proxy_edit.setToolTip(
             self.tr(
-                "Optional HTTP proxy used only by model downloads, "
-                "for example http://127.0.0.1:7890."
+                "Optional HTTP/HTTPS proxy without a username or password, "
+                "used only by model downloads; for example http://127.0.0.1:7890."
             )
         )
         self.native_backend_check.setText(
@@ -897,6 +1075,8 @@ class ModelDownloadDialog(QDialog):
             self.table.item(row, 2).setText(self._purpose_text(spec.key))
         self.select_current_button.setText(self.tr("Select current configuration"))
         self.select_missing_button.setText(self.tr("Select all missing"))
+        self.open_xet_cache_button.setText(self.tr("Open Xet cache"))
+        self.clear_xet_cache_button.setText(self.tr("Clear Xet cache…"))
         self.delete_button.setText(self.tr("Delete selected…"))
         self.queue_status_label.setText(self.tr("Ready"))
         self.current_status_label.setText(self.tr("Current model"))

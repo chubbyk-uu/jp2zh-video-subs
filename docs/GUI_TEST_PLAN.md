@@ -560,7 +560,7 @@ git diff --check
 | 繁体流程 | PASS：Windows 原生 Anime + GalTransl + OpenCC `s2t` 生成 `.zh-t.srt/.zh-t.ass` |
 | 英文流程 | PASS：Windows 原生 Anime + Sugoi 生成 `.en.srt/.en.ass`；10 条批处理无回退；该次运行当时使用 42 字符按词边界换行，当前默认值已调整为 60 |
 | 字体 | PASS：英文目标顶行默认 Arial，日文底行继续使用 Microsoft YaHei |
-| 测试素材 | 23 秒非成人日语对话样例；工作和输出均限制在 `E:\\jp2zh-win-portable-lab\\test-data` |
+| 测试素材 | 23 秒非成人日语对话样例；工作和输出均限制在隔离的 Windows 测试目录 |
 | 当时尚未执行 | 新程序归档、解压复验与新 Beta 发布；归档/解压/发布已由 RUN-20260720-18 完成，完整人工 GUI 三目标切换仍属 Beta 反馈矩阵 |
 
 ### RUN-20260720-18：Windows CUDA Beta 3 发布
@@ -608,6 +608,19 @@ git diff --check
 | 全新解压 | PASS：28,140 个文件、8,202,711,989 B 完整解压；Transformers 实际导入成功；`hf.cmd version` 返回 huggingface_hub 0.36.2 |
 | 联网安装 | PASS：从全新解压目录通过 Windows 本机 HTTP 代理调用 `hf.cmd`，实际下载 `litagin/anime-whisper` 的 1,268 B `config.json` |
 | 远端资产 | PASS：两个程序分卷、两份安装说明和两份 SHA-256 文件均为 `uploaded`；GitHub 返回的大小和 SHA-256 digest 与本地一致 |
+
+### RUN-20260727-21：GUI 模型管理器与下载完整性加固
+
+| 项目 | 记录值 |
+|---|---|
+| 当前状态 | 开发版已增量同步到 Windows portable package；尚未重建、压缩或上传下一版 Release |
+| 自动测试 | PASS：`470 passed`；Ruff 和 `git diff --check` 通过 |
+| 模型目录 | PASS：8 个目录均限制下载文件集合并固定 40 位 upstream revision；远端 metadata 必须解析到相同 revision |
+| 兼容下载安全 | PASS：拒绝绝对路径/目录穿越/符号链接目标；断点文件绑定仓库、revision、文件名、大小和远端内容标识；完成前校验大小及可用的 SHA-256/Git blob identity |
+| Xet 行为 | PASS：原生传输接入字节回调；界面说明进度可能成批更新；原生失败自动切换兼容 HTTP 时主状态区可见，不依赖展开详情 |
+| 代理边界 | PASS：GUI 仅接受无认证的显式 HTTP/HTTPS 主机和端口；用户名/密码及其他 URL 形态不会写入设置；未勾选时下载子进程清除继承的 HTTP/HTTPS/ALL_PROXY |
+| 模型与缓存 | PASS：完整最终文件会清理已失效的相邻断点；删除模型与共享 Xet 缓存分开；清空共享缓存需二次确认且保留已安装模型 |
+| Windows package 探针 | PASS：包内 Python 编译下载器与模型管理器；离屏构造模型管理窗口并验证无认证代理文案、缓存按钮和代理正规化 |
 
 ## 14. 当前剩余人工验收
 

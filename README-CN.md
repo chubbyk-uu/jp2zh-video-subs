@@ -133,7 +133,8 @@ CMAKE_ARGS='-DGGML_CUDA=on' FORCE_CMAKE=1 \
 当前开发版 GUI 在模型状态旁新增了“管理模型…”窗口。它可以勾选当前 ASR/翻译配置所需
 模型或全部缺失模型，并按界面顺序逐个从 Hugging Face 官方站或第三方 HF-Mirror 下载；
 下载优先使用 Hugging Face/Xet 客户端，取消时保留未完整文件供下次续传；窗口内可选填
-HTTP 代理，也可以取消“优先使用 Hugging Face/Xet”而直接使用支持断点续传的兼容 HTTP。
+不需要认证的 HTTP/HTTPS 代理，也可以取消“优先使用 Hugging Face/Xet”而直接使用支持
+断点续传的兼容 HTTP。模型管理器还可以打开或清空共享 Xet 下载缓存，不会删除已安装模型。
 HF-Mirror 只用于公开模型，下载器不会把本机缓存的 Hugging Face 私有令牌转发给第三方
 镜像。已安装模型可以重新下载，也可以经二次确认后删除。
 下载后端选项属于 GUI 和本项目的 `scripts/download_models.py` 辅助程序，不是根目录
@@ -141,7 +142,8 @@ Hugging Face `hf.cmd` 支持的参数；项目下载 CLI 示例见
 [docs/USAGE.md](https://github.com/chubbyk-uu/jp2zh-video-subs/blob/main/docs/USAGE.md)。
 
 已发布的 Beta 5 早于这个功能，仍需使用程序根目录的 `hf.cmd`。源码安装也可以继续使用
-下面的命令。
+下面的命令。手工命令固定到当前模型目录使用的同一组上游 revision，避免仓库默认分支
+后续变化导致下载内容静默改变。
 
 一键默认流程需要的模型：
 
@@ -162,6 +164,7 @@ mkdir -p models
 
 # 默认 anime 识别后端
 hf download litagin/anime-whisper \
+  --revision 22e2008a8182b357da3922a6308d095008f72973 \
   --local-dir models/anime-whisper
 
 mkdir -p models/whisperseg
@@ -172,15 +175,18 @@ hf download TransWithAI/Whisper-Vad-EncDec-ASMR-onnx \
 
 # 默认 Anime 定时与 Qwen 定时
 hf download Qwen/Qwen3-ForcedAligner-0.6B \
+  --revision c7cbfc2048c462b0d63a45797104fc9db3ad62b7 \
   --local-dir models/Qwen3-ForcedAligner-0.6B
 
 # 可选 Qwen 识别对比线
 hf download Qwen/Qwen3-ASR-1.7B \
+  --revision 7278e1e70fe206f11671096ffdd38061171dd6e5 \
   --local-dir models/Qwen3-ASR-1.7B
 
 # 默认翻译模型（Sakura-GalTransl-7B-v3.7，约 6.25GB 高质量量化档）
 hf download SakuraLLM/Sakura-GalTransl-7B-v3.7 \
   Sakura-Galtransl-7B-v3.7.gguf \
+  --revision 759d76b1745f4428308de6564c5ab710d4358b2e \
   --local-dir models/Sakura-GalTransl-7B-v3.7-GGUF
 ```
 
@@ -191,11 +197,15 @@ models/anime-whisper/config.json
 models/anime-whisper/model.safetensors
 models/anime-whisper/preprocessor_config.json
 models/anime-whisper/tokenizer_config.json
+models/anime-whisper/merges.txt
+models/anime-whisper/vocab.json
 models/whisperseg/model.onnx
 models/Qwen3-ForcedAligner-0.6B/config.json
 models/Qwen3-ForcedAligner-0.6B/model.safetensors
 models/Qwen3-ForcedAligner-0.6B/preprocessor_config.json
 models/Qwen3-ForcedAligner-0.6B/tokenizer_config.json
+models/Qwen3-ForcedAligner-0.6B/merges.txt
+models/Qwen3-ForcedAligner-0.6B/vocab.json
 models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 ```
 
@@ -205,6 +215,11 @@ Qwen 对比线还需要：
 models/Qwen3-ASR-1.7B/config.json
 models/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors
 models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
+models/Qwen3-ASR-1.7B/model.safetensors.index.json
+models/Qwen3-ASR-1.7B/preprocessor_config.json
+models/Qwen3-ASR-1.7B/tokenizer_config.json
+models/Qwen3-ASR-1.7B/merges.txt
+models/Qwen3-ASR-1.7B/vocab.json
 ```
 
 更大的 `sakura` 翻译（`--translator sakura`）改用
@@ -213,6 +228,7 @@ models/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors
 ```bash
 hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
   sakura-14b-qwen2.5-v1.0-iq4xs.gguf \
+  --revision f370f85114971e556ba9ab7cdfd00fe9fe88dd53 \
   --local-dir models/Sakura-14B-Qwen2.5-v1.0-GGUF
 ```
 
@@ -221,6 +237,7 @@ hf download SakuraLLM/Sakura-14B-Qwen2.5-v1.0-GGUF \
 ```bash
 hf download sugoitoolkit/Sugoi-14B-Ultra-GGUF \
   Sugoi-14B-Ultra-Q4_K_M.gguf \
+  --revision d8dd836bf519a604530779cbf5ce13ffb35c3eeb \
   --local-dir models/Sugoi-14B-Ultra-GGUF
 ```
 
@@ -229,6 +246,7 @@ hf download sugoitoolkit/Sugoi-14B-Ultra-GGUF \
 
 ```bash
 hf download JaesungHuh/voice-gender-classifier \
+  --revision db1222153bd60337e900be22add7af180452adc0 \
   --local-dir models/voice-gender-classifier
 ```
 

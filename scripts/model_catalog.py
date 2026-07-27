@@ -1,6 +1,7 @@
 """Single source of truth for downloadable model locations and requirements."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -221,16 +222,62 @@ def required_model_paths(
     return tuple(path for spec in model_specs(keys) for path in spec.required_paths(root))
 
 
+def cleanup_redundant_model_partials(
+    spec: ModelDownloadSpec,
+    root: Path,
+) -> int:
+    """Remove compatibility partials superseded by a complete final file."""
+    destination = spec.destination(root)
+    removed = 0
+    for filename in spec.filenames:
+        target = destination / filename
+        partial = target.with_name(target.name + ".incomplete")
+        metadata = partial.with_name(partial.name + ".json")
+        if (
+            not target.is_file()
+            or target.is_symlink()
+            or not partial.is_file()
+            or partial.is_symlink()
+            or not metadata.is_file()
+            or metadata.is_symlink()
+        ):
+            continue
+        try:
+            payload = json.loads(metadata.read_text(encoding="utf-8"))
+            expected_size = int(payload["size"])
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ):
+            continue
+        if (
+            payload.get("repo_id") != spec.repo_id
+            or payload.get("revision") != spec.revision
+            or payload.get("filename") != filename
+            or expected_size <= 0
+            or target.stat().st_size != expected_size
+        ):
+            continue
+        partial.unlink()
+        metadata.unlink()
+        removed += 1
+    return removed
+
+
 def model_install_state(spec: ModelDownloadSpec, root: Path) -> ModelInstallState:
     destination = spec.destination(root)
+    required = spec.required_paths(root)
+    if required and all(path.is_file() and path.stat().st_size > 0 for path in required):
+        return ModelInstallState.INSTALLED
+
     if destination.is_dir() and any(
         path.is_file() for path in destination.rglob("*.incomplete")
     ):
         return ModelInstallState.PARTIAL
-
-    required = spec.required_paths(root)
-    if required and all(path.is_file() and path.stat().st_size > 0 for path in required):
-        return ModelInstallState.INSTALLED
 
     if not destination.is_dir():
         return ModelInstallState.MISSING

@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import io
 import json
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from download_models import (
     remote_model_plan,
     run_download_queue,
     safe_download_target,
+    validate_downloaded_model,
     validate_download_filename,
 )
 from model_catalog import ModelDownloadSpec, model_specs
@@ -232,6 +234,28 @@ def test_progress_monitor_reports_average_speed_since_this_session(monkeypatch, 
     ]
 
 
+def test_progress_monitor_does_not_regress_after_native_callback(monkeypatch, tmp_path):
+    spec = model_specs(("whisperseg",))[0]
+    plan = remote_plan(spec, {"model.onnx": RemoteFileInfo(100, sha256="0" * 64)})
+    events = []
+    monitor = ProgressMonitor(
+        plan,
+        tmp_path,
+        lambda event, **payload: events.append({"type": event, **payload}),
+        overall_completed=0,
+        overall_total=100,
+    )
+    monitor._started_at = 10.0
+    monitor._started_bytes = 0
+    monkeypatch.setattr("download_models.time.monotonic", lambda: 15.0)
+
+    monitor.report_download_progress(70)
+    monitor._emit_progress(downloaded=20)
+
+    assert [event["downloaded_bytes"] for event in events] == [70, 70]
+    assert [event["speed_bytes_per_second"] for event in events] == [14, 14]
+
+
 def test_mirror_download_prefers_native_hugging_face_client(monkeypatch, tmp_path):
     spec = model_specs(("whisperseg",))[0]
     plan = remote_plan(spec, {"model.onnx": RemoteFileInfo(10, sha256="0" * 64)})
@@ -259,10 +283,55 @@ def test_mirror_download_prefers_native_hugging_face_client(monkeypatch, tmp_pat
     assert calls[0]["token"] is False
 
 
+def test_native_xet_progress_updates_callback_during_transfer(monkeypatch, tmp_path):
+    import hf_xet
+
+    spec = model_specs(("whisperseg",))[0]
+    plan = remote_plan(spec, {"model.onnx": RemoteFileInfo(10, sha256="0" * 64)})
+    existing_progress = []
+    reported_progress = []
+
+    def fake_download_files(*_args, progress_updater, **_kwargs):
+        assert len(progress_updater) == 1
+        assert len(inspect.signature(progress_updater[0]).parameters) == 1
+        for increment in (3, 4, 3):
+            for updater in progress_updater:
+                updater(increment)
+
+    def fake_hub_download(**kwargs):
+        hf_xet.download_files(
+            [],
+            endpoint="https://cas.example.test",
+            token_info=("token", 0),
+            token_refresher=lambda: ("token", 0),
+            progress_updater=[existing_progress.append],
+        )
+        target = kwargs["local_dir"] / kwargs["filename"]
+        target.write_bytes(b"x" * 10)
+
+    monkeypatch.setattr(hf_xet, "download_files", fake_download_files)
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_hub_download)
+    clock = iter((1.0, 1.3, 1.6))
+    monkeypatch.setattr("download_models.time.monotonic", lambda: next(clock))
+
+    download_remote_plan(
+        plan,
+        tmp_path,
+        "https://huggingface.co",
+        max_workers=4,
+        progress_callback=reported_progress.append,
+    )
+
+    assert existing_progress == [3, 4, 3]
+    assert reported_progress[:3] == [3, 7, 10]
+    assert reported_progress[-1] == 10
+
+
 def test_mirror_download_falls_back_after_native_client_error(monkeypatch, tmp_path):
     spec = model_specs(("whisperseg",))[0]
     plan = remote_plan(spec, {"model.onnx": RemoteFileInfo(10, sha256="0" * 64)})
     calls = []
+    events = []
 
     def fail_native(**_kwargs):
         raise RuntimeError("native failed")
@@ -278,11 +347,24 @@ def test_mirror_download_falls_back_after_native_client_error(monkeypatch, tmp_p
         tmp_path,
         "https://hf-mirror.com",
         max_workers=4,
+        event_callback=lambda event, **payload: events.append(
+            {"type": event, **payload}
+        ),
     )
 
     assert len(calls) == 1
     assert calls[0][0][1] == "model.onnx"
     assert calls[0][1]["revision"] == REVISION
+    assert events == [
+        {
+            "type": "backend_fallback",
+            "model": "whisperseg",
+            "from_backend": "huggingface_xet",
+            "to_backend": "compat",
+            "error_type": "RuntimeError",
+            "message": "native failed",
+        }
+    ]
 
 
 def test_compatibility_mode_skips_native_hugging_face_client(monkeypatch, tmp_path):
@@ -388,7 +470,10 @@ def test_download_queue_is_catalog_ordered_and_stops_after_failure(tmp_path):
         max_workers,
         force,
         download_backend,
+        progress_callback,
+        event_callback,
     ):
+        assert callable(event_callback)
         calls.append(
             (
                 plan.spec.key,
@@ -404,6 +489,7 @@ def test_download_queue_is_catalog_ordered_and_stops_after_failure(tmp_path):
             path = plan.spec.destination(root) / filename
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"x" * remote.size)
+        progress_callback(plan.total_bytes)
 
     result = run_download_queue(
         specs,
@@ -461,7 +547,10 @@ def test_force_download_does_not_skip_installed_model(tmp_path):
         max_workers,
         force,
         download_backend,
+        progress_callback,
+        event_callback,
     ):
+        assert callable(event_callback)
         calls.append((plan.spec.key, force, download_backend))
 
     stream = io.StringIO()
@@ -523,6 +612,24 @@ def test_force_public_download_keeps_old_file_until_replacement(tmp_path):
     )
 
     assert target.read_bytes() == b"replacement"
+
+
+def test_successful_model_validation_removes_stale_adjacent_partial(tmp_path):
+    spec = model_specs(("whisperseg",))[0]
+    data = b"complete"
+    plan = remote_plan(spec, {"model.onnx": sha256_info(data)})
+    destination = spec.destination(tmp_path)
+    destination.mkdir(parents=True)
+    (destination / "model.onnx").write_bytes(data)
+    partial = destination / "model.onnx.incomplete"
+    partial.write_bytes(b"stale")
+    metadata = destination / "model.onnx.incomplete.json"
+    metadata.write_text("{}", encoding="utf-8")
+
+    validate_downloaded_model(plan, tmp_path)
+
+    assert not partial.exists()
+    assert not metadata.exists()
 
 
 @pytest.mark.parametrize(

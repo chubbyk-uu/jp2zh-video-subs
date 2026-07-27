@@ -183,6 +183,29 @@ def test_source_selection_is_persisted(tmp_path):
         second.close()
 
 
+def test_xet_note_uses_checkbox_right_side_and_mirror_note_falls_back(tmp_path):
+    application()
+    dialog, _controller = make_dialog(tmp_path, current=())
+    try:
+        assert dialog.source_label.minimumWidth() == 0
+        assert "Xet progress updates in batches" in dialog.source_note.text()
+
+        dialog.native_backend_check.setChecked(False)
+        assert dialog.source_note.text() == ""
+
+        dialog.source_combo.setCurrentIndex(
+            dialog.source_combo.findData("mirror")
+        )
+        assert "Third-party mirror" in dialog.source_note.text()
+        assert "Third-party mirror" in dialog.source_combo.toolTip()
+
+        dialog.native_backend_check.setChecked(True)
+        assert "Xet progress updates in batches" in dialog.source_note.text()
+        assert "Third-party mirror" in dialog.source_combo.toolTip()
+    finally:
+        dialog.close()
+
+
 def test_proxy_selection_is_validated_persisted_and_submitted(tmp_path):
     application()
     dialog, controller = make_dialog(tmp_path, current=())
@@ -210,6 +233,55 @@ def test_proxy_selection_is_validated_persisted_and_submitted(tmp_path):
         dialog.close()
 
 
+def test_proxy_rejects_credentials_and_does_not_persist_them(tmp_path):
+    application()
+    settings = settings_at(tmp_path)
+    dialog = ModelDownloadDialog(
+        None,
+        current_model_keys=(),
+        settings=settings,
+        root=tmp_path,
+        controller=FakeDownloadController(),
+    )
+    try:
+        dialog.proxy_check.setChecked(True)
+        dialog.proxy_edit.setText("http://127.0.0.1:7890")
+        settings.sync()
+        dialog.proxy_edit.setText("http://user:secret@127.0.0.1:7890")
+        settings.sync()
+
+        assert (
+            settings.value("model_download_proxy_url")
+            == "http://127.0.0.1:7890"
+        )
+        with pytest.raises(ValueError, match="Authenticated proxies"):
+            dialog._validated_proxy()
+        assert "no authentication" in dialog.proxy_check.text()
+    finally:
+        dialog.close()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "socks5://127.0.0.1:7890",
+        "http://127.0.0.1",
+        "http://127.0.0.1:7890/path",
+        "http://127.0.0.1:7890?query=yes",
+    ],
+)
+def test_proxy_rejects_unsupported_endpoint_shapes(tmp_path, value):
+    application()
+    dialog, _controller = make_dialog(tmp_path, current=())
+    try:
+        dialog.proxy_check.setChecked(True)
+        dialog.proxy_edit.setText(value)
+        with pytest.raises(ValueError):
+            dialog._validated_proxy()
+    finally:
+        dialog.close()
+
+
 def test_download_details_explain_state_and_record_events(tmp_path):
     application()
     dialog, _controller = make_dialog(tmp_path)
@@ -217,6 +289,26 @@ def test_download_details_explain_state_and_record_events(tmp_path):
         assert "after a task starts" in dialog.log_edit.toPlainText()
         dialog._apply_event({"type": "model_query_started", "model": "anime-whisper"})
         assert "Querying metadata: Anime Whisper" in dialog.log_edit.toPlainText()
+    finally:
+        dialog.close()
+
+
+def test_backend_fallback_is_visible_without_opening_details(tmp_path):
+    application()
+    dialog, _controller = make_dialog(tmp_path)
+    try:
+        dialog._apply_event(
+            {
+                "type": "backend_fallback",
+                "model": "anime-whisper",
+                "message": "native failed",
+            }
+        )
+        assert (
+            dialog.queue_status_label.text()
+            == "Hugging Face/Xet failed; switched to compatibility HTTP."
+        )
+        assert "native failed" in dialog.log_edit.toPlainText()
     finally:
         dialog.close()
 
@@ -301,6 +393,8 @@ def test_cancel_requests_controller_and_keeps_resume_message(tmp_path):
     application()
     dialog, controller = make_dialog(tmp_path)
     try:
+        dialog.overall_progress.setRange(0, 0)
+        dialog.model_progress.setRange(0, 0)
         controller.is_running = True
         dialog._cancel_download()
         assert controller.cancelled
@@ -309,6 +403,26 @@ def test_cancel_requests_controller_and_keeps_resume_message(tmp_path):
         controller.is_running = False
         dialog._download_finished(False, True)
         assert "partial files were kept" in dialog.queue_status_label.text()
+        assert dialog.overall_progress.maximum() == 1000
+        assert dialog.overall_progress.value() == 0
+        assert dialog.model_progress.maximum() == 1000
+        assert dialog.model_progress.value() == 0
+    finally:
+        dialog.close()
+
+
+def test_success_settles_unknown_progress_as_complete(tmp_path):
+    application()
+    dialog, controller = make_dialog(tmp_path)
+    try:
+        dialog.overall_progress.setRange(0, 0)
+        dialog.model_progress.setRange(0, 0)
+        controller.is_running = False
+        dialog._download_finished(True, False)
+        assert dialog.overall_progress.maximum() == 1000
+        assert dialog.overall_progress.value() == 1000
+        assert dialog.model_progress.maximum() == 1000
+        assert dialog.model_progress.value() == 1000
     finally:
         dialog.close()
 
@@ -382,6 +496,59 @@ def test_delete_requires_confirmation_and_removes_selected_directory(
         dialog.close()
 
 
+def test_shared_xet_cache_requires_confirmation_and_keeps_installed_models(
+    tmp_path,
+    monkeypatch,
+):
+    application()
+    spec = next(spec for spec in MODEL_DOWNLOAD_SPECS if spec.key == "whisperseg")
+    installed = spec.required_paths(tmp_path)[0]
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(b"installed")
+    cache = tmp_path / "cache" / "huggingface" / "xet"
+    (cache / "chunks").mkdir(parents=True)
+    (cache / "chunks" / "chunk.bin").write_bytes(b"x" * 20)
+    dialog, _controller = make_dialog(tmp_path, current=())
+    monkeypatch.setattr(dialog, "_xet_cache_path", lambda: cache)
+    try:
+        monkeypatch.setattr(
+            QMessageBox,
+            "warning",
+            lambda *_args: QMessageBox.StandardButton.Cancel,
+        )
+        dialog._clear_xet_cache()
+        assert (cache / "chunks" / "chunk.bin").exists()
+
+        monkeypatch.setattr(
+            QMessageBox,
+            "warning",
+            lambda *_args: QMessageBox.StandardButton.Yes,
+        )
+        dialog._clear_xet_cache()
+        assert cache.is_dir()
+        assert not any(cache.iterdir())
+        assert installed.read_bytes() == b"installed"
+        assert dialog.queue_status_label.text() == "Shared Xet cache cleared."
+    finally:
+        dialog.close()
+
+
+def test_xet_cache_management_refuses_symbolic_link(tmp_path, monkeypatch):
+    application()
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    cache = tmp_path / "cache" / "huggingface" / "xet"
+    cache.parent.mkdir(parents=True)
+    cache.symlink_to(target, target_is_directory=True)
+    dialog, _controller = make_dialog(tmp_path, current=())
+    monkeypatch.setattr(dialog, "_xet_cache_path", lambda: cache)
+    try:
+        with pytest.raises(RuntimeError, match="symbolic-link"):
+            dialog._safe_xet_cache_path()
+    finally:
+        dialog.close()
+
+
 def test_delete_refuses_catalog_path_outside_models(tmp_path):
     application()
     dialog, _controller = make_dialog(tmp_path, current=())
@@ -406,7 +573,10 @@ def test_controller_reads_structured_events_and_clears_offline_flags(tmp_path):
         "import json, os, sys\n"
         "print(json.dumps({'type': 'probe', "
         "'hf_offline': os.environ.get('HF_HUB_OFFLINE'), "
-        "'transformers_offline': os.environ.get('TRANSFORMERS_OFFLINE')}))\n"
+        "'transformers_offline': os.environ.get('TRANSFORMERS_OFFLINE'), "
+        "'http_proxy': os.environ.get('HTTP_PROXY'), "
+        "'https_proxy': os.environ.get('HTTPS_PROXY'), "
+        "'all_proxy': os.environ.get('ALL_PROXY')}))\n"
         "print('diagnostic line', file=sys.stderr)\n",
         encoding="utf-8",
     )
@@ -423,23 +593,27 @@ def test_controller_reads_structured_events_and_clears_offline_flags(tmp_path):
     controller.finished.connect(lambda success, cancelled: results.append((success, cancelled)))
     controller.finished.connect(loop.quit)
 
-    old_hf = os.environ.get("HF_HUB_OFFLINE")
-    old_transformers = os.environ.get("TRANSFORMERS_OFFLINE")
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    changed_environment = {
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "HTTP_PROXY": "http://inherited.example:8080",
+        "HTTPS_PROXY": "http://inherited.example:8080",
+        "ALL_PROXY": "socks5://inherited.example:1080",
+    }
+    previous_environment = {
+        name: os.environ.get(name) for name in changed_environment
+    }
+    os.environ.update(changed_environment)
     try:
         controller.start(["anime-whisper"], "official", tmp_path)
         QTimer.singleShot(5000, loop.quit)
         loop.exec()
     finally:
-        if old_hf is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = old_hf
-        if old_transformers is None:
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
-        else:
-            os.environ["TRANSFORMERS_OFFLINE"] = old_transformers
+        for name, previous in previous_environment.items():
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
 
     assert results == [(True, False)]
     assert events == [
@@ -447,6 +621,9 @@ def test_controller_reads_structured_events_and_clears_offline_flags(tmp_path):
             "type": "probe",
             "hf_offline": None,
             "transformers_offline": None,
+            "http_proxy": None,
+            "https_proxy": None,
+            "all_proxy": None,
         }
     ]
     assert "diagnostic line" in "".join(logs)

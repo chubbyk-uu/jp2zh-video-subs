@@ -20,6 +20,7 @@ from model_catalog import (
     MODEL_DOWNLOAD_SPECS,
     ModelDownloadSpec,
     ModelInstallState,
+    cleanup_redundant_model_partials,
     model_install_state,
     model_specs,
 )
@@ -119,6 +120,8 @@ class ProgressMonitor:
         self._thread: threading.Thread | None = None
         self._started_at = 0.0
         self._started_bytes = 0
+        self._reported_bytes = 0
+        self._progress_lock = threading.Lock()
 
     def start(self) -> None:
         self._started_at = time.monotonic()
@@ -127,6 +130,7 @@ class ProgressMonitor:
             self.root,
             include_completed=not self.force,
         )
+        self._reported_bytes = self._started_bytes
         self._thread = threading.Thread(target=self._run, name="model-download-progress", daemon=True)
         self._thread.start()
 
@@ -147,6 +151,10 @@ class ProgressMonitor:
             )
             self._emit_progress(downloaded=downloaded)
 
+    def report_download_progress(self, downloaded: int) -> None:
+        """Merge native downloader callbacks with filesystem polling."""
+        self._emit_progress(downloaded=downloaded)
+
     def _emit_progress(self, *, downloaded: int | None = None) -> None:
         if downloaded is None:
             downloaded = observed_download_bytes(
@@ -154,25 +162,28 @@ class ProgressMonitor:
                 self.root,
                 include_completed=not self.force,
             )
-        model_total = self.plan.total_bytes
-        if model_total is not None:
-            downloaded = min(downloaded, model_total)
-        overall_downloaded = self.overall_completed + downloaded
-        if self.overall_total is not None:
-            overall_downloaded = min(overall_downloaded, self.overall_total)
-        elapsed = max(0.001, time.monotonic() - self._started_at)
-        transferred = max(0, downloaded - self._started_bytes)
-        average_speed = transferred / elapsed
-        self.emit(
-            "progress",
-            model=self.plan.spec.key,
-            downloaded_bytes=downloaded,
-            total_bytes=model_total,
-            overall_downloaded_bytes=overall_downloaded,
-            overall_total_bytes=self.overall_total,
-            speed_bytes_per_second=round(average_speed),
-            speed_kind="session_average",
-        )
+        with self._progress_lock:
+            model_total = self.plan.total_bytes
+            if model_total is not None:
+                downloaded = min(downloaded, model_total)
+            downloaded = max(downloaded, self._reported_bytes)
+            self._reported_bytes = downloaded
+            overall_downloaded = self.overall_completed + downloaded
+            if self.overall_total is not None:
+                overall_downloaded = min(overall_downloaded, self.overall_total)
+            elapsed = max(0.001, time.monotonic() - self._started_at)
+            transferred = max(0, downloaded - self._started_bytes)
+            average_speed = transferred / elapsed
+            self.emit(
+                "progress",
+                model=self.plan.spec.key,
+                downloaded_bytes=downloaded,
+                total_bytes=model_total,
+                overall_downloaded_bytes=overall_downloaded,
+                overall_total_bytes=self.overall_total,
+                speed_bytes_per_second=round(average_speed),
+                speed_kind="session_average",
+            )
 
 
 def configure_hub_environment(endpoint: str, proxy: str | None = None) -> None:
@@ -334,6 +345,120 @@ def observed_download_bytes(
     return min(total, plan_total) if plan_total is not None else total
 
 
+class _XetProgressAdapter:
+    """Convert hf_xet byte increments into absolute model progress."""
+
+    def __init__(
+        self,
+        callback: Callable[[int], None],
+        *,
+        completed_bytes: int,
+        file_size: int | None,
+    ) -> None:
+        self.callback = callback
+        self.completed_bytes = completed_bytes
+        self.file_size = file_size
+        self._current_bytes = 0
+        self._last_emit_at = 0.0
+        self._emit_interval = 0.2
+        self._lock = threading.Lock()
+
+    def update(self, progress_bytes: float) -> None:
+        increment = max(0, round(progress_bytes))
+        if increment == 0:
+            return
+        with self._lock:
+            self._current_bytes += increment
+            current = self._current_bytes
+            if self.file_size is not None:
+                current = min(current, self.file_size)
+            now = time.monotonic()
+            completed = self.file_size is not None and current >= self.file_size
+            if not completed and now - self._last_emit_at < self._emit_interval:
+                return
+            self._last_emit_at = now
+            downloaded = self.completed_bytes + current
+        self.callback(downloaded)
+
+
+def _run_with_xet_progress(
+    operation: Callable[[], None],
+    callback: Callable[[int], None] | None,
+    *,
+    completed_bytes: int,
+    file_size: int | None,
+) -> None:
+    """Attach a GUI progress observer to hf_xet without changing its download."""
+    if callback is None:
+        operation()
+        return
+    try:
+        import hf_xet
+    except ImportError:
+        operation()
+        return
+
+    adapter = _XetProgressAdapter(
+        callback,
+        completed_bytes=completed_bytes,
+        file_size=file_size,
+    )
+    original_download_files = hf_xet.download_files
+
+    def tracked_download_files(*args: Any, **kwargs: Any) -> Any:
+        progress_updaters = list(kwargs.get("progress_updater") or ())
+        if progress_updaters:
+            combined_updaters = []
+            for updater in progress_updaters:
+
+                def combine_callbacks(
+                    original: Callable[[float], None],
+                ) -> Callable[[float], None]:
+                    def combined_update(progress_bytes: float) -> None:
+                        original(progress_bytes)
+                        adapter.update(progress_bytes)
+
+                    return combined_update
+
+                combined_updaters.append(combine_callbacks(updater))
+            kwargs["progress_updater"] = combined_updaters
+        else:
+            kwargs["progress_updater"] = [adapter.update]
+        return original_download_files(*args, **kwargs)
+
+    # huggingface_hub imports hf_xet.download_files when each Xet transfer
+    # starts. Downloads in this helper process are sequential, so temporarily
+    # wrapping the callback is isolated to the current model file.
+    hf_xet.download_files = tracked_download_files
+    try:
+        operation()
+    finally:
+        hf_xet.download_files = original_download_files
+
+
+def _completed_native_bytes(
+    plan: RemoteModelPlan,
+    root: Path,
+    *,
+    force: bool,
+) -> tuple[int, set[str]]:
+    if force:
+        return 0, set()
+    destination = plan.spec.destination(root)
+    completed = 0
+    completed_files: set[str] = set()
+    for filename, remote in plan.files.items():
+        path = safe_download_target(destination, filename)
+        if not path.is_file() or path.is_symlink():
+            continue
+        size = path.stat().st_size
+        if size <= 0 or (remote.size is not None and size != remote.size):
+            continue
+        completed += size
+        completed_files.add(filename)
+    return completed, completed_files
+
+
 def download_remote_plan(
     plan: RemoteModelPlan,
     root: Path,
@@ -342,6 +467,8 @@ def download_remote_plan(
     max_workers: int,
     force: bool = False,
     download_backend: str = "auto",
+    progress_callback: Callable[[int], None] | None = None,
+    event_callback: Callable[..., None] | None = None,
 ) -> None:
     if download_backend not in {"auto", "compat"}:
         raise ValueError(f"Unknown download backend: {download_backend}")
@@ -362,8 +489,33 @@ def download_remote_plan(
             common["token"] = False
         try:
             if plan.spec.filenames:
+                native_completed, completed_files = _completed_native_bytes(
+                    plan,
+                    root,
+                    force=force,
+                )
                 for filename in plan.spec.filenames:
-                    hf_hub_download(filename=filename, **common)
+                    remote = plan.files[filename]
+
+                    def download_file() -> None:
+                        hf_hub_download(filename=filename, **common)
+
+                    _run_with_xet_progress(
+                        download_file,
+                        progress_callback,
+                        completed_bytes=native_completed,
+                        file_size=remote.size,
+                    )
+                    if filename not in completed_files:
+                        target = safe_download_target(destination, filename)
+                        size = remote.size
+                        if size is None and target.is_file():
+                            size = target.stat().st_size
+                        if size is not None:
+                            native_completed += size
+                            completed_files.add(filename)
+                    if progress_callback is not None:
+                        progress_callback(native_completed)
             else:
                 snapshot_download(max_workers=max_workers, **common)
             return
@@ -373,6 +525,15 @@ def download_remote_plan(
                 "compatibility HTTP fallback: %s",
                 exc,
             )
+            if event_callback is not None:
+                event_callback(
+                    "backend_fallback",
+                    model=plan.spec.key,
+                    from_backend="huggingface_xet",
+                    to_backend="compat",
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
 
     for filename, remote in plan.files.items():
         logging.warning("Compatibility download: %s/%s", plan.spec.repo_id, filename)
@@ -646,6 +807,12 @@ def validate_downloaded_model(plan: RemoteModelPlan, root: Path) -> None:
     if missing:
         relative = ", ".join(str(path.relative_to(root)) for path in missing)
         raise RuntimeError(f"Downloaded model is incomplete: {relative}")
+    destination = plan.spec.destination(root)
+    for filename in plan.files:
+        target = safe_download_target(destination, filename)
+        partial = target.with_name(target.name + ".incomplete")
+        metadata = _partial_metadata_path(partial)
+        _remove_partial(partial, metadata)
 
 
 def prepare_plans(
@@ -658,6 +825,7 @@ def prepare_plans(
 ) -> tuple[RemoteModelPlan, ...]:
     plans: list[RemoteModelPlan] = []
     for spec in specs:
+        cleanup_redundant_model_partials(spec, root)
         state = model_install_state(spec, root)
         if state == ModelInstallState.INSTALLED and not force:
             writer.emit("model_skipped", model=spec.key, reason="installed")
@@ -737,6 +905,8 @@ def run_download_queue(
                 max_workers=max_workers,
                 force=force,
                 download_backend=download_backend,
+                progress_callback=monitor.report_download_progress,
+                event_callback=writer.emit,
             )
             validate_downloaded_model(plan, root)
         except Exception as exc:
@@ -775,7 +945,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--proxy",
-        help="HTTP(S) proxy URL, for example http://127.0.0.1:7890",
+        help=(
+            "Unauthenticated HTTP(S) proxy URL, for example "
+            "http://127.0.0.1:7890"
+        ),
     )
     parser.add_argument(
         "--source",

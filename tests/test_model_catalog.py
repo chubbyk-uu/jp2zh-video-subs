@@ -5,6 +5,7 @@ import pytest
 from model_catalog import (
     MODEL_DOWNLOAD_SPECS,
     ModelInstallState,
+    cleanup_redundant_model_partials,
     model_install_state,
     model_specs,
     required_model_keys,
@@ -68,7 +69,53 @@ def test_model_install_state_distinguishes_missing_partial_and_installed(tmp_pat
     assert model_install_state(spec, tmp_path) == ModelInstallState.PARTIAL
 
     (spec.destination(tmp_path) / "model.onnx").write_bytes(b"complete")
-    assert model_install_state(spec, tmp_path) == ModelInstallState.PARTIAL
+    assert model_install_state(spec, tmp_path) == ModelInstallState.INSTALLED
 
     incomplete.unlink()
     assert model_install_state(spec, tmp_path) == ModelInstallState.INSTALLED
+
+
+def test_redundant_compat_partial_is_cleaned_after_complete_final_file(tmp_path):
+    spec = model_specs(("whisperseg",))[0]
+    destination = spec.destination(tmp_path)
+    destination.mkdir(parents=True)
+    target = destination / "model.onnx"
+    target.write_bytes(b"complete")
+    partial = destination / "model.onnx.incomplete"
+    partial.write_bytes(b"old partial")
+    metadata = destination / "model.onnx.incomplete.json"
+    metadata.write_text(
+        (
+            '{"repo_id":"TransWithAI/Whisper-Vad-EncDec-ASMR-onnx",'
+            f'"revision":"{spec.revision}",'
+            '"filename":"model.onnx","size":8}'
+        ),
+        encoding="utf-8",
+    )
+
+    assert cleanup_redundant_model_partials(spec, tmp_path) == 1
+    assert not partial.exists()
+    assert not metadata.exists()
+    assert model_install_state(spec, tmp_path) == ModelInstallState.INSTALLED
+
+
+def test_redundant_partial_cleanup_keeps_unverified_final_file(tmp_path):
+    spec = model_specs(("whisperseg",))[0]
+    destination = spec.destination(tmp_path)
+    destination.mkdir(parents=True)
+    (destination / "model.onnx").write_bytes(b"wrong size")
+    partial = destination / "model.onnx.incomplete"
+    partial.write_bytes(b"partial")
+    metadata = destination / "model.onnx.incomplete.json"
+    metadata.write_text(
+        (
+            '{"repo_id":"TransWithAI/Whisper-Vad-EncDec-ASMR-onnx",'
+            f'"revision":"{spec.revision}",'
+            '"filename":"model.onnx","size":8}'
+        ),
+        encoding="utf-8",
+    )
+
+    assert cleanup_redundant_model_partials(spec, tmp_path) == 0
+    assert partial.exists()
+    assert metadata.exists()
