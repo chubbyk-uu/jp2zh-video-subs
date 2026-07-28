@@ -45,6 +45,9 @@ Validation before publication:
   and cue order is unchanged. A device that holds the full batch adds no retries.
 - Model install state and model download state were verified separately for a model whose
   required files are complete while another selected file is still partial or missing.
+- A native Windows CUDA RTX 5090 system completed several full video workflows on this build.
+  That GPU holds the configured batch, so no out-of-memory retry occurred and the backoff path
+  was not exercised on hardware; it is covered by the simulated measurement above.
 - The published program archive is rebuilt from the release commit, integrity-checked, freshly
   extracted, inspected for models, user data, settings, and development paths, and smoke-tested
   before upload.

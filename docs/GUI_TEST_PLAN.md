@@ -652,8 +652,9 @@ git diff --check
 | 发布说明 | PASS：`packaging/windows/RELEASE_NOTES.md` 重写为 v0.1.1 patch 版，仅列 OOM 粘滞退避与模型下载状态两项修复，并声明无 CLI/配置/输出格式变更 |
 | 文档链接 | PASS：README、README-CN、USAGE 共 5 处 `releases/tag/v0.1.0` 改为 `releases/latest`，后续发版不再需要改文档 |
 | 计划文档 | PASS：删除 `docs/PLAN.md` 中与同文档 Completed 列表第 3 条冲突的 "Planned semantic-scene boundary reconciliation" 残留章节；该功能已由 `_reconcile_semantic_scene_groups` 实现并有 4 项测试覆盖 |
+| 硬件复跑 | PASS（人工、用户报告）：RTX 5090 本机在绿色包上完成多个视频的完整流程，输出正常。该机显存足够容纳所选批量，全程未触发 OOM，因此**退避路径未在真实硬件上被执行**，其证据仍只来自 RUN-20260727-23 的模拟测量 |
+| 复跑所用构建 | 用户测试的包暂存自 `b5efbc2`；发布 commit 与之的源码差异仅 `scripts/app_version.py` 的版本字符串（`RELEASE_NOTES.md` 不进包），无行为变化，故该硬件结论对本次发布有效 |
 | Windows package | NOT RUN：本轮未重建绿色包、未构建/解压归档、未做开发路径扫描 |
-| 硬件复跑 | NOT RUN：v0.1.1 改动了 Anime 批处理退避路径，尚未在真实 NVIDIA CUDA 环境复跑完整流程 |
 | GitHub Release | NOT RUN：尚未打 `v0.1.1` tag，未发布 |
 
 ## 14. 当前剩余人工验收
