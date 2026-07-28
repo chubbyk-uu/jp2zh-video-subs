@@ -643,7 +643,7 @@ git diff --check
 | 模型下载状态 | PASS：模型管理器和下载队列按全部 `filenames` 判断是否下载完成；required 文件齐全但非必需文件仍有断点时会继续下载，不再静默跳过 |
 | 本轮边界 | 按用户要求仅完成源码修复、测试和提交；不刷新 Windows package，不构建/解压归档，也不发布 GitHub `v0.1.1`（该边界已由 RUN-20260728-24 取消） |
 
-### RUN-20260728-24：v0.1.1 发布准备（源码侧）
+### RUN-20260728-24：v0.1.1 发布
 
 | 项目 | 记录值 |
 |---|---|
@@ -654,8 +654,13 @@ git diff --check
 | 计划文档 | PASS：删除 `docs/PLAN.md` 中与同文档 Completed 列表第 3 条冲突的 "Planned semantic-scene boundary reconciliation" 残留章节；该功能已由 `_reconcile_semantic_scene_groups` 实现并有 4 项测试覆盖 |
 | 硬件复跑 | PASS（人工、用户报告）：RTX 5090 本机在绿色包上完成多个视频的完整流程，输出正常。该机显存足够容纳所选批量，全程未触发 OOM，因此**退避路径未在真实硬件上被执行**，其证据仍只来自 RUN-20260727-23 的模拟测量 |
 | 复跑所用构建 | 用户测试的包暂存自 `b5efbc2`；发布 commit 与之的源码差异仅 `scripts/app_version.py` 的版本字符串（`RELEASE_NOTES.md` 不进包），无行为变化，故该硬件结论对本次发布有效 |
-| Windows package | NOT RUN：本轮未重建绿色包、未构建/解压归档、未做开发路径扫描 |
-| GitHub Release | NOT RUN：尚未打 `v0.1.1` tag，未发布 |
+| Windows package | PASS：从发布 commit 重新暂存（运行时指纹未变，复用已暂存运行时，仅同步 `app/`）；`prepare-release-candidate.sh` 的发布边界排除与开发路径扫描通过；归档 28,145 文件 / 8,202,897,320 字节，压缩后 3,284,173,837 字节 |
+| 归档完整性 | PASS：整包 SHA-256 `bf725a279094b580b3d3feab39bfa24517110a8cf1837e58cb2d930c712db52c`；按 v0.1.0 规格切为 1900 MiB 分卷，`cat .001 .002 \| sha256sum` 与整包哈希逐字节一致 |
+| 全新解压验收 | PASS：`extract-release-candidate.sh` 解压 28,145 文件成功，包内 Python 正常报出 huggingface_hub 0.36.2；对解压产物独立复扫 `jp2zh-win-portable-lab` / `/mnt/[a-z]/` / `wsl.localhost` / `E:\jp2zh` 零命中；`models`、`outputs`、`work` 全空，无视频/字幕/设置残留 |
+| 版本号三层确认 | PASS：`package/`、`release/staging/program/`、以及从最终归档解压回的 `release/extracted/` 三处 `app_version.py` 均为 `0.1.1 (2026.07.28-release)`；两项修复在解压产物中确认存在（`effective_batch_size` 4 处、`model_download_state` 1 处） |
+| GitHub Release | PASS：tag `v0.1.1` 指向 `6ee530c`；采用草稿→上传→发布流程，避免上传中途失败留下无附件的公开版本；正式版非 prerelease，`/releases/latest` 已确认解析到 `v0.1.1` |
+| 发布资产 | PASS：6 个资产字节数与本地文件逐一吻合 —— `…program.7z.001` 1,992,294,400；`…program.7z.002` 1,291,879,437；`SHA256SUMS` 111；`SHA256SUMS.parts` 230；`INSTALL-CN.txt` 5,141；`INSTALL-EN.txt` 5,475 |
+| 上传后校验边界 | 仅核对了资产字节数（足以排除截断），**未重新下载归档比对哈希**；端到端校验依赖随发布提供的 `SHA256SUMS.parts` |
 
 ## 14. 当前剩余人工验收
 
