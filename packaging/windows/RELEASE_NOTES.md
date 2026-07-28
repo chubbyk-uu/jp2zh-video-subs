@@ -1,7 +1,9 @@
-# jp2zh-video-subs v0.1.0
+# jp2zh-video-subs v0.1.1
 
-First stable portable Windows x64 CUDA release. Extract it and run the GUI without installing
-Python, FFmpeg, or the CUDA Toolkit.
+Bug-fix release for the portable Windows x64 CUDA build. Extract it and run the GUI without
+installing Python, FFmpeg, or the CUDA Toolkit. There are no command-line, configuration, or
+output format changes since `v0.1.0`; upgrading is a straight replacement of the extracted
+program directory.
 
 Requirements:
 
@@ -23,33 +25,26 @@ Shell note: PowerShell users must set proxy variables with `$env:HTTPS_PROXY` /
 `$env:HTTP_PROXY` and run the downloader as `.\hf.cmd`. Command Prompt users must use `set`
 instead. The standalone installation guides attached to this release show both forms.
 
-Highlights since Beta 5:
+Fixes since v0.1.0:
 
-- Add a modal model manager with official Hugging Face and HF-Mirror sources, Xet or compatible
-  resumable HTTP downloads, optional unauthenticated HTTP/HTTPS proxy settings, session progress,
-  re-download, deletion, and separate shared-cache controls.
-- Harden downloads with fixed upstream revisions, restricted filenames, path traversal and
-  symlink checks, resumable-transfer identity metadata, size/content verification where available,
-  atomic replacement, and automatic cleanup of stale partial files.
-- Add Simplified Chinese, Traditional Chinese, and English interface languages, plus Simplified
-  Chinese, Traditional Chinese, and experimental English subtitle targets.
-- Add the Sugoi 14B Japanese-to-English backend and bundled OpenCC conversion for Traditional
-  Chinese output. English translation remains experimental and should be reviewed manually.
-- Make Anime ASR text generation use the selected batch size, with automatic out-of-memory batch
-  splitting while preserving result order. The GUI now gives hardware-oriented batch presets and
-  explains that weaker CPUs may benefit from a smaller batch.
-- Improve device reporting, model completeness status, progress and cancellation behaviour,
-  single-instance protection, runtime cleanup, settings layout, translated diagnostics, and the
-  About dialog with an explicit application version.
-- Keep the relocatable `hf.cmd` manual installer and verify it from a fresh extracted candidate.
+- Keep the reduced Anime ASR text-generation batch size after an out-of-memory retry. Previously
+  each batch restarted from the configured size, so a GPU that could not hold the default batch
+  repeated the same shrink cascade for every batch instead of once per run. Recognized text and
+  cue order are unchanged; only the number of out-of-memory retries drops.
+- Stop the model manager from skipping an incomplete model download. Download completeness is now
+  judged against every file the downloader selects, not only the files inference requires, so a
+  transfer interrupted after the required files were already in place is resumed instead of being
+  reported as installed. Whether a model can run is still judged by the required files alone, so
+  an existing usable model is never blocked by an unrelated partial file.
 
 Validation before publication:
 
-- 477 automated tests pass together with Ruff and release-script checks.
-- Batched Anime ASR A/B testing preserved recognized words across the tested batch sizes; the only
-  observed output change was punctuation.
-- The updated Windows package completed a full user-run subtitle workflow.
-- Native Windows CUDA runs cover RTX 5080 and RTX 4080 Laptop 12 GB systems.
+- 480 automated tests pass together with Ruff and release-script checks.
+- The out-of-memory backoff was measured against a simulated GPU limit: with 120 items and a
+  starting batch of 24 against a device that holds 6, out-of-memory retries drop from 15 to 2,
+  and cue order is unchanged. A device that holds the full batch adds no retries.
+- Model install state and model download state were verified separately for a model whose
+  required files are complete while another selected file is still partial or missing.
 - The published program archive is rebuilt from the release commit, integrity-checked, freshly
   extracted, inspected for models, user data, settings, and development paths, and smoke-tested
   before upload.
@@ -58,4 +53,6 @@ Known scope:
 
 - Experimental English output still requires manual review.
 - Performance and memory use vary with the CPU, GPU, driver, model, and batch size.
+- After a transient out-of-memory event the learned batch size is not raised again for the rest of
+  the run, so a run that starts while another process holds VRAM may stay on a smaller batch.
 - Long-video semantic-scene performance benchmarking and hosted CI are deferred.

@@ -219,7 +219,7 @@ python scripts/video_to_zh_srt.py path/to/videos/ \
 ### 桌面 GUI
 
 Windows 用户可从
-[`v0.1.0`](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0)
+[最新 Release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/latest)
 下载绿色版。下载全部 `jp2zh-video-subs-windows-x64-cuda-program.7z.*`
 分卷，放在同一目录并从 `.7z.001` 解压，然后按 Release 内的
 `INSTALL-CN.txt` 使用程序根目录下可迁移的 `hf.cmd` 下载模型。双击

@@ -641,7 +641,20 @@ git diff --check
 | OOM 粘滞退避 | PASS：模拟 GPU 最大批量 6 时，120 条/初始批量 24 的 OOM 次数从 15 降为 2；输出顺序保持不变，后续批次固定使用已验证的 6 |
 | 模型运行状态 | PASS：主流水线和主 GUI 仍只按 `required_files` 判断模型能否推理，不会因非必需文件断点阻止已有模型运行 |
 | 模型下载状态 | PASS：模型管理器和下载队列按全部 `filenames` 判断是否下载完成；required 文件齐全但非必需文件仍有断点时会继续下载，不再静默跳过 |
-| 本轮边界 | 按用户要求仅完成源码修复、测试和提交；不刷新 Windows package，不构建/解压归档，也不发布 GitHub `v0.1.1` |
+| 本轮边界 | 按用户要求仅完成源码修复、测试和提交；不刷新 Windows package，不构建/解压归档，也不发布 GitHub `v0.1.1`（该边界已由 RUN-20260728-24 取消） |
+
+### RUN-20260728-24：v0.1.1 发布准备（源码侧）
+
+| 项目 | 记录值 |
+|---|---|
+| 自动测试 | PASS：`480 passed`；Ruff 通过 |
+| 版本号 | PASS：`scripts/app_version.py` 由 `0.1.1-dev` 提升为 `0.1.1`，`APP_BUILD` 为 `2026.07.28-release`；`test_app_version` 与 `test_gui_window` 的版本断言通过 |
+| 发布说明 | PASS：`packaging/windows/RELEASE_NOTES.md` 重写为 v0.1.1 patch 版，仅列 OOM 粘滞退避与模型下载状态两项修复，并声明无 CLI/配置/输出格式变更 |
+| 文档链接 | PASS：README、README-CN、USAGE 共 5 处 `releases/tag/v0.1.0` 改为 `releases/latest`，后续发版不再需要改文档 |
+| 计划文档 | PASS：删除 `docs/PLAN.md` 中与同文档 Completed 列表第 3 条冲突的 "Planned semantic-scene boundary reconciliation" 残留章节；该功能已由 `_reconcile_semantic_scene_groups` 实现并有 4 项测试覆盖 |
+| Windows package | NOT RUN：本轮未重建绿色包、未构建/解压归档、未做开发路径扫描 |
+| 硬件复跑 | NOT RUN：v0.1.1 改动了 Anime 批处理退避路径，尚未在真实 NVIDIA CUDA 环境复跑完整流程 |
+| GitHub Release | NOT RUN：尚未打 `v0.1.1` tag，未发布 |
 
 ## 14. 当前剩余人工验收
 

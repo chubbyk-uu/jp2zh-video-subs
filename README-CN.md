@@ -5,7 +5,7 @@
 这个项目用于从本地日语视频生成简体中文、繁体中文或实验性英文 SRT，并默认生成“译文在上、日文在下”的双语 ASS。下载好模型后，推理过程全部在本地完成。
 
 Windows 用户建议直接使用
-[`v0.1.0` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0)。
+[最新绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/latest)。
 它已内置程序运行时和 FFmpeg，但不附带第三方模型权重；按 Release 里的
 `INSTALL-CN.txt` 操作，可直接在 GUI 中安装模型，也可使用程序根目录下可迁移的
 `hf.cmd` 手动下载。CLI 仍是完整支持的源码安装与高级用法入口。
@@ -316,7 +316,7 @@ python scripts/video_to_zh_srt.py "/mnt/<drive>/<path-to-videos>"
 ### Windows 绿色版
 
 Windows 上最直接的入口是
-[`v0.1.0` 绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0)：
+[最新绿色版](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/latest)：
 
 1. 下载全部 `jp2zh-video-subs-windows-x64-cuda-program.7z.*` 分卷。
 2. 把所有分卷放在同一目录，用 7-Zip 或 NanaZip 从 `.7z.001` 开始解压。

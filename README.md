@@ -7,7 +7,7 @@ from local Japanese video files and writes a target-language/Japanese bilingual 
 default. Inference runs fully offline after the required models are downloaded.
 
 Windows users can start with the portable desktop GUI in the
-[`v0.1.0` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0).
+[latest release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/latest).
 It bundles the application runtime and FFmpeg, but not third-party model weights; follow
 `INSTALL-EN.txt` or `INSTALL-CN.txt` on the release page. Models can be installed from the GUI,
 or manually with the relocatable root-level `hf.cmd`. The command-line workflow remains fully
@@ -343,7 +343,7 @@ per-script usage, the CUDA check, and troubleshooting, see [docs/USAGE.md](docs/
 ### Windows portable release
 
 The easiest Windows entry point is the portable
-[`v0.1.0` release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/tag/v0.1.0):
+[latest release](https://github.com/chubbyk-uu/jp2zh-video-subs/releases/latest):
 
 1. Download every `jp2zh-video-subs-windows-x64-cuda-program.7z.*` volume.
 2. Put all volumes in one directory and extract `.7z.001` with 7-Zip or NanaZip.
