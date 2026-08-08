@@ -515,7 +515,7 @@ def test_settings_actions_open_config_and_local_guide(tmp_path, monkeypatch):
         window._open_config_folder()
         assert Path(opened[-1].toLocalFile()) == Path(settings.fileName()).resolve().parent
         window._open_user_guide()
-        assert Path(opened[-1].toLocalFile()).name == "README-CN.md"
+        assert Path(opened[-1].toLocalFile()).name == "README.md"
     finally:
         window.close()
 

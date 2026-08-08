@@ -1294,7 +1294,7 @@ class MainWindow(QMainWindow):
         self._update_model_status()
 
     def _open_user_guide(self) -> None:
-        filename = "README-CN.md" if self.language_manager.current_code.startswith("zh") else "README.md"
+        filename = "README.md" if self.language_manager.current_code.startswith("zh") else "README-EN.md"
         candidates = (PROJECT_ROOT / filename, PROJECT_ROOT / "app" / filename)
         guide = next((path for path in candidates if path.is_file()), None)
         if guide is None:

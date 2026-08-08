@@ -1,6 +1,6 @@
 # 识别与翻译后端对比
 
-> 详细文档，仅提供中文。项目总览与上手见 [README-CN.md](../README-CN.md)（中文）/ [README.md](../README.md)（English）。
+> 详细文档，仅提供中文。项目总览与上手见 [README.md](../README.md)（中文）/ [README-EN.md](../README-EN.md)（English）。
 
 用 `--asr` 选识别后端（默认 `anime`），用 `--target-language` 选字幕语言，再由
 `--translator` 选择兼容翻译后端。本文逐项对比两条识别线和三套翻译后端。

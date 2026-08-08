@@ -51,7 +51,7 @@ for catalog in languages.json jp2zh_zh_CN.qm jp2zh_zh_TW.qm; do
 done
 
 install -m 0644 "$source_root/README.md" "$package_root/app/README.md"
-install -m 0644 "$source_root/README-CN.md" "$package_root/app/README-CN.md"
+install -m 0644 "$source_root/README-EN.md" "$package_root/app/README-EN.md"
 install -m 0644 "$source_root/LICENSE" "$package_root/app/LICENSE"
 install -m 0644 "$source_root/LICENSE" "$package_root/LICENSE"
 install -m 0644 "$source_root/packaging/windows/INSTALL-CN.txt" "$package_root/INSTALL-CN.txt"
@@ -67,7 +67,10 @@ install -m 0644 "$source_root/packaging/windows/launch-debug.cmd" "$package_root
 install -m 0644 "$source_root/packaging/windows/launch-env.cmd" "$package_root/launch-env.cmd"
 install -m 0644 "$source_root/packaging/windows/hf.cmd" "$package_root/hf.cmd"
 "$source_root/packaging/windows/build-launcher.sh" "$source_root" "$package_root"
-for legacy_entry in "$package_root/启动字幕工具.cmd" "$package_root/启动字幕工具-调试.cmd"; do
+for legacy_entry in \
+    "$package_root/启动字幕工具.cmd" \
+    "$package_root/启动字幕工具-调试.cmd" \
+    "$package_root/app/README-CN.md"; do
     if [[ -e "$legacy_entry" ]]; then
         unlink "$legacy_entry"
     fi

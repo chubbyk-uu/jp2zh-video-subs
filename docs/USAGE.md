@@ -1,6 +1,6 @@
 # 使用详解：配置、默认行为、常用参数、单步运行与排障
 
-> 详细文档，仅提供中文。项目总览与上手见 [README-CN.md](../README-CN.md)（中文）/ [README.md](../README.md)（English）。后端逐项对比见 [BACKENDS.md](BACKENDS.md)。
+> 详细文档，仅提供中文。项目总览与上手见 [README.md](../README.md)（中文）/ [README-EN.md](../README-EN.md)（English）。后端逐项对比见 [BACKENDS.md](BACKENDS.md)。
 
 ## 配置文件
 
@@ -456,7 +456,7 @@ Missing Qwen forced aligner: .../models/Qwen3-ForcedAligner-0.6B
 Missing GalTransl model: .../models/Sakura-GalTransl-7B-v3.7-GGUF/Sakura-Galtransl-7B-v3.7.gguf
 ```
 
-按 [README-CN.md 的下载模型](../README-CN.md#下载模型) 一节重新下载，并确认目录名和文件名没有改动。默认主线需要 anime-whisper、
+按 [README.md 的下载模型](../README.md#下载模型) 一节重新下载，并确认目录名和文件名没有改动。默认主线需要 anime-whisper、
 WhisperSeg、Qwen forced aligner 和 GalTransl；Qwen ASR 模型只在 `--asr qwen` 时需要；
 Sakura 模型只在 `--translator sakura` 时需要；Sugoi 模型只在英文目标时需要。OpenCC
 是程序依赖，不是模型，源码安装随 `requirements.txt` 安装，Windows 绿色包会直接内置。
