@@ -140,18 +140,19 @@ def translate_with_retry(
         retried = translate_one(llm, text, [], glossary, frequency_penalty=0.3, temperature=0.7)
         if retried and not KANA_RE.search(retried):
             translated = retried
-    # Glossary violation: retry standalone with only the violated terms so a competing
-    # longer/shorter rule cannot pull the model back to the wrong rendering. If the
-    # model still violates a simple terminology replacement, apply the exact forbidden
-    # rendering deterministically; this catches bare 主人 -> 丈夫 while preserving
-    # ご主人様 -> 主人 through longest-match term selection.
+    # Forbidden renderings are review signals, not interchangeable word pairs.
+    # Keep an unresolved translation for the terms report instead of replacing
+    # arbitrary substrings (e.g. 缔结 -> 合同 would corrupt 缔结契约).
     issues = glossary_issues(text, translated, glossary)
     if issues:
         retried = translate_one(llm, text, [], tuple(issues))
-        if retried and not glossary_issues(text, retried, glossary):
+        if (
+            retried
+            and not KANA_RE.search(retried)
+            and not looks_degenerate(text, retried)
+            and not glossary_issues(text, retried, glossary)
+        ):
             translated = retried
-        else:
-            translated = apply_glossary_replacements(translated, issues)
     return translated
 
 
@@ -167,34 +168,13 @@ def union_terms(src_lines: list[str], glossary: tuple[GlossaryTerm, ...]) -> tup
     return tuple(terms)
 
 
-def merge_two_line_overflow(lines: list[str], src_lines: list[str]) -> list[str] | None:
-    """Rescue the common 2->3 split by folding extra output into the second cue."""
-    if len(src_lines) != 2 or len(lines) != 3:
-        return None
-    return [lines[0], "".join(lines[1:])]
-
-
-def apply_glossary_replacements(text: str, issues: list[GlossaryTerm]) -> str:
-    fixed = text
-    for term in issues:
-        for forbidden in term.forbidden:
-            fixed = fixed.replace(forbidden, term.target)
-    return fixed
-
-
 def validate_block_lines(
     src_lines: list[str],
     lines: list[str],
     glossary: tuple[GlossaryTerm, ...] = (),
 ) -> BlockTranslation:
     if len(lines) != len(src_lines):
-        merged = merge_two_line_overflow(lines, src_lines)
-        if merged is None:
-            return BlockTranslation(None, f"line-count:{len(src_lines)}->{len(lines)}")
-        merged_result = validate_block_lines(src_lines, merged, glossary)
-        if merged_result.lines is not None:
-            return BlockTranslation(merged_result.lines, "accepted-2to3")
-        return merged_result
+        return BlockTranslation(None, f"line-count:{len(src_lines)}->{len(lines)}")
     checked: list[str | None] = []
     rejected_reasons: list[str] = []
     for source, line in zip(src_lines, lines):

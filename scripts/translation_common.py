@@ -107,21 +107,31 @@ def glossary_issues(source: str, translated: str, glossary: tuple[GlossaryTerm, 
     return issues
 
 
-def clean_translation(text: str) -> str:
+def clean_translation(text: str, *, line_separator: str = "") -> str:
+    """Unwrap one cue and preserve its entire body, or reject ambiguous structure.
+
+    Batch callers must split/validate cue boundaries before calling this helper.
+    An empty result follows the translators' existing retry path.
+    """
     text = text.strip()
-    text = re.sub(r"^<target>|</target>$", "", text).strip()
-    text = re.sub(r"^```(?:\w+)?|```$", "", text).strip()
-    text = re.sub(r"^(翻译结果[:：]\s*)", "", text).strip()
-    text = re.sub(r"^译文[:：]\s*", "", text).strip()
-    target_match = re.search(r"<target>(.*?)</target>", text, flags=re.S)
-    if target_match:
-        text = target_match.group(1).strip()
-    current_match = re.search(r"<current>(.*?)</current>", text, flags=re.S)
-    if current_match:
-        text = current_match.group(1).strip()
-    text = re.sub(r"</?current>", "", text).strip()
-    text = re.sub(r"</?context>", "", text).strip()
-    return text.splitlines()[0].strip() if text else ""
+    fence = re.fullmatch(r"```[^\n]*\n(.*?)\n```", text, flags=re.S)
+    if fence:
+        text = fence.group(1).strip()
+    for tag in ("target", "current"):
+        matches = re.findall(rf"<{tag}>(.*?)</{tag}>", text, flags=re.S)
+        if len(matches) > 1:
+            return ""
+        if matches:
+            text = matches[0].strip()
+            break
+    text = re.sub(r"^(?:翻译结果|译文)[:：]\s*", "", text).strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if any(re.match(
+        r"(?:\[\d+\]|\d+(?:[.)]\s+|、)|(?:解释|说明|翻译说明|Explanation|Translation notes)[:：]|```|</?(?:target|current|context)>)",
+        line, flags=re.I,
+    ) for line in lines):
+        return ""
+    return line_separator.join(lines)
 
 
 def normalize_source(text: str) -> str:

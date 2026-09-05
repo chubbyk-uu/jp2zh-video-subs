@@ -1,6 +1,5 @@
 from translate_srt_galtransl import (
     GALTRANSL_SYSTEM,
-    apply_glossary_replacements,
     build_messages,
     build_user_prompt,
     glossary_block,
@@ -9,6 +8,7 @@ from translate_srt_galtransl import (
     translate_block,
     translate_block_adaptive,
     translate_block_checked,
+    translate_with_retry,
     union_terms,
 )
 from translation_common import DEFAULT_GLOSSARY, GlossaryTerm, glossary_issues
@@ -58,10 +58,20 @@ def test_translate_block_rejects_line_count_mismatch():
     assert translate_block(_StubLlm("甲\n乙\n丙\n丁"), ["a", "b", "c"], [], ()) is None
 
 
-def test_translate_block_checked_rescues_two_to_three_split():
+def test_translate_block_checked_rejects_two_to_three_split():
     result = translate_block_checked(_StubLlm("甲\n乙\n丙"), ["a", "b"], [], ())
-    assert result.lines == ["甲", "乙丙"]
-    assert result.reason == "accepted-2to3"
+    assert result.lines is None
+    assert result.reason == "line-count:2->3"
+
+
+def test_two_cue_overflow_requires_individual_fallback():
+    for raw in ("今天下雨，\n但我还是要出门。\n明天休息。", "今天下雨，但我还是要出门。\n明天\n休息。"):
+        llm = _QueueLlm([raw])
+        lines, _ = translate_block_adaptive(
+            llm, ["今日は雨ですが、出かけます。", "明日は休みです。"], [], (), context_size=2
+        )
+        assert lines == [None, None]
+        assert llm.calls == 1
 
 
 def test_translate_block_checked_rejects_three_to_two_mismatch():
@@ -196,10 +206,18 @@ def test_default_glossary_keeps_goshujinsama_as_master():
     assert not glossary_issues("ご主人様、おはよう", "主人，早上好", DEFAULT_GLOSSARY)
 
 
-def test_apply_glossary_replacements_fixes_bare_shujin_violation():
-    issues = glossary_issues("主人が待ってるんです", "主人在等我", DEFAULT_GLOSSARY)
+def test_unresolved_glossary_violation_is_preserved_for_report():
+    llm = _QueueLlm(["缔结契约。", "缔结契约。"])
+    translated = translate_with_retry(llm, "契約を結ぶ。")
+    assert translated == "缔结契约。"
+    assert glossary_issues("契約を結ぶ。", translated, DEFAULT_GLOSSARY)
 
-    assert apply_glossary_replacements("主人在等我", issues) == "丈夫在等我"
+
+def test_glossary_retry_accepts_valid_translation_only():
+    for retry in ("签合同。", "契約です", "合" * 100):
+        llm = _QueueLlm(["缔结契约。", retry])
+        translated = translate_with_retry(llm, "契約を結ぶ。")
+        assert translated == (retry if retry == "签合同。" else "缔结契约。")
 
 
 def test_relevant_terms_skips_unmatched():

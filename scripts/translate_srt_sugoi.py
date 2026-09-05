@@ -18,7 +18,7 @@ from pipeline_configs import (
     validate_translation_config,
 )
 from target_languages import TargetLanguage, resolve_translation_settings
-from translation_common import HISTORY_RESET_SECONDS, parse_srt, write_entry
+from translation_common import HISTORY_RESET_SECONDS, clean_translation, parse_srt, write_entry
 
 
 PROJECT_ROOT = project_root(Path(__file__))
@@ -92,9 +92,9 @@ def translate_one(llm: Llama, source: str) -> str:
         "Translate only this Japanese subtitle into English:\n" + source,
     )
     for prompt in prompts:
-        translated = completion(llm, prompt, 512)
+        translated = clean_translation(completion(llm, prompt, 512), line_separator=" ")
         if safe_translation(source, translated):
-            return translated.splitlines()[0].strip()
+            return translated
     numbered = completion(llm, numbered_prompt([source]), 512)
     lines = parse_numbered_output(numbered, 1)
     if lines and safe_translation(source, lines[0]):

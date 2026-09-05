@@ -555,6 +555,24 @@ def test_translation_provenance_rejects_same_cue_count_with_changed_source(tmp_p
     assert not translation_provenance_matches(path, args, ja, output)
 
 
+@pytest.mark.parametrize("translator,old_schema", [
+    ("galtransl", "galtransl-v3-project-1"),
+    ("sakura", "sakura-v1-project-1"),
+    ("sugoi", "sugoi-numbered-batch-1"),
+])
+def test_translation_resume_rejects_pre_fix_processing(tmp_path, translator, old_schema):
+    import argparse
+
+    path = tmp_path / "translation.json"
+    args = argparse.Namespace(translator=translator, target_language="en" if translator == "sugoi" else "zh-Hans")
+    write_translation_provenance(path, args)
+    assert translation_provenance_matches(path, args)
+    payload = json.loads(path.read_text())
+    payload["translator_prompt_schema"] = old_schema
+    path.write_text(json.dumps(payload))
+    assert not translation_provenance_matches(path, args)
+
+
 def test_audio_provenance_rejects_replaced_input_or_audio(tmp_path):
     video = tmp_path / "sample.mp4"
     audio = tmp_path / "sample.wav"
@@ -595,6 +613,12 @@ def test_asr_provenance_rejects_config_change(tmp_path, monkeypatch):
     args = argparse.Namespace(asr="qwen", language="ja", min_cue_seconds=0.3)
     write_asr_provenance(manifest, args, audio, ja, meta)
     assert asr_provenance_matches(manifest, args, audio, ja, meta)
+
+    old_payload = json.loads(manifest.read_text())
+    old_payload.pop("processing_schema")
+    manifest.write_text(json.dumps(old_payload))
+    assert not asr_provenance_matches(manifest, args, audio, ja, meta)
+    write_asr_provenance(manifest, args, audio, ja, meta)
 
     args.qwen_batch_size = 8
     assert not asr_provenance_matches(manifest, args, audio, ja, meta)

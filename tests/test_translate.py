@@ -29,8 +29,26 @@ def test_clean_translation_strips_tags_and_labels():
     assert clean_translation("```\n你好\n```") == "你好"
 
 
-def test_clean_translation_keeps_first_line_only():
-    assert clean_translation("你好\n世界") == "你好"
+def test_clean_translation_preserves_all_body_lines():
+    for raw in (
+        "今天下雨。\n明天再去吧。",
+        "```text\n今天下雨。\n明天再去吧。\n```",
+        "<target>今天下雨。\n明天再去吧。</target>",
+        "<context>此前的对话</context>\n<current>今天下雨。\n明天再去吧。</current>",
+    ):
+        assert clean_translation(raw) == "今天下雨。明天再去吧。"
+
+
+def test_clean_translation_rejects_ambiguous_explanations_and_numbering():
+    for raw in ("你好。\n解释：这是问候语。", "[001] 你好\n[002] 世界", "<target>甲</target><target>乙</target>"):
+        assert clean_translation(raw) == ""
+
+
+def test_clean_translation_keeps_decimal_numbers():
+    assert clean_translation("3.14 是圆周率的近似值。") == "3.14 是圆周率的近似值。"
+    assert clean_translation("3.14 is an approximation.\nUse it here.", line_separator=" ") == (
+        "3.14 is an approximation. Use it here."
+    )
 
 
 def test_is_context_sensitive_short_text():

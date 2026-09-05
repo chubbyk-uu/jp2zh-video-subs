@@ -34,8 +34,10 @@ def _extract_features(audio: np.ndarray, sr: int, chunk_dur: int = 60) -> Tuple[
     block = int(chunk_dur * sr)
     min_samples = _HOP * 10
     feats: List[np.ndarray] = []
+    timestamps: List[np.ndarray] = []
     for i in range(0, len(audio), block):
         y = audio[i : i + block]
+        real_samples = len(y)
         if len(y) < min_samples:
             y = np.pad(y, (0, min_samples - len(y)), mode="constant")
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=_N_MFCC)
@@ -45,9 +47,18 @@ def _extract_features(audio: np.ndarray, sr: int, chunk_dur: int = 60) -> Tuple[
         contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
         chroma = librosa.feature.chroma_stft(y=y, sr=sr)
         chroma_std = np.std(chroma, axis=0, keepdims=True)
-        feats.append(np.vstack([mfcc, delta, rms, zcr, contrast, chroma_std]))
+        features = np.vstack([mfcc, delta, rms, zcr, contrast, chroma_std])
+        # Each centered STFT includes its block's endpoint. Do not count that
+        # endpoint twice or treat short-tail padding as real audio. Build times
+        # from the actual block offset, never the concatenated frame count.
+        sample_offsets = np.arange(features.shape[1]) * _HOP
+        valid = sample_offsets < real_samples
+        feats.append(features[:, valid])
+        timestamps.append((i + sample_offsets[valid]) / sr)
+    if not feats:
+        return np.empty((36, 0)), np.empty(0)
     full = np.hstack(feats)
-    times = librosa.frames_to_time(np.arange(full.shape[1]), sr=sr, hop_length=_HOP)
+    times = np.concatenate(timestamps)
     return full, times
 
 

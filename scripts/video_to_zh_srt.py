@@ -307,9 +307,9 @@ def translation_provenance(
         "stage": "translation",
         "translator": translator,
         "translator_prompt_schema": {
-            "galtransl": "galtransl-v3-project-1",
-            "sakura": "sakura-v1-project-1",
-            "sugoi": "sugoi-numbered-batch-1",
+            "galtransl": "galtransl-v3-project-2",
+            "sakura": "sakura-v1-project-2",
+            "sugoi": "sugoi-numbered-batch-2",
         }.get(translator, "unknown"),
         "target_language": target,
         "context_size": settings.context_size,
@@ -404,6 +404,7 @@ def asr_provenance(
     payload: dict[str, object] = {
         "schema": MANIFEST_SCHEMA,
         "stage": "asr",
+        "processing_schema": "asr-scene-timestamps-2",
         "backend": args.asr,
         "settings": asdict(cfg),
         "input": hashed_output_identity(audio),

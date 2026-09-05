@@ -117,7 +117,12 @@ def translate_with_retry(
     # the matched term; dropping history removes competing context.
     if glossary_issues(text, translated, glossary):
         retried = translate_one(llm, text, [], glossary)
-        if retried and not glossary_issues(text, retried, glossary):
+        if (
+            retried
+            and not KANA_RE.search(retried)
+            and not looks_degenerate(text, retried)
+            and not glossary_issues(text, retried, glossary)
+        ):
             translated = retried
     return translated
 
