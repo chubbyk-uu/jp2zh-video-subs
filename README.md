@@ -10,6 +10,11 @@ Windows 用户建议直接使用
 `INSTALL-CN.txt` 操作，可直接在 GUI 中安装模型，也可使用程序根目录下可迁移的
 `hf.cmd` 手动下载。CLI 仍是完整支持的源码安装与高级用法入口。
 
+![Windows GUI 简体中文主界面：任务队列、模型与字幕语言选择、运行设备和常用设置](docs/images/gui-zh-cn.png)
+
+Windows 主界面：拖入视频或文件夹，选择字幕语言与模型，即可开始处理。截图使用空任务列表及
+`outputs` / `work` 示例相对路径，不含个人文件或历史日志。操作步骤见[桌面 GUI](#桌面-gui)。
+
 项目提供两套识别后端，用 `--asr` 选择：
 
 - **`anime`（默认）**——用 `litagin/anime-whisper` 出文本，WhisperSeg 做弱语音切分，semantic scene 做场景边界，默认使用 Qwen forced aligner 定时，并在整段或局部对齐坍缩时自动回退 VAD 时间。它是当前 JAV/anime 风格素材的推荐主线。

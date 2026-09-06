@@ -13,6 +13,12 @@ It bundles the application runtime and FFmpeg, but not third-party model weights
 or manually with the relocatable root-level `hf.cmd`. The command-line workflow remains fully
 supported for source installations and advanced use.
 
+![Windows GUI in English: task queue, model and subtitle-language selection, device status, and common settings](docs/images/gui-en.png)
+
+Windows GUI: drop in videos or folders, choose the subtitle language and models, then start processing.
+The screenshot uses an empty queue and example relative paths (`outputs` / `work`), with no personal files
+or historical logs. See [Desktop GUI](#desktop-gui) for instructions.
+
 It ships two transcription backends, selectable with `--asr`:
 
 - **`anime` (default)** — `litagin/anime-whisper` for text, WhisperSeg for weak-speech framing, semantic scene boundaries, and Qwen forced alignment with automatic VAD fallback. This is the recommended main line for the current JAV/anime-style material.
