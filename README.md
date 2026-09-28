@@ -389,6 +389,8 @@ ASS 里的日文只按字幕序号对齐贡献文本。
 - [docs/GUI_TEST_PLAN.md](docs/GUI_TEST_PLAN.md) — GUI 可执行测试矩阵、Windows 绿色版验收用例，以及运行/缺陷记录模板。
 - [docs/MODEL_EVALUATION_PLAN.md](docs/MODEL_EVALUATION_PLAN.md) — 质量评估改进与模型对照测试计划：先验证评估方法，再比较模型，最后验证 Windows。
 - [docs/MODEL_EVALUATION_PROGRESS_20260928.md](docs/MODEL_EVALUATION_PROGRESS_20260928.md) — 首轮 10 段试样实施结果、候选模型对照及结论边界；不作为全片准确率排名。
+- [docs/MODEL_EVALUATION_EXPANSION_20260928.md](docs/MODEL_EVALUATION_EXPANSION_20260928.md) — 困难对白扩展首批：锁定分组、选样证据、弃用原因与测试限制。
+- [docs/MODEL_EVALUATION_DECISION_20260928.md](docs/MODEL_EVALUATION_DECISION_20260928.md) — 20 段普通／困难混合对照结论：候选暂不替换默认；区分上下文收益、错误传播及运行成本。
 
 ## 测试
 

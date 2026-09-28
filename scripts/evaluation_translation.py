@@ -6,6 +6,39 @@ import json
 from evaluation_core import validate_translation_ids
 
 
+def select_translation_input(sample: dict, policy: str = "reviewed-window") -> tuple[list[dict], list[dict]]:
+    """Keep scored cues fixed; require a reviewed, contiguous multi-cue input."""
+    entries = sample["entries"]
+    focus = [entry for entry in entries if entry["in_focus"]]
+    if (not sample["standard_sample_accepted"] or not focus
+            or any(not entry["translation_eligible"] for entry in focus)):
+        raise ValueError(f"{sample['id']}: uncertain/empty focus")
+    if policy == "focus-only":
+        return focus, focus
+    if policy != "reviewed-window":
+        raise ValueError("unknown translation context policy")
+    review = sample.get("translation_context_review", {})
+    if (review.get("complete_dialogue_window") is not True
+            or not isinstance(review.get("reason"), str) or not review["reason"].strip()):
+        raise ValueError(f"{sample['id']}: reviewed dialogue context required")
+    ids = review.get("cue_ids")
+    all_ids = [entry["id"] for entry in entries]
+    if (not isinstance(ids, list) or len(ids) < 3 or any(not isinstance(id_, str) for id_ in ids)
+            or len(set(ids)) != len(ids) or len(set(all_ids)) != len(all_ids)
+            or not set(ids) <= set(all_ids)):
+        raise ValueError(f"{sample['id']}: at least three unique context cue IDs required")
+    positions = [all_ids.index(id_) for id_ in ids]
+    if positions != list(range(positions[0], positions[0] + len(ids))):
+        raise ValueError(f"{sample['id']}: context must be contiguous and ordered; do not skip uncertain dialogue")
+    context = entries[positions[0]:positions[-1] + 1]
+    if not {entry["id"] for entry in focus} <= set(ids):
+        raise ValueError(f"{sample['id']}: context must include every focus cue")
+    if any(not entry["translation_eligible"] or entry["status"] not in ("text_clear", "high_confidence_change")
+           for entry in context):
+        raise ValueError(f"{sample['id']}: uncertain background inside translation context; select another sample")
+    return context, focus
+
+
 def asmr_prompt(entries: list[dict], sample_id: str) -> str:
     rows = [{"id": int(e["id"]), "text": e["ja"], "start": round(e["start_s"] * 1000),
              "end": round(e["end_s"] * 1000)} for e in entries]

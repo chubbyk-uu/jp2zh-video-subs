@@ -119,14 +119,17 @@ def prepare(config_path: Path, output: Path, seed: int, clip_seconds: float, con
             subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-n", "-ss", str(context_start),
                             "-i", str(video), "-t", str(context_end - context_start), "-map", "0:a:0",
                             "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(audio)], check=True)
-            sample = {"id": sample_id, "video_id": video_id, "split": "development",
+            sample = {"id": sample_id, "video_id": video_id, "split": selection.get("split", "development") if explicit is not None else "development",
                       "random_anchor_s": anchor, "subtitle_snap_s": start + 2 - anchor if selected else None,
                       "start_s": start, "end_s": end, "context_start_s": context_start, "context_end_s": context_end,
                       "audio": str(audio.relative_to(output)), "audio_sha256": file_digest(audio),
                       "labels": ["time_stratified", "acoustic_difficulty_unverified"], "existing_outputs": {}}
             if explicit is not None:
-                sample["labels"] = ["curated_replacement", "acoustic_difficulty_unverified"]
+                sample["labels"] = selection.get("labels", ["curated_replacement", "acoustic_difficulty_unverified"])
                 sample["selection_reason"] = selection["reason"]
+                for key in ("scene_group", "scene_grouping_evidence", "temporal_group", "random_anchor_s", "anchor_snap_s"):
+                    if key in selection:
+                        sample[key] = selection[key]
             for name, (cues, _) in subtitles.items():
                 context = excerpt(cues, context_start, context_end)
                 path = directory / f"existing-{name}.srt"
@@ -135,10 +138,14 @@ def prepare(config_path: Path, output: Path, seed: int, clip_seconds: float, con
                                                     "cues": cues_as_dicts(context), "evidence": "model_output"}
             manifest["samples"].append(sample)
             print(f"{sample_id}: {start:.2f}–{end:.2f}s; context WAV ready", flush=True)
-    if any(source.get("selections") is not None for source in config["sources"]):
-        manifest["sampling_limitations"].append("curated replacements prioritize interpretable dialogue; no population accuracy inference")
+    if all(source.get("selections") is not None for source in config["sources"]):
+        manifest["status"] = "explicit_selection_candidates"
+        manifest["sampling_limitations"][0] = "explicit windows from supplied config; inspect selection reasons and split evidence"
+        manifest["sampling_limitations"].append("dialogue selection may favor interpretable text; no population accuracy inference")
     manifest["fingerprint"] = cache_fingerprint({"sources": manifest["sources"], "seed": seed,
                                                   "sample_windows": [(s["id"], s["start_s"], s["end_s"]) for s in manifest["samples"]],
+                                                  "sample_splits": [(s["id"], s["split"], s.get("scene_group")) for s in manifest["samples"]],
+                                                  "source_config_sha256": file_digest(config_path),
                                                   "clip_seconds": clip_seconds, "context_seconds": context_seconds})
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     with wave.open(str(output / "pilot.wav"), "wb") as combined:

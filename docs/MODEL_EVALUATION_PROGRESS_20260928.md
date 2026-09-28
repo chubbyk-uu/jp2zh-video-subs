@@ -2,6 +2,8 @@
 
 日期：2026-09-28。状态：Linux 首轮试样与模型对照完成；扩展集尚未开始，不是最终选型报告。
 
+以上是首轮结束时的状态；后续扩展进度见[困难对白扩展首批](MODEL_EVALUATION_EXPANSION_20260928.md)。
+
 对应计划：[字幕质量评估改进与模型对照测试计划](MODEL_EVALUATION_PLAN.md)。公开记录仅使用 V01–V04；素材、路径、逐句文本、模型原始输出与弃用原因保存在被 Git 忽略的本地实验目录，不上传素材或字幕。
 
 ## 已完成的评估修正
@@ -77,7 +79,7 @@ HF/LoRA 配对计时仅包括加载与转写，不包括 VAD、对齐及其他�
 - [build_evaluation_packet.py](../scripts/build_evaluation_packet.py)、[freeze_evaluation_reference.py](../scripts/freeze_evaluation_reference.py)：整理原稿与证据，拒绝关键未决/空区间成为标准试样，冻结而不覆盖参考。
 - [fetch_evaluation_models.py](../scripts/fetch_evaluation_models.py)：固定候选 revision，只下载推理文件并验摘要。
 - [run_evaluation_hf_asr.py](../scripts/run_evaluation_hf_asr.py)、[align_evaluation_hf_asr.py](../scripts/align_evaluation_hf_asr.py)：在隔离的原生 Transformers 环境做 HF/LoRA 配对，再用原有环境进行对齐后处理。隔离环境为 Transformers 5.17.0、PEFT 0.21.0，共享本机 Torch 2.12.0+cu130；没有升级项目原有生产环境。
-- [run_evaluation_translation.py](../scripts/run_evaluation_translation.py)：读取单份冻结参考或跨轮选样清单，保持固定日文，运行 GalTransl/ASMR 对照及结构校验。
+- [run_evaluation_translation.py](../scripts/run_evaluation_translation.py)：读取单份冻结参考或跨轮选样清单，保持固定日文，运行 GalTransl/ASMR 对照及结构校验。后续已将默认输入改为已校对的连续上下文；复现本首轮的局部重点输入须显式使用 `--context-policy focus-only`，仅作局部诊断，不代表正式上下文对照。
 - [build_translation_review.py](../scripts/build_translation_review.py)：要求三组输入日文相同、输出完整，生成本地匿名列对照页并另存私有映射及输入摘要。
 - [evaluate_subtitles.py](../scripts/evaluate_subtitles.py)：证据明确的短片 SRT 对照，含 JSON 与本地 HTML；[用法](USAGE.md#单步运行)。
 

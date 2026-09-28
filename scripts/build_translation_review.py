@@ -30,6 +30,13 @@ def render_review(results: dict[str, dict], seed: int = 20260928) -> tuple[str, 
         source = sample["fixed_source"]
         if any(samples[sample_id]["fixed_source"] != source for samples in indexed.values()):
             raise ValueError(f"{sample_id}: fixed Japanese sources differ")
+        context = sample.get("translation_input", source)
+        source_mode = sample.get("source_mode", "reviewed")
+        if any(samples[sample_id].get("translation_input", samples[sample_id]["fixed_source"]) != context
+               or samples[sample_id].get("context_policy") != sample.get("context_policy")
+               or samples[sample_id].get("source_mode", "reviewed") != source_mode
+               for samples in indexed.values()):
+            raise ValueError(f"{sample_id}: translation contexts differ")
         names = list(results)
         rng.shuffle(names)
         mappings[sample_id] = dict(zip((chr(65 + i) for i in range(len(names))), names))
@@ -44,11 +51,16 @@ def render_review(results: dict[str, dict], seed: int = 20260928) -> tuple[str, 
                     by_id.setdefault(id_, []).append(prefix + (record["text"] if record["text"] is not None else "[显式删除，需复核]"))
             columns.append(by_id)
         rows = []
-        for entry in source:
-            cells = [entry["id"], entry["ja"], entry["zh"],
+        focus_ids = {entry["id"] for entry in source}
+        for entry in context:
+            label = "重点" if entry["id"] in focus_ids else "背景，不评分"
+            cells = [f"{entry['id']} [{label}]", entry["ja"],
+                     *([entry["reviewed_ja"]] if source_mode == "raw-asr" else []), entry["zh"],
                      *(" | ".join(column.get(entry["id"], ["[未覆盖 ID]"])) for column in columns)]
             rows.append("<tr>" + "".join(f"<td>{html.escape(value)}</td>" for value in cells) + "</tr>")
-        headers = ["源 ID", "冻结日文", "参考中文（允许其他正确表达）", *(chr(65 + i) for i in range(len(names)))]
+        headers = ["源 ID", "原始 ASR 输入（非真值）" if source_mode == "raw-asr" else "冻结日文",
+                   *(["上下文校对日文（未听音核对）"] if source_mode == "raw-asr" else []),
+                   "参考中文（允许其他正确表达）", *(chr(65 + i) for i in range(len(names)))]
         sections.append(f"<h2>{html.escape(sample_id)}</h2><table><thead><tr>"
                         + "".join(f"<th>{html.escape(value)}</th>" for value in headers)
                         + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")

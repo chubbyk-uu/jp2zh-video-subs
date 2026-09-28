@@ -108,6 +108,54 @@ def test_freeze_accepts_clear_focus_but_does_not_score_unreviewed_background(tmp
     assert not result["audio_verified"]
 
 
+def test_freeze_preserves_heldout_group_and_its_evidence_limit(tmp_path):
+    path, _ = reference_fixture(tmp_path, "text_clear")
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["samples"][0].update(split="heldout", video_id="V01", scene_group="V01-T04",
+                                  scene_grouping_evidence="temporal_proxy_pending_context_review")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    freeze(tmp_path, path, require_clear_focus=True)
+    sample = json.loads((tmp_path / "reference-v1/reference.json").read_text(encoding="utf-8"))["samples"][0]
+    assert sample["split"] == "heldout"
+    assert sample["scene_group"] == "V01-T04"
+    assert sample["scene_grouping_evidence"] == "temporal_proxy_pending_context_review"
+    assert not sample["audio_verified"]
+
+
+def test_context_freeze_rejects_missing_review_without_overwriting_v1(tmp_path):
+    path, _ = reference_fixture(tmp_path, "text_clear")
+    freeze(tmp_path, path, require_clear_focus=True)
+    with pytest.raises(ValueError, match="reviewed dialogue context required"):
+        freeze(tmp_path, path, require_clear_focus=True, version="reference-v2", require_translation_context=True)
+    assert (tmp_path / "reference-v1/reference.json").exists()
+    assert not (tmp_path / "reference-v2").exists()
+
+
+def test_freeze_records_continuous_reviewed_context_without_scoring_background(tmp_path):
+    path, decisions = reference_fixture(tmp_path, "text_clear")
+    for name in ("primary", "alternate"):
+        subtitle = tmp_path / "runs" / name / "V01-P01.srt"
+        subtitle.write_text(subtitle.read_text(encoding="utf-8") + "\n3\n00:00:03,100 --> 00:00:04,000\n後文\n", encoding="utf-8")
+    decisions["samples"]["V01-P01"].update({"1": {"status": "text_clear", "zh": "前文"},
+                                             "3": {"status": "text_clear", "zh": "后文"}})
+    decisions["context_reviews"] = {"V01-P01": {"cue_ids": ["1", "2", "3"],
+                                               "complete_dialogue_window": True, "reason": "完整问答"}}
+    path.write_text(json.dumps(decisions), encoding="utf-8")
+    freeze(tmp_path, path, version="reference-v2", require_translation_context=True)
+    result = json.loads((tmp_path / "reference-v2/reference.json").read_text(encoding="utf-8"))
+    assert result["version"] == "reference-v2"
+    assert result["samples"][0]["translation_context_review"]["cue_ids"] == ["1", "2", "3"]
+    assert result["samples"][0]["focus_cue_ids"] == ["2"]
+
+
+@pytest.mark.parametrize("version", ["../elsewhere", "reference-v0", "other"])
+def test_reference_version_is_a_safe_immutable_name(tmp_path, version):
+    path, _ = reference_fixture(tmp_path, "text_clear")
+    with pytest.raises(ValueError, match="version must be"):
+        freeze(tmp_path, path, version=version)
+
+
 @pytest.mark.parametrize("status", ["possible", "unresolved"])
 def test_freeze_rejects_uncertain_focus_and_preserves_candidate_for_reselection(tmp_path, status):
     path, _ = reference_fixture(tmp_path, status)

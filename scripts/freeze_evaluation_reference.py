@@ -4,17 +4,20 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
 from evaluation_core import Cue, cache_fingerprint, load_subtitles
+from evaluation_translation import select_translation_input
 from prepare_evaluation_samples import write_srt
 
 STATUSES = {"text_clear", "high_confidence_change", "possible", "unresolved"}
 EVIDENCE_FIELDS = {"raw", "proposal", "source_trace", "original_failure", "context", "alternatives"}
 
 
-def freeze(pilot: Path, decisions_path: Path, require_clear_focus: bool = False, selected_samples: list[str] | None = None):
+def freeze(pilot: Path, decisions_path: Path, require_clear_focus: bool = False, selected_samples: list[str] | None = None,
+           version: str = "reference-v1", require_translation_context: bool = False):
     decisions = json.loads(decisions_path.read_text(encoding="utf-8"))
     manifest = json.loads((pilot / "manifest.json").read_text(encoding="utf-8"))
     available = {sample["id"] for sample in manifest["samples"]}
@@ -23,9 +26,11 @@ def freeze(pilot: Path, decisions_path: Path, require_clear_focus: bool = False,
             raise ValueError("selected sample IDs must be nonempty and unique")
         if set(selected_samples) - available:
             raise ValueError(f"unknown sample IDs: {sorted(set(selected_samples) - available)}")
-    directory = pilot / "reference-v1"
+    if not re.fullmatch(r"reference-v[1-9][0-9]*", version):
+        raise ValueError("version must be reference-vN")
+    directory = pilot / version
     if directory.exists():
-        raise ValueError("reference-v1 already exists; do not overwrite a frozen reference")
+        raise ValueError(f"{version} already exists; do not overwrite a frozen reference")
     records, counts, hashes = [], Counter(), {}
     for sample in manifest["samples"]:
         sample_id = sample["id"]
@@ -69,18 +74,29 @@ def freeze(pilot: Path, decisions_path: Path, require_clear_focus: bool = False,
         if require_clear_focus and not accepted:
             raise ValueError(f"{sample_id}: uncertain/empty focus; discard and select a replacement before freezing")
         records.append({"id": sample_id, "reference_kind": "context_reviewed", "audio_verified": False,
+                        "split": sample.get("split", "development"), "video_id": sample.get("video_id"),
+                        "scene_group": sample.get("scene_group"),
+                        "scene_grouping_evidence": sample.get("scene_grouping_evidence"),
                         "standard_sample_accepted": accepted, "focus_cue_ids": [e["id"] for e in focus],
                         "boundaries_verified": False, "primary_sha256": source.sha256,
                         "alternate_sha256": alternate.sha256, "entries": entries,
                         "alternate_only_items": [g for g in json.loads((pilot / "review" / f"{sample_id}.json").read_text(encoding="utf-8"))["groups"]
                                                  if g["status"] == "extra_candidate_text"]})
+        context_review = decisions.get("context_reviews", {}).get(sample_id)
+        if context_review is not None:
+            records[-1]["translation_context_review"] = context_review
+            select_translation_input(records[-1])
+        elif require_translation_context:
+            raise ValueError(f"{sample_id}: reviewed dialogue context required")
         hashes[sample_id] = {"primary": source.sha256, "alternate": alternate.sha256}
     if not records:
         raise ValueError("no reference samples selected")
     fingerprint = cache_fingerprint({"decisions_sha256": hashlib.sha256(decisions_path.read_bytes()).hexdigest(),
-                                     "input_hashes": hashes, "manifest_fingerprint": manifest["fingerprint"]})
+                                     "input_hashes": hashes, "manifest_fingerprint": manifest["fingerprint"],
+                                     "manifest_sha256": hashlib.sha256((pilot / "manifest.json").read_bytes()).hexdigest(),
+                                     "version": version, "require_translation_context": require_translation_context})
     directory.mkdir(parents=True)
-    reference = {"schema_version": 1, "version": "reference-v1", "fingerprint": fingerprint,
+    reference = {"schema_version": 1, "version": version, "fingerprint": fingerprint,
                  "reference_kind": "context_reviewed", "audio_verified": False,
                  "review_scope": decisions["review_scope"], "counts": dict(counts),
                  "limitations": ["text_clear is linguistic clarity, not acoustic correctness",
@@ -88,7 +104,7 @@ def freeze(pilot: Path, decisions_path: Path, require_clear_focus: bool = False,
                                   "possible/unresolved text excluded from translation semantic judgments",
                                   "alternate-only output is preserved for review; not established missing dialogue"],
                  "samples": records}
-    report = [f"# {len(records)} 段试样参考稿 v1", "", "证据：文本上下文校对；未听音确认；时间边界未验证。", "",
+    report = [f"# {len(records)} 段试样参考稿 {version}", "", "证据：文本上下文校对；未听音确认；时间边界未验证。", "",
               f"共 {sum(counts.values())} 条主稿事件；分类：{dict(counts)}。", ""]
     for sample in records:
         cues = [Cue(e["id"], e["start_s"], e["end_s"], e["ja"]) for e in sample["entries"]]
@@ -112,8 +128,10 @@ def main():
     parser.add_argument("--decisions", type=Path, required=True)
     parser.add_argument("--require-clear-focus", action="store_true", help="Reject any unresolved/possible or empty focus")
     parser.add_argument("--samples", nargs="+", help="Explicit selected sample IDs; others remain development records")
+    parser.add_argument("--version", default="reference-v1", help="New immutable reference-vN directory")
+    parser.add_argument("--require-translation-context", action="store_true", help="Require reviewed continuous multi-cue dialogue including the focus")
     args = parser.parse_args()
-    freeze(args.pilot, args.decisions, args.require_clear_focus, args.samples)
+    freeze(args.pilot, args.decisions, args.require_clear_focus, args.samples, args.version, args.require_translation_context)
 
 
 if __name__ == "__main__":

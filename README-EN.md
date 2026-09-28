@@ -438,6 +438,8 @@ The detailed reference docs are maintained in Chinese only:
 - [docs/GUI_TEST_PLAN.md](docs/GUI_TEST_PLAN.md) — executable GUI test matrix, Windows portable acceptance cases, and run/defect record templates (Chinese).
 - [docs/MODEL_EVALUATION_PLAN.md](docs/MODEL_EVALUATION_PLAN.md) — planned evaluation improvements and model comparisons: validate scoring first, compare models next, and verify Windows last (Chinese).
 - [docs/MODEL_EVALUATION_PROGRESS_20260928.md](docs/MODEL_EVALUATION_PROGRESS_20260928.md) — first 10-clip pilot, candidate comparisons, and evidence limits; not a full-video accuracy ranking (Chinese).
+- [docs/MODEL_EVALUATION_EXPANSION_20260928.md](docs/MODEL_EVALUATION_EXPANSION_20260928.md) — initial difficult-dialogue expansion: locked groups, selection evidence, exclusions, and test limits (Chinese).
+- [docs/MODEL_EVALUATION_DECISION_20260928.md](docs/MODEL_EVALUATION_DECISION_20260928.md) — practical 20-window comparison: keep current defaults; separate contextual gains, ASR error propagation, and runtime costs (Chinese).
 
 ## Testing
 
