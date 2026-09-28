@@ -1,4 +1,5 @@
 import json
+import wave
 from types import SimpleNamespace
 
 from quality_report import (
@@ -278,3 +279,57 @@ def test_build_report_fills_metrics_dict(tmp_path):
     assert metrics["kana_left"] == 0
     assert metrics["adjacent_duplicates"] == 1
     assert metrics["asr_elapsed_min"] == 1.5
+
+
+def test_report_empty_output_checks_leading_and_trailing_vad(tmp_path):
+    ja = tmp_path / "empty.srt"
+    ja.write_text("", encoding="utf-8")
+    audio = tmp_path / "audio.wav"
+    with wave.open(str(audio), "wb") as stream:
+        stream.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        stream.writeframes(b"\0" * 32000 * 10)
+    metadata = tmp_path / "meta.json"
+    metadata.write_text(json.dumps({"chunks": [{"start": 0, "speech_regions": [[0, 2], [8, 10]]}]}), encoding="utf-8")
+    args = _report_args(tmp_path)
+    args.ja_srt, args.audio, args.qwen_metadata = ja, audio, metadata
+    args.vad_backend, args.min_gap_seconds, args.min_speech_seconds = "metadata", 1, 1
+    metrics = {}
+    build_report(args, metrics)
+    assert metrics["ja_input"]["status"] == "empty"
+    assert metrics["vad_speech_coverage"] == 0
+    assert metrics["vad_speech_uncovered_s"] == 4
+    assert metrics["gaps_with_vad_speech"] == 1
+    ja.write_text("1\n00:00:04,000 --> 00:00:05,000\nはい\n", encoding="utf-8")
+    build_report(args, metrics)
+    assert metrics["gaps_with_vad_speech"] == 2
+
+
+def test_report_missing_file_is_explicit_and_not_perfect(tmp_path):
+    args = _report_args(tmp_path)
+    args.ja_srt = tmp_path / "missing.srt"
+    metrics = {}
+    report = build_report(args, metrics)
+    assert "ja_input_status: missing" in report
+    assert metrics["true_cer"] is None
+
+
+def test_duplicate_check_does_not_pair_deleted_or_renumbered_cues_by_position():
+    ja = [Entry("1", 0, 1, "A"), Entry("2", 2, 3, "B"), Entry("3", 4, 5, "B")]
+    kept_ids = [Entry("2", 2, 3, "译"), Entry("3", 4, 5, "译")]
+    renumbered = [Entry("1", 2, 3, "译"), Entry("2", 4, 5, "译")]
+    assert adjacent_duplicate_candidates(ja, kept_ids) == []
+    assert adjacent_duplicate_candidates(ja, renumbered) == []
+
+
+def test_display_coverage_uses_union_not_sum_of_overlapping_cues(tmp_path):
+    ja = tmp_path / "overlap.srt"
+    ja.write_text("1\n00:00:00,000 --> 00:00:10,000\nA\n\n"
+                  "2\n00:00:05,000 --> 00:00:10,000\nB\n", encoding="utf-8")
+    args = _report_args(tmp_path)
+    args.ja_srt = ja
+    metrics = {}
+    report = build_report(args, metrics)
+    assert metrics["display_union_s"] == 10
+    assert metrics["overlapping_display_s"] == 5
+    assert metrics["display_coverage_in_srt_span"] == 1
+    assert "display_coverage_in_srt_span: 100.0%" in report

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
+import platform
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -9,6 +12,7 @@ from pathlib import Path
 
 from pipeline_configs import AnimeAsrConfig, QwenAsrConfig
 from cli_config import config_to_cli_args
+from evaluation_core import cache_fingerprint, load_subtitles
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == "scripts" else Path(__file__).resolve().parent
@@ -161,6 +165,31 @@ def run(command: list[str], dry_run: bool) -> None:
         subprocess.run(command, check=True)
 
 
+def file_sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def input_identity(path: Path) -> dict:
+    if path.is_file():
+        return {"path": str(path.resolve()), "sha256": file_sha256(path)}
+    if not path.is_dir():
+        raise ValueError(f"missing benchmark input/model: {path}")
+    files = {str(item.relative_to(path)): file_sha256(item) for item in sorted(path.rglob("*"))
+             if item.is_file() and ".cache" not in item.relative_to(path).parts}
+    return {"path": str(path.resolve()), "files": files}
+
+
+def cache_matches(record: Path, fingerprint: str, srt: Path, raw: Path) -> bool:
+    try:
+        data = json.loads(record.read_text(encoding="utf-8"))
+        return (data.get("status") == "complete" and data.get("fingerprint") == fingerprint
+                and load_subtitles(srt).status in ("valid", "empty")
+                and data["outputs"] == {"srt": file_sha256(srt), "raw": file_sha256(raw)})
+    except (OSError, KeyError, ValueError):
+        return False
+
+
 def transcribe_command(args: argparse.Namespace, variant: Variant, output: Path, raw_output: Path) -> list[str]:
     return [
         sys.executable,
@@ -202,7 +231,7 @@ def main() -> None:
     parser.add_argument("--model", type=Path, default=DEFAULT_QWEN_MODEL)
     parser.add_argument("--forced-aligner", type=Path, default=DEFAULT_ALIGNER)
     parser.add_argument("--variant", action="append", help="Variant to run; repeatable. Defaults to all variants.")
-    parser.add_argument("--skip-existing", action="store_true", help="Reuse existing variant SRT/raw outputs.")
+    parser.add_argument("--skip-existing", action="store_true", help="Reuse only matching provenance and SRT/raw digests; older unversioned outputs are rejected.")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running them.")
     parser.add_argument("--anime-ref", help="name=path reference for subtitle_benchmark.py, e.g. WJ-anime=wj.srt")
     parser.add_argument("--qwen-ref", action="append", help="name=path qwen reference for subtitle_benchmark.py; repeatable.")
@@ -215,6 +244,14 @@ def main() -> None:
         "variants": [],
         "benchmark_json": str(args.output_dir / "benchmark.json"),
     }
+    identities = {}
+    runtime = {"python": sys.version, "platform": platform.platform(), "packages": {}}
+    if not args.dry_run:
+        for name in ("torch", "transformers", "qwen-asr", "onnxruntime-gpu", "librosa"):
+            try:
+                runtime["packages"][name] = importlib.metadata.version(name)
+            except importlib.metadata.PackageNotFoundError:
+                runtime["packages"][name] = None
 
     for variant in selected_variants(args.variant):
         srt = args.output_dir / f"{variant.name}.ja.srt"
@@ -226,10 +263,33 @@ def main() -> None:
             "raw": str(raw),
             "config": variant.config.__class__.__name__,
         })
-        if args.skip_existing and srt.exists() and srt.stat().st_size > 0:
-            print(f"skip existing: {srt}", flush=True)
+        command = transcribe_command(args, variant, srt, raw)
+        if args.dry_run:
+            run(command, True)
             continue
-        run(transcribe_command(args, variant, srt, raw), args.dry_run)
+        inputs = [args.audio, args.forced_aligner, Path(variant.config.whisperseg_model)]
+        inputs.append(Path(variant.config.text_model) if isinstance(variant.config, AnimeAsrConfig) else args.model)
+        for path in inputs:
+            if str(path) not in identities:
+                identities[str(path)] = input_identity(path)
+        provenance = {"command": command, "inputs": {str(path): identities[str(path)] for path in inputs},
+                      "runtime": runtime,
+                      "scripts": {path.name: file_sha256(path) for path in sorted((PROJECT_ROOT / "scripts").glob("*.py"))}}
+        fingerprint = cache_fingerprint(provenance)
+        record_path = args.output_dir / f"{variant.name}.run.json"
+        if args.skip_existing and (srt.exists() or raw.exists() or record_path.exists()):
+            if cache_matches(record_path, fingerprint, srt, raw):
+                print(f"reuse verified cache: {srt}", flush=True)
+                continue
+            raise SystemExit(f"Unverified/mismatched cache: {srt}. Use a new --output-dir; old outputs are preserved.")
+        record = {"status": "running", "fingerprint": fingerprint, "provenance": provenance}
+        record_path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        run(command, False)
+        if load_subtitles(srt).status not in ("valid", "empty"):
+            raise SystemExit(f"Invalid benchmark output: {srt}")
+        json.loads(raw.read_text(encoding="utf-8"))
+        record.update(status="complete", outputs={"srt": file_sha256(srt), "raw": file_sha256(raw)})
+        record_path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     bench = benchmark_command(args, candidates, args.output_dir / "benchmark.json")
     if bench is not None:

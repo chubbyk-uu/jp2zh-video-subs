@@ -357,6 +357,10 @@
         <translation>生成質量报告</translation>
     </message>
     <message>
+        <source>Flags subtitle structure and possible risks; without an audio-verified reference, it does not measure recognition accuracy.</source>
+        <translation>檢查字幕結構並提示疑似風險；沒有聽音確認的參考字幕時，不計算辨識準確率。</translation>
+    </message>
+    <message>
         <location filename="../window.py" line="777"/>
         <source>ASR batch size</source>
         <translation>ASR 批大小</translation>

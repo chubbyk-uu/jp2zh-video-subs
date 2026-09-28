@@ -78,6 +78,7 @@ def test_runtime_language_switch_preserves_values_and_rerenders_tasks(tmp_path):
     window.asr_combo.setCurrentIndex(window.asr_combo.findData(AsrPreset.QWEN.value))
     try:
         assert window.windowTitle() == "日语视频中文字幕工具"
+        assert "不计算识别准确率" in window.quality_check.toolTip()
         assert "正在进行 Anime 识别" in window.task_table.item(0, 1).text()
         english_index = window.target_language_combo.findData(TargetLanguage.ENGLISH.value)
         assert window.target_language_combo.itemText(english_index) == "英文（实验性）"
@@ -85,6 +86,7 @@ def test_runtime_language_switch_preserves_values_and_rerenders_tasks(tmp_path):
         manager.set_language("en")
         app.processEvents()
         assert window.windowTitle() == "Japanese Video Subtitle Tool"
+        assert "does not measure recognition accuracy" in window.quality_check.toolTip()
         assert "Running Anime recognition" in window.task_table.item(0, 1).text()
         assert window.target_language_combo.itemText(english_index) == "English (Experimental)"
         assert window.asr_combo.currentData() == AsrPreset.QWEN.value
@@ -93,6 +95,7 @@ def test_runtime_language_switch_preserves_values_and_rerenders_tasks(tmp_path):
         manager.set_language("zh_TW")
         app.processEvents()
         assert window.windowTitle() == "日文影片中文字幕工具"
+        assert "不計算辨識準確率" in window.quality_check.toolTip()
         assert window.target_language_combo.itemText(english_index) == "英文（實驗性）"
         assert window.open_work_button.text() == "開啟工作資料夾"
         assert window.open_output_button.text() == "開啟輸出資料夾"

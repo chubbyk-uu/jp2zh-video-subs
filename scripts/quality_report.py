@@ -4,12 +4,15 @@ import argparse
 import json
 import math
 import re
+import subprocess
+import wave
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
 from cli_config import add_dataclass_arguments, config_from_namespace
+from evaluation_core import compare_subtitles, full_span_gaps, load_subtitles
 from pipeline_configs import (
     QualityReportConfig,
     raise_for_config_issues,
@@ -21,7 +24,6 @@ from srt_utils import (
     format_time,
     merge_intervals,
     overlap_seconds,
-    parse_time,
     srt_gaps,
 )
 
@@ -125,27 +127,9 @@ def fmt_fraction(hit: int, total: int) -> str:
 
 
 def parse_srt(path: Path | None) -> list[Entry]:
-    if path is None or not path.exists():
-        return []
-    content = path.read_text(encoding="utf-8").strip()
-    if not content:
-        return []
-    entries: list[Entry] = []
-    for block in re.split(r"\n\s*\n", content):
-        lines = block.splitlines()
-        if len(lines) < 3 or "-->" not in lines[1]:
-            continue
-        start_text, end_text = [item.strip() for item in lines[1].split("-->", 1)]
-        end_time = end_text.split(maxsplit=1)[0]
-        entries.append(
-            Entry(
-                index=lines[0].strip(),
-                start=parse_time(start_text),
-                end=parse_time(end_time),
-                text="\n".join(line.strip() for line in lines[2:]).strip(),
-            )
-        )
-    return entries
+    # Compatibility helper: callers may still request the parsed valid subset.
+    # build_report separately exposes invalid/missing status and refuses accuracy.
+    return [Entry(c.index, c.start, c.end, c.text) for c in load_subtitles(path).cues]
 
 
 def load_json(path: Path | None) -> dict:
@@ -287,10 +271,18 @@ def speech_intervals_for_report(
 
 def adjacent_duplicate_candidates(ja_entries: list[Entry], zh_entries: list[Entry]) -> list[str]:
     candidates: list[str] = []
-    for (prev_ja, curr_ja), (prev_zh, curr_zh) in zip(
-        zip(ja_entries, ja_entries[1:]),
-        zip(zh_entries, zh_entries[1:]),
-    ):
+    # Only assess confirmed 1:1 correspondence. IDs alone can be renumbered after
+    # deletions, so their source start times must agree too; never positional zip.
+    source_by_id = {item.index: item for item in ja_entries}
+    duplicate_source_ids = {item.index for item in ja_entries if sum(c.index == item.index for c in ja_entries) > 1}
+    for prev_zh, curr_zh in zip(zh_entries, zh_entries[1:]):
+        prev_ja, curr_ja = source_by_id.get(prev_zh.index), source_by_id.get(curr_zh.index)
+        if prev_ja is None or curr_ja is None:
+            continue
+        if prev_zh.index in duplicate_source_ids or curr_zh.index in duplicate_source_ids:
+            continue
+        if abs(prev_ja.start - prev_zh.start) > 0.25 or abs(curr_ja.start - curr_zh.start) > 0.25:
+            continue
         if not compact_text(prev_zh.text):
             continue
         if compact_text(prev_zh.text) != compact_text(curr_zh.text):
@@ -301,6 +293,54 @@ def adjacent_duplicate_candidates(ja_entries: list[Entry], zh_entries: list[Entr
             f"{prev_zh.index}->{curr_zh.index}: zh duplicate while ja differs"
         )
     return candidates
+
+
+def audio_duration(path: Path | None) -> float | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        with wave.open(str(path), "rb") as audio:
+            return audio.getnframes() / audio.getframerate()
+    except (OSError, wave.Error, EOFError):
+        try:
+            result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                     "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                                    capture_output=True, text=True, timeout=30, check=True)
+            value = float(result.stdout.strip())
+            return value if math.isfinite(value) and value >= 0 else None
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+
+
+def audio_gap_report(args, ja_entries, qwen_metadata, metrics, max_samples) -> list[str]:
+    speech_intervals, backend = speech_intervals_for_report(args, qwen_metadata)
+    duration = audio_duration(getattr(args, "audio", None))
+    # Metadata bounds give a lower bound when full audio duration is unavailable.
+    inferred_end = max([item.end for item in speech_intervals] + [item.end for item in ja_entries] + [0.0])
+    span = duration if duration is not None else inferred_end
+    gaps = full_span_gaps(ja_entries, span)
+    covered = padded_intervals(ja_entries, args.subtitle_pad_seconds)
+    total = sum(item.end - item.start for item in speech_intervals)
+    covered_seconds = min(total, sum(overlap_seconds(item, covered) for item in speech_intervals))
+    suspicious = [(gap, overlap_seconds(gap, speech_intervals)) for gap in gaps
+                  if gap.end - gap.start >= args.min_gap_seconds
+                  and overlap_seconds(gap, speech_intervals) >= args.min_speech_seconds]
+    metrics.update(vad_backend=backend, vad_speech_total_s=round(total, 1),
+                   vad_speech_uncovered_s=round(max(0.0, total - covered_seconds), 1),
+                   vad_speech_coverage=round(covered_seconds / total, 3) if total else None,
+                   gaps_with_vad_speech=len(suspicious), audio_duration_s=duration,
+                   gap_span_evidence="full_audio" if duration is not None else "metadata_lower_bound")
+    lines = ["[Audio-aware subtitle gaps]",
+             "note: VAD coverage is a risk hint, not ASR accuracy; breath/music/fillers may be counted.",
+             f"gap_span_evidence: {metrics['gap_span_evidence']}", f"vad_backend: {backend}",
+             f"vad_speech_segments: {len(speech_intervals)}", f"vad_speech_total_s: {total:.1f}",
+             f"vad_speech_covered_by_subtitles_s: {covered_seconds:.1f}",
+             f"vad_speech_uncovered_s: {max(0.0, total - covered_seconds):.1f}",
+             f"vad_speech_coverage: {covered_seconds / total:.1%}" if total else "vad_speech_coverage: n/a",
+             f"subtitle_gaps_with_vad_speech: {len(suspicious)}"]
+    for gap, seconds in sorted(suspicious, key=lambda item: item[1], reverse=True)[:max_samples]:
+        lines.append(f"- {format_time(gap.start)} -> {format_time(gap.end)} gap={gap.end-gap.start:.1f}s vad_speech={seconds:.1f}s")
+    return [*lines, ""]
 
 
 def possible_japanese_text_left(entries: list[Entry], target_language: str = "zh-Hans") -> list[tuple[Entry, str]]:
@@ -320,8 +360,10 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
     numeric indicators so the caller can append them to a metrics history file."""
     if metrics is None:
         metrics = {}
-    ja_entries = parse_srt(args.ja_srt)
-    zh_entries = parse_srt(args.zh_srt)
+    ja_input = load_subtitles(args.ja_srt)
+    zh_input = load_subtitles(args.zh_srt)
+    ja_entries = [Entry(c.index, c.start, c.end, c.text) for c in ja_input.cues]
+    zh_entries = [Entry(c.index, c.start, c.end, c.text) for c in zh_input.cues]
     target_language = getattr(args, "target_language", "zh-Hans")
     qwen_metadata = load_json(getattr(args, "qwen_metadata", None))
     reference_args = getattr(args, "reference_srt", None) or []
@@ -329,6 +371,16 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
 
     lines: list[str] = []
     lines.append("Subtitle quality report")
+    lines.append("note: structural checks and model-reference agreement do not establish recognition or translation accuracy.")
+    metrics.update(schema_version=2, evaluator_version="1.0", ja_entries=len(ja_entries), zh_entries=len(zh_entries),
+                   ja_input=ja_input.summary(), target_input=zh_input.summary(), true_cer=None,
+                   semantic_accuracy=None, legacy_reference_metrics="deprecated agreement hints; not accuracy")
+    lines.append(f"ja_input_status: {ja_input.status}")
+    lines.append(f"target_input_status: {zh_input.status}")
+    for issue in ja_input.issues:
+        lines.append(f"- ja input issue: {issue}")
+    for issue in zh_input.issues:
+        lines.append(f"- target input issue: {issue}")
     lines.append(f"ja_srt: {args.ja_srt}")
     if args.zh_srt:
         lines.append(f"target_srt: {args.zh_srt}")
@@ -341,11 +393,15 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
         chars = [len(compact_text(item.text)) for item in ja_entries]
         gaps = srt_gaps(ja_entries)
         display_total = sum(durations)
+        display_union = sum(item.end - item.start for item in merge_intervals(
+            [Interval(entry.start, entry.end) for entry in ja_entries]))
         span = max(item.end for item in ja_entries) - min(item.start for item in ja_entries)
         lines.append("[Japanese SRT]")
         lines.append(f"entries: {len(ja_entries)}")
         lines.append(f"display_total_min: {display_total / 60:.1f}")
-        lines.append(f"display_coverage_in_srt_span: {display_total / span:.1%}" if span > 0 else "display_coverage_in_srt_span: n/a")
+        lines.append(f"display_union_s: {display_union:.2f}")
+        lines.append(f"overlapping_display_s: {max(0.0, display_total - display_union):.2f}")
+        lines.append(f"display_coverage_in_srt_span: {display_union / span:.1%}" if span > 0 else "display_coverage_in_srt_span: n/a")
         lines.append(f"duration_median_s: {percentile(durations, 0.5):.2f}")
         lines.append(f"duration_p95_s: {percentile(durations, 0.95):.2f}")
         lines.append(f"chars_median: {percentile(chars, 0.5):.1f}")
@@ -356,6 +412,9 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
         metrics.update(
             ja_entries=len(ja_entries),
             display_total_min=round(display_total / 60, 1),
+            display_union_s=display_union,
+            overlapping_display_s=max(0.0, display_total - display_union),
+            display_coverage_in_srt_span=display_union / span if span > 0 else None,
             duration_median_s=round(percentile(durations, 0.5), 2),
             chars_median=percentile(chars, 0.5),
             gaps_gt_10s=sum(item.end - item.start > 10 for item in gaps),
@@ -369,44 +428,10 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
             lines.append(f"gap_max_s: {max(item.end - item.start for item in gaps):.1f}")
         lines.append("")
 
-        if (args.audio and args.audio.exists()) or qwen_metadata:
-            speech_intervals, vad_backend_used = speech_intervals_for_report(args, qwen_metadata)
-            subtitle_intervals = padded_intervals(ja_entries, args.subtitle_pad_seconds)
-            speech_total = sum(item.end - item.start for item in speech_intervals)
-            speech_covered = sum(overlap_seconds(item, subtitle_intervals) for item in speech_intervals)
-            speech_uncovered = max(0.0, speech_total - speech_covered)
-            suspicious = []
-            for gap in gaps:
-                gap_duration = gap.end - gap.start
-                if gap_duration < args.min_gap_seconds:
-                    continue
-                speech_seconds = overlap_seconds(gap, speech_intervals)
-                if speech_seconds >= args.min_speech_seconds:
-                    suspicious.append((gap, speech_seconds))
-            metrics.update(
-                vad_backend=vad_backend_used,
-                vad_speech_total_s=round(speech_total, 1),
-                vad_speech_uncovered_s=round(speech_uncovered, 1),
-                vad_speech_coverage=round(speech_covered / speech_total, 3) if speech_total > 0 else None,
-                gaps_with_vad_speech=len(suspicious),
-            )
-            lines.append("[Audio-aware subtitle gaps]")
-            lines.append("note: VAD-only hints can overcount breath/music/filtered fillers; use reference-aware checks when reference SRTs are available.")
-            lines.append(f"vad_backend: {vad_backend_used}")
-            lines.append(f"vad_speech_segments: {len(speech_intervals)}")
-            lines.append(f"vad_speech_total_s: {speech_total:.1f}")
-            lines.append(f"vad_speech_covered_by_subtitles_s: {speech_covered:.1f}")
-            lines.append(f"vad_speech_uncovered_s: {speech_uncovered:.1f}")
-            lines.append(f"vad_speech_coverage: {speech_covered / speech_total:.1%}" if speech_total > 0 else "vad_speech_coverage: n/a")
-            lines.append(f"subtitle_gaps_with_vad_speech: {len(suspicious)}")
-            for gap, speech_seconds in sorted(suspicious, key=lambda item: item[1], reverse=True)[:max_samples]:
-                lines.append(
-                    f"- {format_time(gap.start)} -> {format_time(gap.end)} "
-                    f"gap={gap.end - gap.start:.1f}s vad_speech={speech_seconds:.1f}s"
-                )
-            lines.append("")
+    if ((args.audio and args.audio.exists()) or qwen_metadata) and ja_input.status in ("valid", "empty"):
+        lines.extend(audio_gap_report(args, ja_entries, qwen_metadata, metrics, max_samples))
 
-    if ja_entries and reference_args:
+    if reference_args:
         reference_pad = getattr(args, "reference_pad_seconds", 4.0)
         reference_threshold = getattr(args, "reference_match_threshold", 0.34)
         reference_min_reading = getattr(args, "reference_min_reading_chars", 3)
@@ -417,6 +442,22 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
             reference_data.append((name, entries, reference_segments(entries, reference_min_reading)))
 
         lines.append("[Reference-aware ASR comparison]")
+        lines.append("note: legacy recall fields below are deprecated agreement hints, not accuracy or confirmed misses.")
+        metrics["reference_comparisons"] = {}
+        for named_path in reference_args:
+            name, path = parse_named_srt(named_path)
+            comparison = compare_subtitles(load_subtitles(path), ja_input,
+                                           getattr(args, "reference_kind", "model_output"),
+                                           boundaries_verified=getattr(args, "reference_boundaries_verified", False))
+            metrics["reference_comparisons"][name] = comparison
+            lines.append(f"{name}: evidence={comparison['reference_kind']} comparison_status={comparison['status']}")
+            difference = comparison["text_difference"]
+            if difference is not None:
+                counts = difference["normalized"]
+                lines.append(f"{name}: reference_text_difference S={counts['substitutions']} I={counts['insertions']} D={counts['deletions']} chars={counts['reference_chars']} rate={counts['rate']}")
+            lines.append(f"{name}: true_cer={comparison['true_cer']}")
+            for limitation in comparison["limitations"]:
+                lines.append(f"- {name}: {limitation}")
         lines.append(
             f"reading_match_threshold: {reference_threshold} "
             f"pad_seconds: {reference_pad} min_reading_chars: {reference_min_reading}"
@@ -426,7 +467,7 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
             lines.append(f"{name}: recall={fmt_fraction(hit, total)} entries={len(entries)} scored_segments={total}")
             for entry in missed[:max_samples]:
                 lines.append(f"- missed {name} {format_time(entry.start)} -> {format_time(entry.end)} {entry.text[:80]}")
-            metrics[f"reference_{name}_recall"] = round(hit / total, 3) if total else None
+            metrics[f"reference_{name}_recall"] = round(hit / total, 3) if total and ja_input.status in ("valid", "empty") else None
             metrics[f"reference_{name}_segments"] = total
 
         if len(reference_data) >= 2:
@@ -447,7 +488,7 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
             lines.append(f"cross_reference_consensus_from_{base_name}: recall={fmt_fraction(hit, total)}")
             for entry in missed[:max_samples]:
                 lines.append(f"- missed consensus {format_time(entry.start)} -> {format_time(entry.end)} {entry.text[:80]}")
-            metrics["reference_consensus_recall"] = round(hit / total, 3) if total else None
+            metrics["reference_consensus_recall"] = round(hit / total, 3) if total and ja_input.status in ("valid", "empty") else None
             metrics["reference_consensus_segments"] = total
         lines.append("")
 
@@ -459,6 +500,14 @@ def build_report(args: argparse.Namespace, metrics: dict | None = None) -> str:
         lines.append(f"japanese_kana_left: {len(jp_left)}")
         lines.append(f"possible_japanese_or_traditional_left: {len(possible_jp_left)}")
         duplicate_candidates = adjacent_duplicate_candidates(ja_entries, zh_entries)
+        confirmed_ids = {c.index for c in zh_entries for source in ja_entries
+                         if c.index == source.index and abs(c.start - source.start) <= 0.25}
+        metrics["translation_mapping"] = {"method": "ID plus source-start agreement (1:1 only)",
+                                          "assessed_target_cues": len(confirmed_ids),
+                                          "unresolved_target_cues": len(zh_entries) - len(confirmed_ids),
+                                          "source_cues": len(ja_entries), "target_cues": len(zh_entries)}
+        lines.append(f"translation_mapping_unresolved: {len(zh_entries) - len(confirmed_ids)}")
+        lines.append("note: untranslated text and duplicate checks are hints; semantic accuracy requires contextual review.")
         metrics.update(
             zh_entries=len(zh_entries),
             kana_left=len(jp_left),
@@ -535,8 +584,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reference-srt",
         action="append",
-        help="Optional name=path reference SRT for reading-normalized ASR recall checks; repeatable.",
+        help="Optional name=path reference SRT; model outputs default to provisional evidence; repeatable.",
     )
+    parser.add_argument("--reference-kind", choices=("audio_verified", "context_reviewed", "model_output"), default="model_output")
+    parser.add_argument("--reference-boundaries-verified", action="store_true", help="Only set for independently verified reference timing")
     parser.add_argument("--reference-pad-seconds", type=float, default=4.0)
     parser.add_argument("--reference-match-threshold", type=float, default=0.34)
     parser.add_argument("--reference-min-reading-chars", type=int, default=3)

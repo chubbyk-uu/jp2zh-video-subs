@@ -1,4 +1,6 @@
-from run_qwen_stage6_benchmark import benchmark_command, default_variants, selected_variants
+import json
+
+from run_qwen_stage6_benchmark import benchmark_command, cache_matches, default_variants, file_sha256, selected_variants
 
 
 def test_default_variants_keep_baseline_separate_from_wj_core():
@@ -54,3 +56,27 @@ def test_benchmark_command_requires_refs(tmp_path):
     assert "--qwen-ref" in cmd
     assert "qwen=qwen.srt" in cmd
     assert f"cand={tmp_path / 'cand.srt'}" in cmd
+
+
+def test_cache_needs_matching_provenance_and_both_output_digests(tmp_path):
+    srt, raw, record = tmp_path / "a.srt", tmp_path / "raw.json", tmp_path / "run.json"
+    srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nはい\n", encoding="utf-8")
+    raw.write_text("{}", encoding="utf-8")
+    assert not cache_matches(record, "new", srt, raw)
+    record.write_text(json.dumps({"status": "complete", "fingerprint": "new",
+                                  "outputs": {"srt": file_sha256(srt), "raw": file_sha256(raw)}}), encoding="utf-8")
+    assert cache_matches(record, "new", srt, raw)
+    assert not cache_matches(record, "changed", srt, raw)
+    raw.write_text('{"modified":true}', encoding="utf-8")
+    assert not cache_matches(record, "new", srt, raw)
+
+
+def test_empty_srt_is_valid_cached_result_not_missing(tmp_path):
+    srt, raw, record = tmp_path / "a.srt", tmp_path / "raw.json", tmp_path / "run.json"
+    srt.write_text("", encoding="utf-8")
+    raw.write_text("{}", encoding="utf-8")
+    record.write_text(json.dumps({"status": "complete", "fingerprint": "empty",
+                                  "outputs": {"srt": file_sha256(srt), "raw": file_sha256(raw)}}), encoding="utf-8")
+    assert cache_matches(record, "empty", srt, raw)
+    srt.unlink()
+    assert not cache_matches(record, "empty", srt, raw)

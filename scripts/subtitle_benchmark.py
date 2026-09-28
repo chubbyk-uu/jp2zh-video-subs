@@ -1,19 +1,8 @@
-"""Cross-model consensus benchmark for Japanese ASR subtitles (no ground truth).
+"""Evidence-aware subtitle comparisons; model agreement is not ground truth.
 
-Why: with no human-verified transcript, comparing a candidate SRT against a single
-reference (e.g. WhisperJAV anime) is biased — that reference is itself wrong on hard
-audio, and raw text similarity underrates same-reading wording (乾杯 vs かんぱい) and
-different cue lengths.
-
-Approach:
-  1. Build a pseudo-ground-truth from *cross-model consensus*: a segment where an anime
-     source AND at least one qwen source agree (reading-normalized) is high-confidence
-     real dialogue. Reference sources disagreeing on a segment are isolated as
-     "needs human" and excluded from scoring — this is where wrong conclusions came from.
-  2. Score each candidate on: consensus recall (recognition quality on confirmed
-     dialogue), weak-speech recall (anime-only segments the qwen models missed), and
-     timing health (short flashes / overlaps / long cues).
-  3. Reading normalization (pykakasi 漢字→かな) removes homophone / kana-variant bias.
+The CLI defaults to sequence text differences and descriptive boundary differences.
+The old broad-window bigram algorithm is available explicitly via --legacy-agreement
+for historical reproduction. It does not measure accuracy.
 
 Usage:
   python subtitle_benchmark.py \
@@ -30,6 +19,8 @@ from functools import lru_cache
 from pathlib import Path
 
 import pykakasi
+
+from evaluation_core import REFERENCE_KINDS, compare_subtitles, load_subtitles
 
 _KKS = pykakasi.kakasi()
 _STRIP = re.compile(r"[。、，,！？!?…♪〜~ー・「」『』（）()\[\]【】\s]")
@@ -77,8 +68,7 @@ MATCH_THRESHOLD = 0.34            # reading-bigram overlap to count as "same con
 
 
 def build_benchmark(anime_ref, qwen_refs):
-    """Return (consensus, anime_only). consensus = anime cues confirmed by >=1 qwen
-    source (cross-model). anime_only = anime cues no qwen source has (weak speech)."""
+    """Legacy agreement groups, not verified speech: shared and anime-only output."""
     consensus, anime_only = [], []
     for a, e, t in anime_ref:
         if len(reading(t)) < DIALOGUE_MIN_READING:
@@ -132,6 +122,11 @@ def score_candidates(anime_ref, qwen_refs, cands: dict[str, list[tuple[float, fl
             "timing": th,
         })
     return {
+        "schema_version": 2,
+        "evidence_kind": "model_agreement",
+        "true_cer": None,
+        "limitations": ["model consensus is not ground truth", "anime-only output is not confirmed weak speech",
+                        "legacy recall fields are deprecated similarity hints; not model quality rankings"],
         "consensus_segments": len(consensus),
         "anime_only_weak_speech_segments": len(anime_only),
         "candidates": rows,
@@ -141,11 +136,12 @@ def score_candidates(anime_ref, qwen_refs, cands: dict[str, list[tuple[float, fl
 def render_report(result: dict, anime_name: str, qwen_ref_count: int) -> str:
     lines = [
         f"Benchmark from anime={anime_name} + {qwen_ref_count} qwen refs:",
+        "  WARNING: legacy model-agreement hints only; no ground truth or accuracy ranking.",
         f"  cross-model consensus (scored) : {result['consensus_segments']} segments",
-        f"  anime-only weak speech         : {result['anime_only_weak_speech_segments']} segments",
+        f"  anime-only candidates (unverified): {result['anime_only_weak_speech_segments']} segments",
         "  (isolated as 'needs human': reference-disagreement segments not scored)",
         "",
-        f"{'candidate':16} {'consensus-recall':>18} {'weak-speech-recall':>20} {'timing'}",
+        f"{'candidate':16} {'consensus-agreement':>18} {'single-source-agreement':>20} {'timing'}",
     ]
     for row in result["candidates"]:
         th = row["timing"]
@@ -172,7 +168,32 @@ def main():
     ap.add_argument("--qwen-ref", action="append", required=True, help="name=path (qwen reference)")
     ap.add_argument("--cand", action="append", required=True, help="name=path (candidate to score)")
     ap.add_argument("--json-output", type=Path, help="Write structured benchmark metrics to JSON.")
+    ap.add_argument("--reference-kind", choices=REFERENCE_KINDS, default="model_output")
+    ap.add_argument("--reference-boundaries-verified", action="store_true")
+    ap.add_argument("--legacy-agreement", action="store_true", help="Reproduce deprecated broad-window agreement hints")
     args = ap.parse_args()
+
+    if not args.legacy_agreement:
+        comparisons = []
+        for named_candidate in args.cand:
+            name, path = named_candidate.split("=", 1)
+            candidate = load_subtitles(Path(path))
+            for named_reference in [args.anime_ref, *args.qwen_ref]:
+                ref_name, ref_path = named_reference.split("=", 1)
+                comparison = compare_subtitles(load_subtitles(Path(ref_path)), candidate, args.reference_kind,
+                                               boundaries_verified=args.reference_boundaries_verified)
+                comparisons.append({"candidate": name, "reference": ref_name, **comparison})
+                difference = comparison["text_difference"]
+                rate = difference["normalized"]["rate"] if difference else None
+                print(f"{name} vs {ref_name}: status={comparison['status']} evidence={args.reference_kind} "
+                      f"reference_text_difference={rate} true_cer={comparison['true_cer']}")
+        if args.json_output:
+            args.json_output.parent.mkdir(parents=True, exist_ok=True)
+            args.json_output.write_text(json.dumps({"schema_version": 2, "mode": "evidence_aware",
+                                                    "comparisons": comparisons}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if any(row["status"] != "evaluated" for row in comparisons):
+            raise SystemExit(1)
+        return
 
     aname, apath = args.anime_ref.split("=", 1)
     anime_ref = parse_srt(apath)

@@ -436,6 +436,8 @@ The detailed reference docs are maintained in Chinese only:
 - [docs/BACKENDS.md](docs/BACKENDS.md) — ASR and Chinese/English translation backend comparisons, how each line works, and when to prefer which.
 - [docs/USAGE.md](docs/USAGE.md) — config files, full default behavior, all common options, step-by-step per-script usage, the CUDA check, and troubleshooting.
 - [docs/GUI_TEST_PLAN.md](docs/GUI_TEST_PLAN.md) — executable GUI test matrix, Windows portable acceptance cases, and run/defect record templates (Chinese).
+- [docs/MODEL_EVALUATION_PLAN.md](docs/MODEL_EVALUATION_PLAN.md) — planned evaluation improvements and model comparisons: validate scoring first, compare models next, and verify Windows last (Chinese).
+- [docs/MODEL_EVALUATION_PROGRESS_20260928.md](docs/MODEL_EVALUATION_PROGRESS_20260928.md) — first 10-clip pilot, candidate comparisons, and evidence limits; not a full-video accuracy ranking (Chinese).
 
 ## Testing
 

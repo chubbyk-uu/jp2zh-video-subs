@@ -800,6 +800,7 @@ class MainWindow(QMainWindow):
         self.recursive_check.setText(self.tr("Scan subfolders"))
         self.bilingual_check.setText(self.tr("Generate bilingual ASS"))
         self.quality_check.setText(self.tr("Generate quality report"))
+        self.quality_check.setToolTip(self.tr("Flags subtitle structure and possible risks; without an audio-verified reference, it does not measure recognition accuracy."))
         self.resume_check.setText(self.tr("Resume completed stages"))
         self.resume_check.setToolTip(self.tr("Reuse complete WAV, Japanese SRT, and translated subtitle files; disable this after changing models or key settings."))
         self.copy_check.setText(self.tr("Copy subtitles beside video"))

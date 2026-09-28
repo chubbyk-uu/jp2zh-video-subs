@@ -422,6 +422,23 @@ python scripts/quality_report.py \
 
 质量报告中的音频覆盖率检查可以使用 `--vad-backend metadata`、`whisperseg` 或 `auto`。ASR 元数据里已有 speech regions 时用 `metadata`；要匹配 anime 主线时用 `whisperseg`。
 
+报告是结构与风险检查，不是自动准确率评分。新报告区分 `missing`、`empty`、`invalid`、`partial_invalid`、`valid` 等输入状态；有效空字幕会检查音频全长的空窗，缺失或损坏输入不会冒充空字幕评分。VAD 覆盖只提示风险，不能证明对白被正确识别。
+
+比较短片段字幕时，明确参考证据等级：
+
+```bash
+python scripts/evaluate_subtitles.py \
+  --reference work/evaluation/reference.ja.srt \
+  --candidate work/evaluation/candidate.ja.srt \
+  --reference-kind context_reviewed \
+  --output work/evaluation/comparison.json \
+  --html work/evaluation/comparison.html
+```
+
+`context_reviewed` 是文本上下文校对稿，`model_output` 是模型初稿；两者只报告参考稿文本差异，`true_cer` 保留为 `null`。只有确实核对过原音的参考才使用 `audio_verified`；时间边界也确实核对过时才加 `--boundaries-verified`。拆句、并句按有序句组对应，短回答、长音和重复仍纳入文本检查。该工具面向短片段；超出计算预算的全片会明确报告不可评估，不应绕过限制当作全片准确率。
+
+`subtitle_benchmark.py` 默认也使用上述证据规则；旧窗口共识算法仅通过 `--legacy-agreement` 显式启用。`quality_report.py` 为兼容旧 JSON 读取程序仍保留旧召回字段，但标记为废弃的模型一致性线索，不能据此选模型。历史 Stage 6 工具的 `--skip-existing` 现在要求输入、模型、配置、代码、运行环境和输出摘要匹配；旧的未记录来源输出会被拒绝复用，并保留原文件。
+
 只翻译前 N 条，方便调试：
 
 ```bash
