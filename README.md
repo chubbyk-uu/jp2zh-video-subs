@@ -387,10 +387,10 @@ ASS 里的日文只按字幕序号对齐贡献文本。
 - [docs/BACKENDS.md](docs/BACKENDS.md) — 识别后端及中英翻译后端逐项对比、工作方式、选型建议。
 - [docs/USAGE.md](docs/USAGE.md) — 配置文件、完整默认行为、所有常用参数、单步运行、CUDA 验证、常见问题排障。
 - [docs/GUI_TEST_PLAN.md](docs/GUI_TEST_PLAN.md) — GUI 可执行测试矩阵、Windows 绿色版验收用例，以及运行/缺陷记录模板。
-- [docs/MODEL_EVALUATION_PLAN.md](docs/MODEL_EVALUATION_PLAN.md) — 质量评估改进与模型对照测试计划：先验证评估方法，再比较模型，最后验证 Windows。
+- [docs/MODEL_EVALUATION_PLAN.md](docs/MODEL_EVALUATION_PLAN.md) — 已结束的质量评估与模型对照计划；保留实施范围，Windows 未验证。
 - [docs/MODEL_EVALUATION_PROGRESS_20260928.md](docs/MODEL_EVALUATION_PROGRESS_20260928.md) — 首轮 10 段试样实施结果、候选模型对照及结论边界；不作为全片准确率排名。
 - [docs/MODEL_EVALUATION_EXPANSION_20260928.md](docs/MODEL_EVALUATION_EXPANSION_20260928.md) — 困难对白扩展首批：锁定分组、选样证据、弃用原因与测试限制。
-- [docs/MODEL_EVALUATION_DECISION_20260928.md](docs/MODEL_EVALUATION_DECISION_20260928.md) — 20 段普通／困难混合对照结论：候选暂不替换默认；区分上下文收益、错误传播及运行成本。
+- [docs/MODEL_EVALUATION_DECISION_20260928.md](docs/MODEL_EVALUATION_DECISION_20260928.md) — 20 段对照与两轮观看盲测收尾：三款候选均不接入、默认不变；实验数据已删除，进一步选型暂停。
 
 ## 测试
 
