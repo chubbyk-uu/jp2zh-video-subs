@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>字幕盲测</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --ink: #1d1d1f; --muted: #6b6b70; --line: #e2e0da;
+    --accent: #2f5fd0; --done: #2e8b57; --sub-bg: #111; --sub-ink: #fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16171a; --card: #202227; --ink: #ececef; --muted: #9a9aa3; --line: #33353c;
+            --accent: #7aa2ff; --done: #5cc98a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.6 system-ui, -apple-system, "Microsoft YaHei", "PingFang SC", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 12px; }
+  h1 { font-size: 20px; margin: 0; }
+  .muted { color: var(--muted); }
+  .help { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; }
+  .help summary { cursor: pointer; font-weight: 600; }
+  .nav { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .nav button { width: 36px; height: 30px; border-radius: 6px; border: 1px solid var(--line);
+                background: var(--card); color: var(--ink); cursor: pointer; font-variant-numeric: tabular-nums; }
+  .nav button.voted { background: var(--done); border-color: var(--done); color: #fff; }
+  .nav button.current { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  video { width: 100%; max-height: 62vh; background: #000; border-radius: 8px; display: block; }
+  .live { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .live > div { background: var(--sub-bg); color: var(--sub-ink); border-radius: 8px; padding: 10px 12px;
+                min-height: 76px; font-size: 19px; line-height: 1.45; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .05em; color: #bbb; margin-bottom: 2px; }
+  .votes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+  .votes button { padding: 9px 18px; font-size: 15px; border-radius: 8px; border: 1px solid var(--line);
+                  background: var(--card); color: var(--ink); cursor: pointer; }
+  .votes button.picked { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .votes input { flex: 1 1 220px; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+                 background: var(--bg); color: var(--ink); font: inherit; }
+  details.full { margin-top: 12px; }
+  details.full summary { cursor: pointer; color: var(--muted); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+  .cols ol { margin: 0; padding-left: 0; list-style: none; }
+  .cols li { padding: 3px 6px; border-radius: 5px; cursor: pointer; }
+  .cols li.on { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  .cols time { color: var(--muted); font-size: 12px; margin-right: 6px; font-variant-numeric: tabular-nums; }
+  .pager { display: flex; justify-content: space-between; margin-top: 14px; gap: 8px; }
+  .pager button, .export button { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
+                                  background: var(--card); color: var(--ink); cursor: pointer; }
+  .export { margin-top: 22px; }
+  .export textarea { width: 100%; height: 120px; margin-top: 8px; font: 12px/1.4 ui-monospace, monospace;
+                     background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; }
+  @media (max-width: 640px) { .live, .cols { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>字幕盲测</h1>
+    <span class="muted" id="progress"></span>
+  </header>
+  <details class="help" open>
+    <summary>怎么评</summary>
+    <p>每段视频下方同时显示两版中文字幕 A 和 B（左右位置随机，和模型无关）。不用懂日文，只看哪版<b>配着画面更好懂</b>：</p>
+    <ul>
+      <li>前后连贯：一问一答对得上吗？</li>
+      <li>和画面吻合：字幕说的动作、对象、人物关系跟画面矛盾吗？</li>
+      <li>明显胡话：不通顺、莫名其妙、重复刷屏、没人说话却有字幕？</li>
+      <li>漏字幕：明显在说话却一直没字幕？</li>
+    </ul>
+    <p>分不出来就选“差不多”，不要硬选。可以反复播放，也可以展开“全部字幕”对照着读。投票自动保存在本浏览器里；全部评完后点最下方“导出结果”。</p>
+  </details>
+  <nav class="nav" id="nav"></nav>
+  <section class="card">
+    <video id="video" controls preload="metadata"></video>
+    <div class="live">
+      <div><span class="tag">A</span><div id="liveA"></div></div>
+      <div><span class="tag">B</span><div id="liveB"></div></div>
+    </div>
+    <div class="votes">
+      <button data-vote="A">A 更好懂</button>
+      <button data-vote="tie">差不多</button>
+      <button data-vote="B">B 更好懂</button>
+      <input id="note" placeholder="备注（可选，例如：B 把拒绝译成了同意）">
+    </div>
+    <details class="full">
+      <summary>全部字幕（点一行可跳到该处）</summary>
+      <div class="cols">
+        <div><span class="tag" style="color:var(--muted)">A</span><ol id="listA"></ol></div>
+        <div><span class="tag" style="color:var(--muted)">B</span><ol id="listB"></ol></div>
+      </div>
+    </details>
+    <div class="pager">
+      <button id="prev">← 上一段</button>
+      <span class="muted" id="position"></span>
+      <button id="next">下一段 →</button>
+    </div>
+  </section>
+  <section class="export">
+    <button id="export">导出结果</button>
+    <span class="muted" id="exportHint"></span>
+    <textarea id="exportText" readonly hidden></textarea>
+  </section>
+</main>
+<script>
+const TEST = __TEST_NAME__;
+const ITEMS = __ITEMS__;
+const KEY = "ab-blind-test:" + TEST;
+let state = { votes: {}, notes: {}, current: 0 };
+try { Object.assign(state, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} };
+const $ = id => document.getElementById(id);
+const video = $("video");
+
+function fmt(t) { const m = Math.floor(t / 60), s = Math.floor(t % 60); return m + ":" + String(s).padStart(2, "0"); }
+function activeText(cues, t) { return cues.filter(c => c.s <= t && t < c.e).map(c => c.t).join("\n"); }
+
+function renderList(el, cues) {
+  el.innerHTML = "";
+  cues.forEach(c => {
+    const li = document.createElement("li");
+    const time = document.createElement("time");
+    time.textContent = fmt(c.s);
+    li.append(time, document.createTextNode(c.t));
+    li.onclick = () => { video.currentTime = c.s; video.play(); };
+    li.dataset.s = c.s; li.dataset.e = c.e;
+    el.append(li);
+  });
+  if (!cues.length) el.innerHTML = '<li class="muted">（这一段没有字幕）</li>';
+}
+
+function tick() {
+  const item = ITEMS[state.current], t = video.currentTime;
+  $("liveA").innerText = activeText(item.a, t);
+  $("liveB").innerText = activeText(item.b, t);
+  for (const li of document.querySelectorAll(".cols li[data-s]")) {
+    li.classList.toggle("on", +li.dataset.s <= t && t < +li.dataset.e);
+  }
+}
+let raf = 0;
+function loop() { tick(); if (!video.paused) raf = requestAnimationFrame(loop); }
+video.addEventListener("play", () => { cancelAnimationFrame(raf); loop(); });
+video.addEventListener("seeked", tick);
+video.addEventListener("timeupdate", tick);
+
+function renderNav() {
+  const nav = $("nav"); nav.innerHTML = "";
+  ITEMS.forEach((item, i) => {
+    const b = document.createElement("button");
+    b.textContent = item.n;
+    if (state.votes[item.n]) b.classList.add("voted");
+    if (i === state.current) b.classList.add("current");
+    b.onclick = () => show(i);
+    nav.append(b);
+  });
+  const done = ITEMS.filter(item => state.votes[item.n]).length;
+  $("progress").textContent = `已评 ${done} / ${ITEMS.length}`;
+}
+
+function show(i) {
+  state.current = Math.max(0, Math.min(ITEMS.length - 1, i)); save();
+  const item = ITEMS[state.current];
+  video.src = item.clip;
+  renderList($("listA"), item.a); renderList($("listB"), item.b);
+  $("note").value = state.notes[item.n] || "";
+  document.querySelectorAll(".votes button").forEach(b => b.classList.toggle("picked", state.votes[item.n] === b.dataset.vote));
+  $("position").textContent = `第 ${state.current + 1} 段 / 共 ${ITEMS.length} 段`;
+  renderNav(); tick();
+}
+
+document.querySelectorAll(".votes button").forEach(b => b.onclick = () => {
+  const item = ITEMS[state.current];
+  state.votes[item.n] = b.dataset.vote; save(); show(state.current);
+});
+$("note").oninput = e => { state.notes[ITEMS[state.current].n] = e.target.value; save(); };
+$("prev").onclick = () => show(state.current - 1);
+$("next").onclick = () => show(state.current + 1);
+
+$("export").onclick = () => {
+  const payload = JSON.stringify({ test: TEST, exported_at: new Date().toISOString(),
+                                   votes: state.votes, notes: state.notes }, null, 2);
+  const text = $("exportText"); text.hidden = false; text.value = payload; text.select();
+  const missing = ITEMS.length - Object.keys(state.votes).length;
+  $("exportHint").textContent = (missing ? `还有 ${missing} 段没评。` : "") + "已尝试下载 votes.json；若没下载，复制下框内容保存为 votes.json。";
+  try {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+    a.download = "votes.json"; document.body.append(a); a.click(); a.remove();
+  } catch (e) {}
+};
+
+show(state.current || 0);
+</script>
+</body>
+</html>
