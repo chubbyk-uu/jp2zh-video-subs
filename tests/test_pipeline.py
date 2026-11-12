@@ -557,8 +557,15 @@ def test_translation_provenance_rejects_same_cue_count_with_changed_source(tmp_p
 
 @pytest.mark.parametrize("translator,old_schema", [
     ("galtransl", "galtransl-v3-project-1"),
+    ("galtransl", "galtransl-v3-project-2"),
+    ("galtransl", "galtransl-v3-project-3"),
+    ("galtransl", "galtransl-v3-project-4"),
     ("sakura", "sakura-v1-project-1"),
+    ("sakura", "sakura-v1-project-2"),
+    ("sakura", "sakura-v1-project-3"),
+    ("sakura", "sakura-v1-project-4"),
     ("sugoi", "sugoi-numbered-batch-1"),
+    ("sugoi", "sugoi-numbered-batch-2"),
 ])
 def test_translation_resume_rejects_pre_fix_processing(tmp_path, translator, old_schema):
     import argparse
@@ -571,6 +578,82 @@ def test_translation_resume_rejects_pre_fix_processing(tmp_path, translator, old
     payload["translator_prompt_schema"] = old_schema
     path.write_text(json.dumps(payload))
     assert not translation_provenance_matches(path, args)
+
+
+def test_translation_failure_emits_failure_and_removes_success_manifest(tmp_path, monkeypatch):
+    import argparse
+    import video_to_zh_srt as pipeline
+
+    video, audio, output = (tmp_path / name for name in ("sample.mp4", "sample.wav", "out.srt"))
+    ja = tmp_path / "sample.ja.srt"
+    ja.write_text(SRT_TWO_CUES, encoding="utf-8")
+    output.write_text("previous complete output", encoding="utf-8")
+    manifest = tmp_path / "sample.zh-Hans.translation.json"
+    manifest.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(pipeline, "build_qwen_command", lambda *args: ["asr"])
+    monkeypatch.setattr(pipeline, "asr_provenance_matches", lambda *args: True)
+    monkeypatch.setattr(pipeline, "build_translate_command", lambda *args: ["translate"])
+    def fail(*args):
+        raise RuntimeError("model execution failed")
+    monkeypatch.setattr(pipeline, "run", fail)
+    args = argparse.Namespace(resume=True, target_language="zh-Hans")
+    events_path = tmp_path / "events.jsonl"
+    log = JobLog(tmp_path / "pipeline.log")
+    try:
+        with EventWriter(events_path) as events, pytest.raises(RuntimeError, match="model execution"):
+            pipeline.process_video_stages(args, video, output, tmp_path, audio, log, events=events)
+    finally:
+        log.close()
+    assert not manifest.exists()
+    assert output.read_text(encoding="utf-8") == "previous complete output"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert events[-1]["event"] == "stage_failed"
+    assert events[-1]["stage"] == "translate" and "model execution" in events[-1]["error"]
+
+
+@pytest.mark.parametrize("target", ["zh-Hans", "zh-Hant"])
+def test_translation_review_finishes_ass_keeps_intermediates_and_disables_cache(tmp_path, monkeypatch, target):
+    import argparse
+    import video_to_zh_srt as pipeline
+    from translation_common import translation_review_path
+
+    video, audio, output = (tmp_path / name for name in ("sample.mp4", "sample.wav", "out.srt"))
+    video.write_bytes(b"video")
+    audio.write_bytes(b"audio")
+    ja = tmp_path / "sample.ja.srt"
+    ja.write_text(SRT_TWO_CUES, encoding="utf-8")
+    intermediate = tmp_path / "sample.zh-s.srt" if target == "zh-Hant" else output
+    monkeypatch.setattr(pipeline, "build_qwen_command", lambda *args: ["asr"])
+    monkeypatch.setattr(pipeline, "asr_provenance_matches", lambda *args: True)
+    monkeypatch.setattr(pipeline, "build_translate_command", lambda *args: ["translate"])
+    monkeypatch.setattr(pipeline, "build_bilingual_command", lambda *args: ["ass"])
+    def run(command, log, *args):
+        if command == ["translate"]:
+            intermediate.write_text(SRT_TWO_CUES, encoding="utf-8")
+            translation_review_path(intermediate).write_text(json.dumps({"schema": 1, "review_count": 1,
+                                                                        "cues": [{"id": "1"}]}))
+        elif str(pipeline.OPENCC_SCRIPT) in command:
+            output.write_text(intermediate.read_text(encoding="utf-8"), encoding="utf-8")
+        else:
+            output.with_suffix(".ass").write_text("ASS", encoding="utf-8")
+    monkeypatch.setattr(pipeline, "run", run)
+    args = argparse.Namespace(resume=True, translator="galtransl", target_language=target,
+                              bilingual=True, quality_report=False, no_copy_to_video_dir=True,
+                              cleanup_policy="final_only", delete_audio=False)
+    events_path = tmp_path / "events.jsonl"
+    log = JobLog(tmp_path / "pipeline.log")
+    try:
+        with EventWriter(events_path) as events:
+            pipeline.process_video_stages(args, video, output, tmp_path, audio, log, events=events)
+    finally:
+        log.close()
+    assert output.exists() and output.with_suffix(".ass").exists()
+    assert json.loads(translation_review_path(output).read_text())["review_count"] == 1
+    assert not (tmp_path / f"sample.{target}.translation.json").exists()
+    assert audio.exists() and ja.exists()
+    payloads = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert any(p["event"] == "stage_warning" and p["review_count"] == 1 for p in payloads)
+    assert not any(p["event"] == "stage_failed" for p in payloads)
 
 
 def test_audio_provenance_rejects_replaced_input_or_audio(tmp_path):
@@ -625,6 +708,36 @@ def test_asr_provenance_rejects_config_change(tmp_path, monkeypatch):
     args.qwen_batch_size = 24
     qwen_model.write_bytes(b"changed-qwen-model")
     assert not asr_provenance_matches(manifest, args, audio, ja, meta)
+
+
+@pytest.mark.parametrize("backend", ["anime", "qwen"])
+def test_asr_resume_rejects_replaced_vad_and_legacy_manifest(tmp_path, monkeypatch, backend):
+    import argparse
+    import video_to_zh_srt as pipeline
+
+    paths = {key: tmp_path / key for key in ("audio", "ja", "meta", "text", "aligner", "vad")}
+    for key, path in paths.items():
+        path.write_bytes(key.encode())
+    monkeypatch.setattr(pipeline, "QWEN_ASR_MODEL", paths["text"])
+    monkeypatch.setattr(pipeline, "QWEN_ALIGNER_MODEL", paths["aligner"])
+    args = argparse.Namespace(asr=backend, **{
+        f"{backend}_whisperseg_model": str(paths["vad"]),
+        f"{backend}_text_model": str(paths["text"]),
+    })
+    manifest = tmp_path / "asr.json"
+    write_asr_provenance(manifest, args, paths["audio"], paths["ja"], paths["meta"])
+    assert asr_provenance_matches(manifest, args, paths["audio"], paths["ja"], paths["meta"])
+    legacy = json.loads(manifest.read_text())
+    legacy["models"].pop("whisperseg")
+    manifest.write_text(json.dumps(legacy))
+    assert not asr_provenance_matches(manifest, args, paths["audio"], paths["ja"], paths["meta"])
+    write_asr_provenance(manifest, args, paths["audio"], paths["ja"], paths["meta"])
+    paths["vad"].write_bytes(b"replacement VAD weights")
+    assert not asr_provenance_matches(manifest, args, paths["audio"], paths["ja"], paths["meta"])
+    setattr(args, f"{backend}_vad_chunks", False)
+    write_asr_provenance(manifest, args, paths["audio"], paths["ja"], paths["meta"])
+    paths["vad"].write_bytes(b"unused weights must not invalidate fixed chunks")
+    assert asr_provenance_matches(manifest, args, paths["audio"], paths["ja"], paths["meta"])
 
 
 def test_sugoi_provenance_normalizes_batch_zero_and_ignores_context(tmp_path):
@@ -800,6 +913,38 @@ def test_validate_job_paths_uses_windows_case_insensitive_comparison(tmp_path):
 
     with pytest.raises(SystemExit, match="collision"):
         validate_job_paths([job], args, explicit_output=True, case_insensitive=True)
+
+
+@pytest.mark.parametrize("control", ["event_log", "cancel_file"])
+@pytest.mark.parametrize("target", ["video", "output", "audio", "manifest", "terms"])
+def test_control_paths_cannot_alias_job_files(tmp_path, control, target):
+    import argparse
+
+    video = tmp_path / "sample.mp4"
+    video.write_bytes(b"original video")
+    work = tmp_path / "work"
+    output = tmp_path / "sample.zh-s.srt"
+    job = VideoJob(1, video, output, work, work / "sample.wav")
+    targets = {"video": video, "output": output, "audio": job.audio,
+               "manifest": audio_manifest_path(job.audio), "terms": output.with_suffix(".terms.txt")}
+    args = argparse.Namespace(bilingual=False, no_copy_to_video_dir=True, **{control: targets[target]})
+    with pytest.raises(SystemExit, match="collision"):
+        validate_job_paths([job], args)
+    assert video.read_bytes() == b"original video"
+
+
+def test_control_paths_reject_windows_case_alias_and_each_other(tmp_path):
+    import argparse
+
+    video = tmp_path / "sample.mp4"
+    job = VideoJob(1, video, tmp_path / "out.srt", tmp_path / "work", tmp_path / "work/sample.wav")
+    args = argparse.Namespace(bilingual=False, no_copy_to_video_dir=True, event_log=tmp_path / "SAMPLE.MP4")
+    with pytest.raises(SystemExit, match="collision"):
+        validate_job_paths([job], args, case_insensitive=True)
+    args.event_log = tmp_path / "events.jsonl"
+    args.cancel_file = args.event_log
+    with pytest.raises(SystemExit, match="collision"):
+        validate_job_paths([job], args)
 
 
 @pytest.mark.parametrize(

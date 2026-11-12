@@ -5,6 +5,8 @@ import argparse
 import re
 from pathlib import Path
 
+from atomic_io import atomic_write_text
+
 
 def convert_srt_text(content: str, converter) -> str:
     """Convert cue payloads while leaving indices, timestamps, and blank lines intact."""
@@ -23,10 +25,7 @@ def convert_srt(source: Path, output: Path, config: str = "s2t") -> None:
     from opencc import OpenCC
 
     result = convert_srt_text(source.read_text(encoding="utf-8"), OpenCC(config))
-    output.parent.mkdir(parents=True, exist_ok=True)
-    partial = output.with_name(output.name + ".part")
-    partial.write_text(result, encoding="utf-8")
-    partial.replace(output)
+    atomic_write_text(output, result)
 
 
 def build_parser() -> argparse.ArgumentParser:

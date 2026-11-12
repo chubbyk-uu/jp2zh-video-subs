@@ -27,6 +27,43 @@ def window_settings(tmp_path):
     return settings
 
 
+@pytest.mark.parametrize("language,label", [("zh_CN", "已完成（2 条需复核）"),
+                                            ("zh_TW", "已完成（2 條需複核）"),
+                                            ("en", "Completed (2 cues need review)")])
+def test_completed_review_status_is_visible_and_localized(tmp_path, language, label):
+    from jp2zh_gui.models import GuiTask, TaskStatus
+    application()
+    window = MainWindow(settings=window_settings(tmp_path))
+    try:
+        window.language_manager.set_language(language)
+        task = GuiTask(tmp_path / "video.mp4", status=TaskStatus.COMPLETED, review_count=2)
+        assert window._task_status_text(task) == label
+        task.reset_for_retry()
+        assert task.review_count == 0
+    finally:
+        window.close()
+
+
+def test_start_shows_queue_collision_without_starting_process(tmp_path, monkeypatch):
+    from jp2zh_gui.models import GuiTask, TaskStatus
+
+    application()
+    window = MainWindow(settings=window_settings(tmp_path))
+    warnings = []
+    monkeypatch.setattr(window_module, "missing_model_files", lambda config: [])
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, message: warnings.append(message))
+    window.tasks = [GuiTask(tmp_path / "A/episode.mp4"), GuiTask(tmp_path / "B/episode.mkv")]
+    window.output_edit.setText(str(tmp_path / "out"))
+    window.work_edit.setText(str(tmp_path / "work"))
+    try:
+        window._start()
+        assert len(warnings) == 1 and "collision" in warnings[0]
+        assert window.controller.process is None
+        assert all(task.status == TaskStatus.WAITING for task in window.tasks)
+    finally:
+        window.close()
+
+
 def test_main_window_has_model_and_cleanup_choices(tmp_path):
     application()
     window = MainWindow(settings=window_settings(tmp_path))

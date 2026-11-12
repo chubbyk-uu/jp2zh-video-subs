@@ -90,8 +90,13 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --output outputs/input.zh-s.
 ```
 
 显式 `--output` 必须使用 `.srt` 扩展名。流水线会在启动任何子进程前检查输入视频、
-最终 SRT/ASS、工作目录中间产物、清单和临时文件的路径；存在覆盖输入或产物互撞风险时
-会直接拒绝运行。Windows 下路径比较不区分大小写。
+最终 SRT/ASS、工作目录中间产物、术语报告、清单和临时文件，以及事件日志、取消文件和
+启用的 metrics 日志路径；存在覆盖输入或产物互撞风险时会直接拒绝运行。
+GUI 会在启动前检查整个队列，不同目录的同名视频也不能共用输出或工作路径；遇到此提示时，
+可先给视频改成不同名称，或分批处理并分别指定输出及工作目录。Windows 下路径比较不区分大小写。
+不同 CLI／GUI 进程如果占用同一工作或输出路径，后启动的流水线会报出路径已被占用，
+在写入事件日志或执行阶段前退出。文件锁由操作系统在退出时释放，字幕写入使用独立临时文件；
+锁目录位于用户的 `~/.cache/jp2zh-video-subs/locks/`，源码和绿色版共用，不依赖各自的 TEMP。
 
 批量处理时指定输出目录：
 
@@ -181,11 +186,24 @@ python scripts/video_to_zh_srt.py path/to/input.mp4 --reuse-existing-audio
 ```
 
 从中断处续跑时，`--resume` 只跳过清单验证通过的阶段。音频清单绑定输入视频身份、
-抽取参数和 WAV 哈希；ASR 清单绑定 WAV、识别后端、完整有效参数、模型身份、日语 SRT
+抽取参数和 WAV 哈希；ASR 清单绑定 WAV、识别后端、完整有效参数、识别／对齐及实际使用的
+WhisperSeg 模型身份、日语 SRT
 及 metadata 哈希；翻译清单绑定日语 SRT 内容、目标语言、翻译后端、模型、prompt schema、
 上下文/批量/换行设置和最终 SRT 哈希。旧工作目录里没有新版清单的产物会自动重跑一次，
 之后才可安全复用。ASR 与翻译 SRT、metadata 和清单均通过临时文件原子替换，失败或取消
 不会用半成品覆盖已有最终文件。
+
+翻译的空译文、假名残留和重复／失控检查属于启发式质量提示，重试后仍有风险时不会因为
+个别字幕中止整片。GalTransl／Sakura 对限定范围的短发声作保守拟音；专名等残留假名可保留并
+提示复核；无法恢复的普通对白空译／失控输出显示 `【翻译待复核】`。实验性 Sugoi 英文对应
+显示 `[Translation needs review]`。字幕编号及时间轴保留，后续字幕继续处理。
+
+SRT 旁的 `.review.json` 保存复核数量、编号、时间、日文、模型候选和处理结果；GUI 显示
+“已完成（N 条需复核）”。没有风险项时报告数量为 0，重跑会刷新报告。含复核项的结果不写入
+成功翻译清单，`--resume` 会重跑翻译；同时保留 WAV／日文字幕等中间产物供复核，即使设置了
+`final_only`。这不代表人工校对通过，也不能发现所有语义错误。模型运行异常、文件冲突、
+磁盘写入失败等仍会停止任务，已有最终 SRT 不会被部分译文覆盖。旧版翻译缓存及缺少 VAD
+身份的 ASR 清单会失效，首次续跑需重新生成对应阶段。
 
 ASS 始终重新生成（耗时极短，不占 GPU）；如果加了 `--quality-report`，质量报告也会重新
 生成。`--resume` 会在音频清单有效时复用 WAV；单独使用 `--reuse-existing-audio` 仍保留
@@ -281,6 +299,8 @@ runtime\python.exe app\scripts\download_models.py --root . --model anime-whisper
 不需要手动关闭断点续跑。旧产物没有清单时会重跑一次。长字幕自动换行的默认阈值 20
 表示超过 20 个可见字符时尝试在靠近中间的句末标点处分成两行；没有合适标点时不会硬拆，
 关闭该开关等价于 `--display-wrap-max-chars 0`。
+GUI 中手动填写的相对输出／工作目录，在启动任务时按 GUI 的当前工作目录转为绝对路径，
+子进程、进度读取与取消操作使用同一组路径。
 
 ### 双语 ASS 与样式
 
@@ -319,6 +339,11 @@ python scripts/retime_existing_subtitles.py path/to/videos/ \
 它会生成 `outputs/<名称>.retimed.zh-s.srt/.ass`，并把新的 ASS 复制到视频同目录
 `<名称>.zh-s.ass`。繁体或英文加 `--target-language zh-Hant|en`。先用 `--dry-run`
 可以只检查匹配关系；加 `--no-copy-to-video-dir` 则只写 `outputs/`，不覆盖视频同目录字幕。
+处理主流水线递归生成的产物时，对相同输入根目录加 `--recursive`，并沿用原来的
+`--output-dir`／`--work-dir`。工具会保留相对子目录查找并写入结果，避免不同子目录的同名
+视频串用字幕；递归模式下不会退回平铺目录查找同名字幕。
+Windows 原生运行时直接使用 `E:\videos\sample.mp4` 等盘符路径；仅在 WSL 环境中将这类
+输入转换成 `/mnt/e/videos/sample.mp4`，普通 Linux 不执行盘符转换。
 
 ### 翻译和资源调参
 

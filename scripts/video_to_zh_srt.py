@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
+from atomic_io import atomic_write_text
 from cli_config import (
     add_prefixed_dataclass_arguments,
     apply_config_file,
@@ -45,6 +46,7 @@ from pipeline_runtime import (
     PipelineCancelled,
 )
 from portable_runtime import project_root, scripts_dir
+from path_locks import path_locks
 from srt_utils import count_overlong_srt_lines, wrap_srt_display_file
 from target_languages import (
     TargetLanguage,
@@ -52,6 +54,7 @@ from target_languages import (
     resolve_translation_settings,
     translator_supports_target,
 )
+from translation_common import translation_review_path
 
 
 PROJECT_ROOT = project_root(Path(__file__))
@@ -231,17 +234,7 @@ def model_identity(path: Path) -> dict[str, object]:
 
 
 def atomic_write_json(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_name(path.name + ".part")
-    try:
-        partial.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        partial.replace(path)
-    except BaseException:
-        partial.unlink(missing_ok=True)
-        raise
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
 def read_json_object(path: Path) -> dict[str, object] | None:
@@ -307,9 +300,9 @@ def translation_provenance(
         "stage": "translation",
         "translator": translator,
         "translator_prompt_schema": {
-            "galtransl": "galtransl-v3-project-2",
-            "sakura": "sakura-v1-project-2",
-            "sugoi": "sugoi-numbered-batch-2",
+            "galtransl": "galtransl-v3-project-5",
+            "sakura": "sakura-v1-project-5",
+            "sugoi": "sugoi-numbered-batch-3",
         }.get(translator, "unknown"),
         "target_language": target,
         "context_size": settings.context_size,
@@ -410,6 +403,11 @@ def asr_provenance(
         "input": hashed_output_identity(audio),
         "models": {
             "text": model_identity(Path(cfg.text_model) if args.asr == "anime" else QWEN_ASR_MODEL),
+            "whisperseg": (
+                model_identity(Path(cfg.whisperseg_model).expanduser())
+                if cfg.vad_chunks and cfg.vad_backend == "whisperseg"
+                else None
+            ),
             "forced_aligner": (
                 model_identity(QWEN_ALIGNER_MODEL)
                 if cfg.timestamp_mode != "vad_only"
@@ -527,6 +525,14 @@ def job_artifact_paths(
         "pipeline log": job.job_dir / "pipeline.log",
         "quality report": job.job_dir / f"{stem}.quality.txt",
     }
+    if getattr(args, "translator", "galtransl") in {"galtransl", "sakura"}:
+        paths["terminology report"] = translated_output.with_suffix(".terms.txt")
+    paths["translation review"] = translation_review_path(job.output)
+    if translated_output != job.output:
+        paths["intermediate translation review"] = translation_review_path(translated_output)
+    for label in ("audio manifest", "ASR manifest", "translation manifest"):
+        path = paths[label]
+        paths[f"{label} partial"] = path.with_name(path.name + ".part")
     if translated_output != job.output:
         paths["Simplified Chinese intermediate"] = translated_output
         paths["Simplified Chinese intermediate partial"] = translated_output.with_name(
@@ -574,6 +580,27 @@ def validate_job_paths(
                     f"{job.video} ({label}) both map to {other_path}"
                 )
             claimed[key] = (job.video, label, path)
+
+    # Batch control files must never alias an input or a stage artifact. In
+    # particular, EventWriter opens its file in truncating mode before extraction.
+    controls: dict[str, Path] = {}
+    for label, attribute in (("event log", "event_log"), ("cancellation file", "cancel_file")):
+        path = getattr(args, attribute, None)
+        if path is not None:
+            controls[label] = Path(path)
+    if getattr(args, "quality_report", False) and not getattr(args, "skip_quality_report", False):
+        controls["metrics log"] = args.work_dir / "metrics.jsonl"
+    control_keys: dict[str, str] = {}
+    for label, path in controls.items():
+        key = _path_key(path, case_insensitive=case_insensitive)
+        if key in claimed:
+            video, artifact_label, artifact_path = claimed[key]
+            raise SystemExit(
+                f"Unsafe path collision: {label} and {video} ({artifact_label}) both map to {artifact_path}"
+            )
+        if key in control_keys:
+            raise SystemExit(f"Unsafe path collision: {label} and {control_keys[key]} both map to {path}")
+        control_keys[key] = label
 
 
 def extract_audio(
@@ -1232,6 +1259,7 @@ def process_video_stages(
     if (
         args.resume
         and translation_is_complete(output, translate_input_srt)
+        and not (read_json_object(translation_review_path(output)) or {}).get("review_count", 0)
         and translation_provenance_matches(
             translation_manifest, args, translate_input_srt, output
         )
@@ -1272,7 +1300,16 @@ def process_video_stages(
                 f"Display warning: {overlong} English cues cannot fit within "
                 f"two lines of {wrap_max_chars} characters; kept as balanced two-line subtitles."
             )
-    if translation_ran:
+    review = read_json_object(translation_review_path(translated_output)) or {}
+    review_count = int(review.get("review_count", 0))
+    if translated_output != output and review:
+        atomic_write_json(translation_review_path(output), review)
+    if review_count:
+        translation_manifest.unlink(missing_ok=True)
+        log.print(f"Translation needs review: {review_count} cues; {translation_review_path(output)}")
+        events.emit("stage_warning", review_count=review_count, report=translation_review_path(output),
+                    **_stage_fields(video, job_index, job_total, "translate"))
+    elif translation_ran:
         write_translation_provenance(
             translation_manifest, args, translate_input_srt, output
         )
@@ -1317,6 +1354,9 @@ def process_video_stages(
         copied_to_video = destination
 
     cleanup_policy = effective_cleanup_policy(args)
+    if review_count and cleanup_policy != "keep_all":
+        log.print("Keeping ASR/audio intermediates for translation review and retry.")
+        cleanup_policy = "keep_all"
     cleanup_fields = _stage_fields(video, job_index, job_total, "cleanup")
     if cleanup_policy == "keep_all":
         events.emit("stage_skipped", reason="keep_all", **cleanup_fields)
@@ -1681,7 +1721,13 @@ def main() -> None:
     total = len(jobs)
     cancel_token = CancellationToken(args.cancel_file)
 
-    with EventWriter(args.event_log) as events:
+    reservations = [path for job in jobs for label, path in job_artifact_paths(job, args).items()
+                    if label != "input video"]
+    reservations.extend(path for path in (args.event_log, args.cancel_file) if path is not None)
+    # Hold reservations through extraction, child stages, copying and cleanup.
+    # Writer locks use a separate namespace so stage subprocesses can write while
+    # their parent owns the complete pipeline reservation.
+    with path_locks(reservations), EventWriter(args.event_log) as events:
         events.emit(
             "batch_started",
             job_total=total,
@@ -1759,7 +1805,11 @@ def main() -> None:
                 outputs = {"srt": job.output}
                 if args.bilingual:
                     outputs["ass"] = job.output.with_suffix(".ass")
-                events.emit("job_completed", outputs=outputs, **job_fields)
+                review = read_json_object(translation_review_path(job.output)) or {}
+                review_count = int(review.get("review_count", 0))
+                if review_count:
+                    outputs["review"] = translation_review_path(job.output)
+                events.emit("job_completed", outputs=outputs, review_count=review_count, **job_fields)
 
         try:
             failures = run_pipeline(

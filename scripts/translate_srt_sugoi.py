@@ -18,7 +18,7 @@ from pipeline_configs import (
     validate_translation_config,
 )
 from target_languages import TargetLanguage, resolve_translation_settings
-from translation_common import HISTORY_RESET_SECONDS, clean_translation, parse_srt, write_entry
+from translation_common import HISTORY_RESET_SECONDS, clean_translation, parse_srt, write_entry, write_translation_review
 
 
 PROJECT_ROOT = project_root(Path(__file__))
@@ -99,7 +99,8 @@ def translate_one(llm: Llama, source: str) -> str:
     lines = parse_numbered_output(numbered, 1)
     if lines and safe_translation(source, lines[0]):
         return lines[0]
-    raise RuntimeError("Sugoi could not produce a safe English translation for one subtitle cue")
+    # The caller records and marks an unresolved cue; model exceptions still propagate.
+    return lines[0] if lines else translated
 
 
 def translate_batch_checked(llm: Llama, sources: list[str]) -> list[str | None] | None:
@@ -150,6 +151,7 @@ def main() -> None:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fallback_slots = 0
+    review_rows: list[dict] = []
     with atomic_text_writer(args.output) as output:
         index = 0
         while index < len(entries):
@@ -166,15 +168,19 @@ def main() -> None:
             for offset, (entry, text) in enumerate(zip(block, translated)):
                 if text is None:
                     fallback_slots += 1
-                    try:
-                        text = translate_one(llm, entry.text)
-                    except RuntimeError as exc:
-                        raise RuntimeError(f"Cue {entry.index}: {exc}") from exc
+                    text = translate_one(llm, entry.text)
+                if not safe_translation(entry.text, text):
+                    review_rows.append({"id": entry.index, "time": entry.time, "source": entry.text,
+                                        "candidate": text, "issues": ["unsafe_english"],
+                                        "action": "review_placeholder", "output": "[Translation needs review]"})
+                    text = "[Translation needs review]"
+                    print(f"Translation warning: cue {entry.index}: unsafe_english; review_placeholder", flush=True)
                 next_index = index + offset + 1
                 next_entry = entries[next_index] if next_index < len(entries) else None
                 write_entry(output, entry, text, next_entry, args.lead_out_seconds, args.min_display_seconds)
                 print(f"{entry.index}: {text}", flush=True)
             index = cursor
+    write_translation_review(args.output, review_rows)
     print(f"Batch fallback slots: {fallback_slots}")
     print(f"Wrote {args.output}")
 

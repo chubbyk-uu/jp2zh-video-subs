@@ -29,6 +29,8 @@ from translation_common import (
     normalize_source,
     parse_srt,
     relevant_terms,
+    review_chinese_translation,
+    write_translation_review,
     write_entry,
     write_terms_report,
 )
@@ -168,6 +170,7 @@ def main() -> None:
         history: list[tuple[str, str]] = []
         previous_end: float | None = None
         term_issue_rows: list[tuple[Entry, str, list[GlossaryTerm]]] = []
+        review_rows: list[dict] = []
         # Repeated lines dominate this material, so standalone translations are
         # memoized. A line is standalone when no history turns apply — either none
         # are available or translate_one drops them (context-sensitive short text) —
@@ -194,12 +197,8 @@ def main() -> None:
                 if standalone and translated:
                     translation_cache[source] = translated
             if not translated:
-                # An empty completion is a failure mode of its own: one nudged
-                # standalone retry before falling back to the source text (which
-                # the quality report would flag as kana residue).
+                # Retry once; any remaining empty cue is marked for review below.
                 translated = translate_one(llm, entry.text, [], glossary, frequency_penalty=0.2, temperature=0.7)
-            if not translated:
-                translated = entry.text
             # Adjacent-duplicate nudge: ultra-short interjection lines tend to
             # collapse onto the previous line's translation even when the source
             # differs. One standalone retry with a penalty; keep the duplicate if
@@ -217,15 +216,19 @@ def main() -> None:
                     duplicate_resolved += 1
                     if standalone:
                         translation_cache[source] = retried
+            before = len(review_rows)
+            translated = review_chinese_translation(entry, translated, review_rows)
             issues = glossary_issues(entry.text, translated, glossary)
             if issues:
                 term_issue_rows.append((entry, translated, issues))
             write_entry(f, entry, translated, next_entry, args.lead_out_seconds, args.min_display_seconds)
-            history.append((source, translated))
+            if len(review_rows) == before:
+                history.append((source, translated))
             prev_source, prev_translated = source, translated
             previous_end = entry.end
             print(f"{entry.index}: {translated}", flush=True)
 
+    write_translation_review(args.output, review_rows)
     print(f"Translation cache hits: {cache_hits}/{len(entries)}")
     print(f"Adjacent duplicate retries resolved: {duplicate_resolved}/{duplicate_retries}")
     print(f"Wrote {args.output}")

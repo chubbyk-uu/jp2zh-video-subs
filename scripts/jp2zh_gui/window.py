@@ -699,6 +699,9 @@ class MainWindow(QMainWindow):
             self.work_browse,
             self.cleanup_combo,
         ):
+            # Native Windows styles add borders/padding to stylesheet min-height;
+            # clear that content minimum before fixing the total widget height.
+            control.setStyleSheet("min-height: 0px;")
             control.ensurePolished()
             control.setFixedHeight(32)
         self._build_language_menu()
@@ -1023,6 +1026,8 @@ class MainWindow(QMainWindow):
         return added
 
     def _task_status_text(self, task: GuiTask) -> str:
+        if task.status == TaskStatus.COMPLETED and task.review_count:
+            return self.tr("Completed ({count} cues need review)").format(count=task.review_count)
         if task.status == TaskStatus.RUNNING and task.stage:
             details = {
                 "prepare_asr": self.tr("Preparing Japanese ASR"),
@@ -1265,7 +1270,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, self.tr("Models incomplete"), self.tr("The selected models are missing files:\n{files}").format(files=preview))
             return
         self._save_settings()
-        self.controller.start(self.tasks, config)
+        try:
+            self.controller.start(self.tasks, config)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, self.tr("Invalid settings"), str(exc))
 
     def _open_output(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self.output_edit.text()).expanduser().resolve())))

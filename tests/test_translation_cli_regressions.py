@@ -1,9 +1,10 @@
 import importlib
+import json
 import sys
 
 import pytest
 
-from translation_common import parse_srt
+from translation_common import parse_srt, review_chinese_translation, vocalisation_fallback
 
 
 class Completions:
@@ -66,3 +67,82 @@ def test_cli_retries_ambiguous_body_and_preserves_multiline(monkeypatch, tmp_pat
         replies.insert(0, "invalid batch")  # Sugoi first tries numbered batch mode.
     entries, _ = run_translator(monkeypatch, tmp_path, backend, ["雨です。明日行きましょう。"], replies)
     assert entries[0].text == ("It is raining. Let's go tomorrow." if english else "今天下雨。明天再去吧。")
+
+
+@pytest.mark.parametrize("backend", ["galtransl", "sakura"])
+def test_empty_translation_marks_review_and_continues(monkeypatch, tmp_path, backend):
+    extra = ("--batch-size", "1") if backend == "galtransl" else ()
+    entries, output = run_translator(monkeypatch, tmp_path, backend,
+                                    ["こんにちは。", "何をしている？", "さようなら。"],
+                                    ["你好。", "", "", "再见。"], *extra)
+    assert [e.text for e in entries] == ["你好。", "【翻译待复核】", "再见。"]
+    review = json.loads(output.with_suffix(".review.json").read_text(encoding="utf-8"))
+    assert review["review_count"] == 1
+    assert review["cues"][0]["id"] == "2"
+    assert review["cues"][0]["source"] == "何をしている？"
+    assert review["cues"][0]["candidate"] == ""
+    assert review["cues"][0]["action"] == "review_placeholder"
+    assert not list(tmp_path.glob("*.part"))
+
+
+@pytest.mark.parametrize("backend", ["galtransl", "sakura"])
+@pytest.mark.parametrize("source,invalid,expected,issue", [
+    ("ぃぃ…", "ぃぃ…", "咿咿…", "kana_residue"),
+    ("ミクに会った。", "见到了ミク。", "见到了ミク。", "kana_residue"),
+    ("こんにちは。", "好" * 60, "【翻译待复核】", "degenerate"),
+])
+def test_persistent_quality_risks_keep_cue_and_record_review(monkeypatch, tmp_path, backend, source, invalid, expected, issue):
+    extra = ("--batch-size", "1") if backend == "galtransl" else ()
+    # Both translators use three attempts for kana, two for degeneration.
+    attempts = 3 if issue == "kana_residue" else 2
+    entries, output = run_translator(monkeypatch, tmp_path, backend,
+                                    [source, "さようなら。"], [invalid] * attempts + ["再见。"], *extra)
+    assert [e.text for e in entries] == [expected, "再见。"]
+    review = json.loads(output.with_suffix(".review.json").read_text(encoding="utf-8"))
+    assert review["review_count"] == 1
+    assert review["cues"][0]["candidate"] == invalid
+    assert issue in review["cues"][0]["issues"]
+    assert review["cues"][0]["source"] == source
+
+
+@pytest.mark.parametrize("source", ["いい。", "はい！", "うん", "ううん。", "ええ", "会いたい。",
+                                    "ハイ", "はいはい", "イイ", "いい、いい"])
+def test_vocalisation_fallback_does_not_invent_lexical_dialogue(source):
+    assert vocalisation_fallback(source) is None
+
+
+def test_source_supported_repetition_is_retained_for_review(tmp_path):
+    from translation_common import Entry
+    entry = Entry("1", "00:00:00,000 --> 00:00:01,000", "だめ" * 10, 0, 1)
+    rows = []
+    translated = "不行" * 10
+    assert review_chinese_translation(entry, translated, rows) == translated
+    assert rows[0]["action"] == "retained_source_repetition"
+
+
+@pytest.mark.parametrize("backend", ["galtransl", "sakura"])
+def test_clean_rerun_clears_previous_review(monkeypatch, tmp_path, backend):
+    run_translator(monkeypatch, tmp_path, backend, ["ぃぃ…"], ["ぃぃ…"] * 3)
+    entries, output = run_translator(monkeypatch, tmp_path, backend, ["こんにちは。"], ["你好。"])
+    assert entries[0].text == "你好。"
+    assert json.loads(output.with_suffix(".review.json").read_text(encoding="utf-8"))["review_count"] == 0
+
+
+def test_sugoi_exhausted_quality_retries_continue_remaining_cues(monkeypatch, tmp_path):
+    entries, output = run_translator(monkeypatch, tmp_path, "sugoi", ["こんにちは。", "さようなら。"],
+                                    ["[001] こんにちは。", "こんにちは。", "こんにちは。", "[001] こんにちは。",
+                                     "[001] Goodbye."], "--batch-size", "1")
+    assert [e.text for e in entries] == ["[Translation needs review]", "Goodbye."]
+    assert json.loads(output.with_suffix(".review.json").read_text(encoding="utf-8"))["review_count"] == 1
+
+
+@pytest.mark.parametrize("backend", ["galtransl", "sakura"])
+def test_real_model_exception_preserves_previous_output(monkeypatch, tmp_path, backend):
+    output = tmp_path / "output.srt"
+    output.write_text("previous output", encoding="utf-8")
+    # The stub model runs out of responses: a model failure must still fail the job.
+    with pytest.raises(StopIteration):
+        run_translator(monkeypatch, tmp_path, backend, ["こんにちは。", "さようなら。"],
+                       ["你好。"], *(("--batch-size", "1") if backend == "galtransl" else ()))
+    assert output.read_text(encoding="utf-8") == "previous output"
+    assert not list(tmp_path.glob("*.part"))

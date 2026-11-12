@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeVar
 
 from srt_utils import padded_end, parse_time, srt_time
+from atomic_io import atomic_write_text
 
 
 KANA_RE = re.compile(r"[ぁ-ゟ゠-ヿ]")
@@ -237,3 +239,60 @@ def looks_degenerate(source: str, text: str) -> bool:
         if re.search(r"(.{%d})\1{5,}" % unit, text):
             return True
     return False
+
+
+def translation_review_path(output: Path) -> Path:
+    return output.with_suffix(".review.json")
+
+
+def vocalisation_fallback(source: str) -> str | None:
+    """Conservative phonetic rendering only; never infer dialogue from short vowels."""
+    sounds = str.maketrans({**dict.fromkeys("あぁアァ", "啊"), **dict.fromkeys("いぃイィ", "咿"),
+                           **dict.fromkeys("うぅウゥ", "呜"), **dict.fromkeys("えぇエェ", "诶"),
+                           **dict.fromkeys("おぉオォ", "哦"), **dict.fromkeys("んン", "嗯"),
+                           **dict.fromkeys("はハ", "哈"), **dict.fromkeys("ふフ", "呼"),
+                           **dict.fromkeys("っッ", ""), "ー": "…", "〜": "…"})
+    compact = re.sub(r"[\s。、，,.!?！？…ー〜♥♡♪っッ]", "", source)
+    # Lexical short replies must not be converted into invented phonetic dialogue.
+    hiragana = "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in compact)
+    if not compact or len(compact) > 12 or re.fullmatch(r"(?:いい|はい|うん|ううん|ええ)+", hiragana):
+        return None
+    if not re.fullmatch(r"[あぁアァいぃイィうぅウゥえぇエェおぉオォんンはハふフ]+", compact):
+        return None
+    return source.translate(sounds).strip()
+
+
+def review_chinese_translation(entry: Entry, translated: str, rows: list[dict]) -> str:
+    """Heuristic quality risks are per-cue warnings, never whole-film failures."""
+    issues = []
+    if not translated.strip():
+        issues.append("empty")
+    if KANA_RE.search(translated):
+        issues.append("kana_residue")
+    if looks_degenerate(entry.text, translated):
+        issues.append("degenerate")
+    if not issues:
+        return translated
+    fallback = vocalisation_fallback(entry.text)
+    if fallback is not None:
+        final, action = fallback, "phonetic_fallback"
+    elif "empty" in issues or "degenerate" in issues:
+        source_repeats = any(re.search(r"(.{%d})\1{3,}" % n, entry.text) for n in range(1, 6))
+        if translated.strip() and source_repeats and len(translated) <= max(20, 3 * len(entry.text)):
+            final, action = translated, "retained_source_repetition"
+        else:
+            final, action = "【翻译待复核】", "review_placeholder"
+    else:
+        # Kana in a name/quotation does not prove the surrounding Chinese is wrong.
+        final, action = translated, "retained_for_review"
+    rows.append({"id": entry.index, "time": entry.time, "source": entry.text,
+                 "candidate": translated, "issues": issues, "action": action, "output": final})
+    print(f"Translation warning: cue {entry.index}: {','.join(issues)}; {action}", flush=True)
+    return final
+
+
+def write_translation_review(output: Path, rows: list[dict]) -> None:
+    path = translation_review_path(output)
+    atomic_write_text(path, json.dumps({"schema": 1, "review_count": len(rows), "cues": rows},
+                                      ensure_ascii=False, indent=2) + "\n")
+    print(f"Translation review: {len(rows)} cues; {path}", flush=True)

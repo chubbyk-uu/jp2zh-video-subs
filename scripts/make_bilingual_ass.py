@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from atomic_io import atomic_write_text
 from cli_config import add_dataclass_arguments, config_from_namespace
 from pipeline_configs import (
     BilingualAssConfig,
@@ -233,7 +234,7 @@ def main() -> None:
             )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(build_bilingual_ass(zh_entries, ja_by_index, args, genders), encoding="utf-8")
+    atomic_write_text(args.output, build_bilingual_ass(zh_entries, ja_by_index, args, genders))
     print(f"Wrote {args.output}")
 
 

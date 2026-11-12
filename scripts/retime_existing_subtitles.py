@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
+import platform
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from atomic_io import atomic_write_text
 import make_bilingual_ass
 from make_bilingual_ass import (
     DEFAULT_FONT,
@@ -18,6 +21,7 @@ from make_bilingual_ass import (
 )
 from srt_utils import padded_end, parse_time, srt_time
 from target_languages import TargetLanguage, output_language_suffix
+from video_to_zh_srt import output_path_for, work_dir_for
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".webm"}
@@ -43,6 +47,12 @@ class SrtBlock:
 
 
 def wsl_path(path: str) -> Path:
+    is_wsl = os.name != "nt" and (
+        bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"))
+        or "microsoft" in platform.release().lower()
+    )
+    if not is_wsl:
+        return Path(path)
     match = re.match(r"^([A-Za-z]):[\\/](.*)$", path)
     if not match:
         return Path(path)
@@ -111,22 +121,27 @@ def subtitle_paths(
     output_dir: Path,
     work_dir: Path,
     target_language: str | TargetLanguage = TargetLanguage.SIMPLIFIED_CHINESE,
+    *,
+    input_path: Path | None = None,
+    recursive: bool = False,
 ) -> SubtitlePaths | None:
     stem = video.stem
     suffix = output_language_suffix(target_language)
-    source_zh_srt = output_dir / f"{stem}{suffix}.srt"
+    root = input_path if input_path is not None else video
+    source_zh_srt = output_path_for(video, root, output_dir, recursive, target_language)
+    destination_dir = source_zh_srt.parent
     # Read legacy Simplified-Chinese outputs created before standard language tags.
     if not source_zh_srt.exists() and target_language == TargetLanguage.SIMPLIFIED_CHINESE:
-        source_zh_srt = output_dir / f"{stem}.zh.srt"
-    source_ja_srt = find_ja_srt(work_dir, stem)
-    if not source_zh_srt.exists() or source_ja_srt is None:
+        source_zh_srt = destination_dir / f"{stem}.zh.srt"
+    source_ja_srt = work_dir_for(video, root, work_dir, recursive) / f"{stem}.ja.srt"
+    if not source_zh_srt.is_file() or not source_ja_srt.is_file():
         return None
     return SubtitlePaths(
         video=video,
         source_zh_srt=source_zh_srt,
         source_ja_srt=source_ja_srt,
-        retimed_zh_srt=output_dir / f"{stem}.retimed{suffix}.srt",
-        retimed_ass=output_dir / f"{stem}.retimed{suffix}.ass",
+        retimed_zh_srt=destination_dir / f"{stem}.retimed{suffix}.srt",
+        retimed_ass=destination_dir / f"{stem}.retimed{suffix}.ass",
         video_ass=video.parent / f"{stem}{suffix}.ass",
     )
 
@@ -135,17 +150,14 @@ def retime_srt_file(paths: SubtitlePaths, lead_out: float, min_display: float, m
     blocks = parse_srt(paths.source_zh_srt)
     paths.retimed_zh_srt.parent.mkdir(parents=True, exist_ok=True)
     content = "\n".join(retime_blocks(blocks, lead_out, min_display, min_gap))
-    paths.retimed_zh_srt.write_text(content + ("\n" if blocks else ""), encoding="utf-8")
+    atomic_write_text(paths.retimed_zh_srt, content + ("\n" if blocks else ""))
 
 
 def build_ass(paths: SubtitlePaths, options: argparse.Namespace) -> None:
     zh_entries = make_bilingual_ass.parse_srt(paths.retimed_zh_srt)
     ja_by_index = {entry.index: entry.text for entry in make_bilingual_ass.parse_srt(paths.source_ja_srt)}
     paths.retimed_ass.parent.mkdir(parents=True, exist_ok=True)
-    paths.retimed_ass.write_text(
-        make_bilingual_ass.build_bilingual_ass(zh_entries, ja_by_index, options),
-        encoding="utf-8",
-    )
+    atomic_write_text(paths.retimed_ass, make_bilingual_ass.build_bilingual_ass(zh_entries, ja_by_index, options))
 
 
 def process_video(
@@ -215,7 +227,7 @@ def main() -> None:
     if args.min_gap_seconds < 0:
         raise SystemExit("--min-gap-seconds must be >= 0")
 
-    input_path = wsl_path(args.input)
+    input_path = wsl_path(args.input).resolve()
     videos = iter_videos(input_path, args.recursive)
     if not videos:
         raise SystemExit(f"No video files found: {input_path}")
@@ -223,11 +235,13 @@ def main() -> None:
     processed = 0
     skipped = 0
     for video in videos:
-        paths = subtitle_paths(video, args.output_dir, args.work_dir, args.target_language)
+        paths = subtitle_paths(video, args.output_dir, args.work_dir, args.target_language,
+                               input_path=input_path, recursive=args.recursive)
         if paths is None:
             skipped += 1
-            suffix = output_language_suffix(args.target_language)
-            print(f"[SKIP] {video.name}: missing outputs/{video.stem}{suffix}.srt or work/{video.stem}/*.ja.srt")
+            expected = output_path_for(video, input_path, args.output_dir, args.recursive, args.target_language)
+            ja_dir = work_dir_for(video, input_path, args.work_dir, args.recursive)
+            print(f"[SKIP] {video}: missing {expected} or {ja_dir / (video.stem + '.ja.srt')}")
             continue
         process_video(paths, args, args.dry_run, not args.no_copy_to_video_dir)
         processed += 1

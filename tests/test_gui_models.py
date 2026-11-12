@@ -69,6 +69,14 @@ def test_gui_config_rejects_invalid_common_values():
         GuiConfig(bilingual_zh_colour="#ffff00").build_command(Path("a.mp4"), Path("events"), Path("cancel"))
 
 
+def test_queue_validation_includes_completed_tasks_and_same_folder_extensions(tmp_path):
+    config = GuiConfig(output_dir=tmp_path / "out", work_dir=tmp_path / "work")
+    tasks = [GuiTask(tmp_path / "episode.mp4", status=TaskStatus.COMPLETED),
+             GuiTask(tmp_path / "episode.mkv")]
+    with pytest.raises(ValueError, match="collision"):
+        config.validate_queue_paths(tasks)
+
+
 def test_gui_config_uses_selected_anime_batch_flag():
     command = GuiConfig(asr=AsrPreset.ANIME, asr_batch_size=16).build_command(
         Path("a.mp4"), Path("events"), Path("cancel")

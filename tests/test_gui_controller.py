@@ -137,6 +137,34 @@ def test_controller_runs_queue_and_applies_jsonl_events(tmp_path):
     assert "fake pipeline completed" in "".join(logs)
 
 
+def test_controller_preserves_review_count_and_report_on_completion(tmp_path):
+    application()
+    task = GuiTask(tmp_path / "one.mp4")
+    controller = PipelineController()
+    controller.current_task = task
+    controller._apply_event({"event": "stage_warning", "review_count": 2})
+    assert task.review_count == 2
+    report = tmp_path / "one.review.json"
+    controller._apply_event({"event": "job_completed", "review_count": 2,
+                             "outputs": {"review": str(report)}})
+    controller._process_finished(0, QProcess.ExitStatus.NormalExit)
+    assert task.status == TaskStatus.COMPLETED
+    assert task.review_count == 2 and task.outputs["review"] == report
+
+
+def test_controller_rejects_colliding_queue_before_starting_or_writing(tmp_path):
+    application()
+    tasks = [GuiTask(tmp_path / "A" / "episode.mp4"), GuiTask(tmp_path / "B" / "episode.mkv")]
+    config = GuiConfig(output_dir=tmp_path / "out", work_dir=tmp_path / "work", recursive=True)
+    controller = PipelineController()
+    with pytest.raises(ValueError, match="collision"):
+        controller.start(tasks, config)
+    assert controller.process is None
+    assert controller._runtime_dir is None
+    assert all(task.status == TaskStatus.WAITING for task in tasks)
+    assert not config.work_dir.exists()
+
+
 def test_controller_applies_detailed_status_and_monotonic_stage_progress(tmp_path):
     application()
     fake_pipeline = tmp_path / "fake_pipeline.py"
@@ -206,3 +234,30 @@ def test_controller_removes_its_runtime_directory_after_queue(tmp_path):
     assert wait_for_queue(controller)
     assert not runtime_dir.exists()
     assert controller._runtime_dir is None
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_relative_gui_paths_work_from_a_different_launch_directory(tmp_path, monkeypatch, cancel):
+    application()
+    launch = tmp_path / "launch"
+    launch.mkdir()
+    monkeypatch.chdir(launch)
+    fake_pipeline = tmp_path / "fake.py"
+    (write_cancellable_pipeline if cancel else write_success_pipeline)(fake_pipeline)
+    controller = PipelineController(pipeline_script=fake_pipeline)
+    task = GuiTask(Path("one.mp4"))
+    config = GuiConfig(output_dir=Path("out"), work_dir=Path("work"))
+    controller.start([task], config)
+    runtime_dir = controller._runtime_dir
+    assert controller.config.work_dir == launch / "work"
+    assert controller.config.output_dir == launch / "out"
+    assert controller.event_path.is_absolute() and controller.cancel_path.is_absolute()
+    assert task.video == launch / "one.mp4"
+    assert config.work_dir == Path("work")  # Caller-owned configuration stays unchanged.
+    if cancel:
+        QTimer.singleShot(150, controller.cancel)
+    assert wait_for_queue(controller)
+    assert task.status == (TaskStatus.CANCELLED if cancel else TaskStatus.COMPLETED)
+    if not cancel:
+        assert task.outputs["ass"] == launch / "one.zh.ass"
+    assert not runtime_dir.exists()

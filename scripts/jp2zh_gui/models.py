@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterable
 from uuid import uuid4
 
@@ -107,6 +108,28 @@ class GuiConfig:
     bilingual_male_colour: str = "&H00FFBF00"
     bilingual_female_colour: str = "&H00B478FF"
     colour_by_speaker: bool = False
+
+    def validate_queue_paths(self, tasks: Iterable[GuiTask]) -> None:
+        """Check the entire queue before separate CLI invocations can overwrite each other."""
+        from video_to_zh_srt import VideoJob, output_path_for, validate_job_paths, work_dir_for
+
+        jobs = []
+        for index, task in enumerate(tasks, 1):
+            video = task.video.resolve()
+            output = output_path_for(video, video, self.output_dir, self.recursive, self.target_language)
+            directory = work_dir_for(video, video, self.work_dir, self.recursive)
+            jobs.append(VideoJob(index, video, output, directory, directory / f"{video.stem}.wav"))
+        try:
+            validate_job_paths(jobs, SimpleNamespace(
+                bilingual=self.bilingual,
+                no_copy_to_video_dir=not self.copy_to_video_dir,
+                target_language=self.target_language,
+                translator=self.translator.value,
+                quality_report=self.quality_report,
+                work_dir=self.work_dir,
+            ))
+        except SystemExit as exc:
+            raise ValueError(str(exc)) from exc
 
     def validate(self) -> list[ValidationIssue]:
         errors: list[ValidationIssue] = []
@@ -232,6 +255,7 @@ class GuiTask:
     error_args: dict[str, object] = field(default_factory=dict)
     error: str = ""
     outputs: dict[str, Path] = field(default_factory=dict)
+    review_count: int = 0
 
     @property
     def progress_percent(self) -> int:
@@ -258,6 +282,7 @@ class GuiTask:
         self.error_args.clear()
         self.error = ""
         self.outputs.clear()
+        self.review_count = 0
 
 
 def discover_dropped_videos(paths: Iterable[Path], recursive: bool) -> list[Path]:

@@ -30,6 +30,8 @@ from translation_common import (
     normalize_source,
     parse_srt,
     relevant_terms,
+    review_chinese_translation,
+    write_translation_review,
     write_entry,
     write_terms_report,
 )
@@ -307,6 +309,7 @@ def main() -> None:
         history: list[str] = []  # prior translations (Chinese), oldest -> newest
         previous_end: float | None = None
         term_issue_rows: list[tuple[Entry, str, list[GlossaryTerm]]] = []
+        review_rows: list[dict] = []
         # Standalone lines (no applicable history) are pure functions of their source,
         # so they are memoized; repeated lines dominate this material.
         translation_cache: dict[str, str] = {}
@@ -324,11 +327,14 @@ def main() -> None:
         def emit(entry: Entry, translated: str, next_entry: Entry | None) -> None:
             """Write one cue, record glossary issues, and advance history/dedup state."""
             nonlocal prev_source, prev_translated
+            before = len(review_rows)
+            translated = review_chinese_translation(entry, translated, review_rows)
             issues = glossary_issues(entry.text, translated, glossary)
             if issues:
                 term_issue_rows.append((entry, translated, issues))
             write_entry(f, entry, translated, next_entry, args.lead_out_seconds, args.min_display_seconds)
-            history.append(translated)
+            if len(review_rows) == before:
+                history.append(translated)
             prev_source, prev_translated = normalize_source(entry.text), translated
             print(f"{entry.index}: {translated}", flush=True)
 
@@ -347,8 +353,6 @@ def main() -> None:
                 translation_cache[source] = translated
             if not translated:
                 translated = translate_one(llm, entry.text, [], glossary, frequency_penalty=0.2, temperature=0.7)
-            if not translated:
-                translated = entry.text
             # Adjacent-duplicate nudge: ultra-short interjection lines tend to collapse
             # onto the previous line's translation even when the source differs. One
             # standalone retry; keep the duplicate if the model insists.
@@ -415,6 +419,7 @@ def main() -> None:
             previous_end = block[-1].end
             idx = k
 
+    write_translation_review(args.output, review_rows)
     print(f"Translation cache hits: {cache_hits}/{len(entries)}")
     print(f"Adjacent duplicate retries resolved: {duplicate_resolved}/{duplicate_retries}")
     if batch_blocks:

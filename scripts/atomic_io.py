@@ -2,21 +2,26 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import tempfile
 from typing import Iterator, TextIO
+
+from path_locks import path_locks
 
 
 @contextmanager
 def atomic_text_writer(path: Path, encoding: str = "utf-8") -> Iterator[TextIO]:
-    """Write beside the destination and replace it only after a clean close."""
+    """Reserve the destination and atomically promote a writer-owned temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_name(path.name + ".part")
-    try:
-        with partial.open("w", encoding=encoding) as output:
-            yield output
-        partial.replace(path)
-    except BaseException:
-        partial.unlink(missing_ok=True)
-        raise
+    with path_locks([path], namespace="writer"):
+        output = tempfile.NamedTemporaryFile(mode="w", encoding=encoding, dir=path.parent,
+                                             prefix=path.name + ".", suffix=".part", delete=False)
+        partial = Path(output.name)
+        try:
+            with output:
+                yield output
+            partial.replace(path)
+        finally:
+            partial.unlink(missing_ok=True)
 
 
 def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:

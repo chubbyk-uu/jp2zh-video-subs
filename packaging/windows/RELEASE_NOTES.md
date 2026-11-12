@@ -1,4 +1,48 @@
-# jp2zh-video-subs v0.1.1
+# jp2zh-video-subs v0.1.2
+
+Bug-fix release for the Windows x64 CUDA portable build and source CLI/GUI. Model weights
+and runtime dependencies are unchanged. Existing model downloads can be reused.
+
+Changes since v0.1.1:
+
+- Reject conflicting output/work paths across the entire GUI queue, including same-named
+  videos in different folders. Resolve GUI relative paths before starting subprocesses.
+- Keep fixed-height settings controls aligned under native Windows Qt styles.
+- Validate event/cancellation paths before opening files. Reserve pipeline paths across
+  processes and use independent temporary files for atomic subtitle writes.
+- Fix rc.1's regression where one echoed vocalisation, kana-bearing name, empty translation,
+  or repetition could abort a whole video. Preserve every cue and continue after retries,
+  using conservative short-vocalisation rendering or a visible review marker as appropriate.
+  Record unresolved candidates in `.review.json`; show the review count in all GUI languages.
+  Apply per-cue recovery to experimental English output too. Real model/I/O failures still fail.
+- Keep ASR/audio intermediates when review is needed, and do not cache reviewed output as
+  a clean completed translation. Read-only video inputs can be shared across independent jobs.
+- Include WhisperSeg weights in ASR resume identities and invalidate old Chinese
+  translation cache schemas. The first resumed run may repeat ASR and translation.
+- Match recursive subtitle layouts in the retiming tool, preserve native Windows drive
+  paths, and apply drive-to-mount conversion only in WSL.
+- Include the evidence-aware quality-report changes and evaluation tools developed after
+  v0.1.1. The default Anime ASR and GalTransl translation models are unchanged.
+
+Validation: 658 Linux automated tests and 185 targeted native Windows tests passed.
+The failed video's frozen Japanese subtitles were retranslated with GalTransl on native
+Windows / RTX 5080 in 34.42 seconds: all 336 cues retained their IDs and start times; one
+short vocalisation was recovered and flagged for review. The installed Windows program
+also completed the resumed pipeline, generated bilingual ASS, and passed user acceptance.
+Detailed evidence is recorded in `docs/GUI_TEST_PLAN.md`.
+
+Download all `jp2zh-video-subs-windows-x64-cuda-program.7z.*` volumes, place them in the same
+folder, and extract starting from `.7z.001`. Follow `INSTALL-CN.txt` or `INSTALL-EN.txt`.
+Use a new program folder when upgrading, then copy your existing `models` folder into it;
+keep the old folder and any outputs you want to preserve until the new version is working.
+The program archive includes no model weights, videos, subtitles, or personal settings.
+`SHA256SUMS.parts` verifies individual volumes; `SHA256SUMS` verifies the reassembled archive.
+
+Reviewed output is not guaranteed correct: inspect the `.review.json` report and visible
+review markers. Experimental English output still needs manual review. Legacy translation
+cache schemas and ASR manifests missing VAD model identities are invalidated on first resume.
+
+## Historical v0.1.1 release notes
 
 Bug-fix release for the portable Windows x64 CUDA build. Extract it and run the GUI without
 installing Python, FFmpeg, or the CUDA Toolkit. There are no command-line, configuration, or

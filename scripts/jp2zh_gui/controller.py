@@ -52,8 +52,13 @@ class PipelineController(QObject):
     def start(self, tasks: list[GuiTask], config: GuiConfig) -> None:
         if self.is_running:
             raise RuntimeError("Pipeline queue is already running")
+        config = replace(config, output_dir=config.output_dir.expanduser().resolve(),
+                         work_dir=config.work_dir.expanduser().resolve())
+        config.validate_queue_paths(tasks)
+        for task in tasks:
+            task.video = task.video.expanduser().resolve()
         self.tasks = tasks
-        self.config = replace(config)
+        self.config = config
         self._stop_after_current = False
         self._runtime_dir = config.work_dir / ".gui" / uuid4().hex
         self._runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -90,6 +95,7 @@ class PipelineController(QObject):
         task.stage = None
         task.stage_index = 0
         task.completed_stages = 0
+        task.review_count = 0
         task.detail_key = ""
         task.detail_args.clear()
         self.event_path = self._runtime_dir / f"{task.task_id}.events.jsonl"
@@ -191,6 +197,9 @@ class PipelineController(QObject):
             task.status = TaskStatus.CANCELLED
         elif event == "job_completed":
             task.outputs = {key: Path(value) for key, value in payload.get("outputs", {}).items()}
+            task.review_count = int(payload.get("review_count", 0))
+        elif event == "stage_warning":
+            task.review_count = int(payload.get("review_count", 0))
         elif event == "job_failed":
             task.error_key = "job_failed"
             task.error = str(payload.get("error") or "")

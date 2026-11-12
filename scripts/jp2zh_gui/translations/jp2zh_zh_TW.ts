@@ -670,6 +670,10 @@ Do not reuse completed stages after changing models or key settings</source>
         <translation>已完成</translation>
     </message>
     <message>
+        <source>Completed ({count} cues need review)</source>
+        <translation>已完成（{count} 條需複核）</translation>
+    </message>
+    <message>
         <location filename="../window.py" line="1019"/>
         <source>Failed</source>
         <translation>失敗</translation>
